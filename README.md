@@ -77,6 +77,23 @@ scripts/                         Development and repo automation scripts
 - No live wallet automation.
 - No new dependencies.
 
+## Python Bootstrap
+
+This repo now includes a minimal Python 3.11+ package scaffold for read-only market discovery wiring.
+
+```powershell
+py -3.11 -m venv .venv
+.venv\Scripts\python -m pip install -e ".[dev]"
+.venv\Scripts\pm --help
+.venv\Scripts\pm market search --query btc --limit 2 --json
+.venv\Scripts\pm market show --slug bitboy-convicted --json
+.venv\Scripts\pm market event --slug bitcoin-above-on-march-16 --json
+.venv\Scripts\pm market book --token-id 75467129615908319583031474642658885479135630431889036121812713428992454630178 --json
+.venv\Scripts\pm market price --token-id 75467129615908319583031474642658885479135630431889036121812713428992454630178 --json
+```
+
+The market CLI now uses Gamma public REST for discovery and public CLOB REST for books and prices. It remains read-only and does not use auth, wallets, CLOB trading, or execution logic.
+
 ## Related Docs
 
 - `docs/specs/README.md`

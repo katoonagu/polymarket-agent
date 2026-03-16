@@ -186,8 +186,11 @@
 ## CLI команды
 
 ```text
-pm market get --slug <slug>
+pm market show --slug <slug>
+pm market event --slug <slug>
 pm market search --query "btc 15 min"
+pm market book --token-id <id>
+pm market price --token-id <id>
 pm market watch add --slug <slug>
 pm market watch remove --slug <slug>
 pm market watch list

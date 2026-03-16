@@ -68,6 +68,10 @@ Health, metrics, reconciliation, replay, incidents.
 
 ```text
 pm market search --query "btc 15 min"
+pm market show --slug <slug>
+pm market event --slug <slug>
+pm market book --token-id <id>
+pm market price --token-id <id>
 pm market watch add --slug btc-updown-15m-...
 pm wallet add --address 0x...
 pm wallet copy enable --address 0x... --mode fixed --size 1
