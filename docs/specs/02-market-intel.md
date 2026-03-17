@@ -248,3 +248,15 @@ MVP готов, если умеет:
 - event summaries;
 - auto-generated watchlists;
 - cross-market hedging candidates.
+
+## Phase 1 Read-Only CLI Contract
+
+The current implementation for this phase is limited to public Gamma discovery.
+
+```text
+pm market search --query "<text>" --limit <n> [--json]
+pm market show --slug <market-slug> [--json]
+pm market event --slug <event-slug> [--json]
+```
+
+Current normalized outputs must stay read-only and machine-friendly. They expose market slug, question, active/closed state, `enableOrderBook`, `conditionId`, `clobTokenIds`, `outcomes`, and event slug/title when available.

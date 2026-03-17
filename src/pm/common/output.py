@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import sys
 from collections.abc import Mapping
 from typing import Any
 
@@ -16,3 +17,30 @@ def emit_output(payload: Mapping[str, Any], *, json_output: bool, text: str) -> 
         return
 
     Console().print(text)
+
+
+def emit_error(
+    *,
+    code: str,
+    message: str,
+    json_output: bool,
+    resource: str | None = None,
+    identifier: str | None = None,
+) -> None:
+    """Render a deterministic error payload or a small human-readable message."""
+    if json_output:
+        payload: dict[str, Any] = {
+            "ok": False,
+            "error": {
+                "code": code,
+                "message": message,
+            },
+        }
+        if resource is not None:
+            payload["error"]["resource"] = resource
+        if identifier is not None:
+            payload["error"]["identifier"] = identifier
+        print(json.dumps(payload, indent=2, sort_keys=True))
+        return
+
+    Console(file=sys.stderr).print(message)

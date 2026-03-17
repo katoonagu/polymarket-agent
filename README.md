@@ -79,16 +79,18 @@ scripts/                         Development and repo automation scripts
 
 ## Python Bootstrap
 
-This repo now includes a minimal Python 3.11+ scaffold for read-only market discovery wiring only.
+This repo now includes a minimal Python 3.11+ scaffold for read-only market discovery over the public Gamma API.
 
 ```powershell
 py -3.11 -m venv .venv
 .venv\Scripts\python -m pip install -e ".[dev]"
 .venv\Scripts\pm --help
-.venv\Scripts\pm market search --query btc --json
+.venv\Scripts\pm market search --query btc --limit 2 --json
+.venv\Scripts\pm market show --slug <market-slug> --json
+.venv\Scripts\pm market event --slug <event-slug> --json
 ```
 
-The initial CLI is intentionally small. It is read-only, does not call Polymarket yet, and does not include wallet auth, order placement, websocket, database, or execution logic.
+The current CLI is intentionally small. It is read-only, uses only public Gamma endpoints, and does not include wallet auth, order placement, websocket, database, or execution logic.
 
 ## Related Docs
 

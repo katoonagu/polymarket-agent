@@ -231,3 +231,20 @@ CLI/ops считается готовым, если:
 - role-based access;
 - scheduled jobs UI;
 - alert routing in Slack/Telegram/Discord.
+
+## Phase 1 Read-Only CLI Notes
+
+The current CLI surface for market discovery is intentionally narrow and read-only.
+
+```text
+pm market search --query "<text>" --limit <n> [--json]
+pm market show --slug <market-slug> [--json]
+pm market event --slug <event-slug> [--json]
+```
+
+For this phase:
+
+- `--json` must return deterministic normalized snake_case payloads.
+- Human output must use a fixed field order for stable operator workflows.
+- CLI errors should be deterministic and machine-friendly in JSON mode.
+- No auth, wallet flows, execution logic, websocket subscriptions, or database-backed state are allowed.
