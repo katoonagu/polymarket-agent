@@ -42,6 +42,33 @@ Build reliable market discovery and monitoring without creating any order-placem
 - Snapshot capture for bid, ask, spread, and freshness
 - Recurring market support for time-bucketed markets
 
+### Part 02B: Official CLI Alignment
+
+**Objective**
+
+Align the documented read-only CLI surface with the most useful command and output patterns from the official Polymarket CLI while preserving this repo's Python-native architecture and execution boundaries.
+
+**Scope / Deliverables**
+
+- Upstream research note in `docs/research/polymarket-cli-analysis.md`
+- Canonical public namespace split between `pm market` and `pm clob`
+- Global CLI output contract and structured JSON error contract in the CLI spec
+- Alias and deprecation policy for `pm market book` and `pm market price`
+- README and spec examples aligned to the canonical read-only command surface
+
+**Non-goals**
+
+- Code changes to current command implementations
+- Adopting the Rust CLI architecture as the repo architecture
+- Adding auth, wallet, approval, bridge, CTF, or other mutating CLI flows
+
+**Exit Criteria**
+
+- Upstream reference note is published and linked from the repo docs
+- The CLI spec defines canonical namespaces and output and error behavior
+- README examples reflect the canonical read-only command surface
+- Temporary aliases are documented as compatibility-only, not permanent API
+
 **Non-goals**
 
 - Order placement or cancellation
@@ -51,6 +78,7 @@ Build reliable market discovery and monitoring without creating any order-placem
 **Exit Criteria**
 
 - Operator can discover and inspect markets from CLI or internal interfaces
+- The canonical read-only CLI contract is documented for both market discovery and public CLOB reads
 - Watched markets can produce normalized snapshots
 - Recurring market resolution is deterministic for the first supported series
 - No read-only component contains direct execution logic

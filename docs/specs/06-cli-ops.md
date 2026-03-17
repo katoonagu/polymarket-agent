@@ -1,103 +1,184 @@
-# 06 — CLI, Storage, Observability & Operations Spec
+# 06 - CLI, Storage, Observability & Operations Spec
 
-## Назначение
+## Purpose
 
-Управление системой начинается с CLI. Это правильно для v1, потому что:
+The system is operated through the CLI first. That remains the right default for the early phases of `polymarket-agent` because it keeps the surface area small, makes behavior easy to audit, and allows output and control contracts to stabilize before any later TUI or web layer.
 
-- быстро разрабатывать;
-- легко аудировать команды;
-- меньше surface area, чем у веб-панели;
-- проще накладывать операционные ограничения;
-- легко подключить later TUI or web console.
+This spec covers:
 
-## CLI design principles
+- the canonical CLI contract;
+- output and error behavior;
+- storage and observability expectations;
+- replay and incident workflows;
+- operator-facing requirements that must remain separate from execution internals.
 
-### 1. Verb-first grammar
-Команды должны быть читаемыми:
+## CLI Design Principles
+
+### 1. Namespace-first command grammar
+
+Commands should group by resource family first, then action:
 
 ```text
-pm market watch add ...
-pm wallet copy enable ...
-pm exec buy ...
-pm arkham enrich ...
+pm market search ...
+pm market show ...
+pm market event ...
+pm clob book ...
+pm clob price ...
+pm ops replay ...
 ```
 
-### 2. Dry-run by default where possible
-Любая опасная операция должна поддерживать:
-- `--dry-run`
-- `--confirm`
-- `--json`
+This keeps the public surface consistent with the current Python architecture and aligns with the most useful read-only patterns from the official Polymarket CLI without copying its architecture wholesale.
 
-### 3. Deterministic output
-CLI должен уметь печатать:
-- human view;
-- machine view (JSON).
+### 2. Read-only commands stay read-only
 
-### 4. Auditability
-Каждая команда должна логироваться с:
-- actor
-- timestamp
-- params hash
-- result
-- side effects
+Market discovery and public CLOB commands must not place, replace, or cancel orders. Only the execution module may ever own mutating trading behavior.
 
-## Основные CLI namespace
+### 3. Dry-run and paper remain the safe defaults
+
+When mutating commands are added later, they must default to `dry-run` or `paper` behavior where possible and require explicit confirmation for any higher-risk path. This does not apply to the current read-only market and CLOB commands.
+
+### 4. Deterministic human and machine output
+
+The CLI must support both operator-friendly output and script-friendly JSON output through one stable contract.
+
+### 5. Auditability over convenience
+
+Every meaningful command should be explainable after the fact through logs, artifacts, or replay data. The CLI is part of the operating boundary, not just a thin wrapper around APIs.
+
+## Global Output Contract
+
+All CLI commands should converge on one global output contract:
+
+- `--output table|json`
+- default: `table`
+- `--json` is a compatibility alias for `--output json`
+
+Primary rules:
+
+- human output is optimized for operator reading;
+- JSON output is optimized for scripts and automation;
+- successful JSON responses use normalized `snake_case` fields;
+- the user-facing JSON contract must not expose raw Gamma or CLOB wire payloads as the long-term public API;
+- command output should be deterministic so tests and replay tooling can rely on it.
+
+## JSON Error Contract
+
+When JSON output is requested, command and parser failures should use one structured error envelope:
+
+```json
+{
+  "ok": false,
+  "error": {
+    "code": "not_found",
+    "message": "market not found",
+    "resource": "market",
+    "identifier": "bitboy-convicted"
+  }
+}
+```
+
+Expected error codes include:
+
+- `not_found`
+- `request_failed`
+- `invalid_argument`
+- `unknown_command`
+- `usage_error`
+
+The exact message text may vary by command, but the envelope shape should remain stable.
+
+## Canonical CLI Namespaces
 
 ### `pm market`
-Работа с рынками, watchlists, snapshots, alerts.
 
-### `pm wallet`
-Работа с адресами, статистикой, copy configs.
+Canonical namespace for Gamma-backed market discovery and metadata lookup.
 
-### `pm arkham`
-Обогащение адресов, графы, dossiers, alerts.
+Primary read-only commands:
 
-### `pm strategy`
-Стратегии, сигналы, approve/reject.
+```text
+pm market search --query "btc"
+pm market show --slug <slug>
+pm market event --slug <slug>
+```
 
-### `pm exec`
-Dry-run/live execution, order status, cancel.
+Planned later additions may include list-style discovery or normalized series support, but only after the adapter layer and tests define a stable public contract.
 
-### `pm risk`
-Лимиты, kill switches, exposure tables.
+### `pm clob`
 
-### `pm ops`
-Health, metrics, reconciliation, replay, incidents.
+Canonical namespace for public read-only CLOB data.
 
-## Пример командного набора
+Primary read-only commands:
+
+```text
+pm clob book --token-id <id>
+pm clob price --token-id <id>
+```
+
+This namespace is the long-term home for public order book, pricing, midpoint, spread, and similar read-only CLOB operations.
+
+### Temporary compatibility aliases
+
+The following commands are temporary backward-compatible aliases and should be treated as deprecated in docs and help text:
+
+- `pm market book`
+- `pm market price`
+
+They exist only to avoid breaking existing read-only workflows during the namespace transition. They should not appear in the primary example set for the long-term CLI contract.
+
+### Future namespaces
+
+These namespaces remain part of the broader architecture, but are outside the current public read-only CLI scope:
+
+- `pm wallet`
+- `pm arkham`
+- `pm strategy`
+- `pm exec`
+- `pm risk`
+- `pm ops`
+
+Any future mutating behavior under these namespaces must continue to respect the execution-only boundary for order placement and cancellation.
+
+## Example Command Set
+
+Canonical examples:
 
 ```text
 pm market search --query "btc 15 min"
 pm market show --slug <slug>
 pm market event --slug <slug>
-pm market book --token-id <id>
-pm market price --token-id <id>
-pm market watch add --slug btc-updown-15m-...
-pm wallet add --address 0x...
-pm wallet copy enable --address 0x... --mode fixed --size 1
-pm arkham enrich --address 0x...
-pm strategy list
-pm exec dry-run --market <slug> --side yes --price 0.57 --size 5
-pm exec buy --market <slug> --side yes --price 0.57 --size 5 --confirm
-pm risk exposure
-pm ops health
+pm clob book --token-id <id>
+pm clob price --token-id <id>
 pm ops replay --from 2026-02-17T00:00:00Z --to 2026-02-17T12:00:00Z
 ```
 
-## Storage requirements
+Compatibility-only examples:
+
+```text
+pm market book --token-id <id>
+pm market price --token-id <id>
+```
+
+## Storage Requirements
+
+These are architecture targets, not a statement about the current implementation.
 
 ### Core database
-Postgres preferred.
+
+Postgres is the preferred future relational store once persistence is introduced.
 
 ### Cache / queue
-Redis for:
+
+Redis is the preferred future cache or queue layer for:
+
 - recent snapshots;
 - transient locks;
 - idempotency windows;
 - work queues.
 
 ### Event log
-Append-only log for:
+
+An append-only event log should exist for:
+
 - signals;
 - approvals;
 - trade intents;
@@ -106,9 +187,10 @@ Append-only log for:
 - reconciliations;
 - alerts.
 
-## Suggested database model
+## Suggested Database Model
 
 ### Core tables
+
 - `markets`
 - `market_snapshots`
 - `wallet_profiles`
@@ -125,6 +207,7 @@ Append-only log for:
 - `risk_limits`
 
 ### Optional later
+
 - `clusters`
 - `entities`
 - `news_briefs`
@@ -133,7 +216,9 @@ Append-only log for:
 ## Observability
 
 ### Structured logging
-Минимум:
+
+Minimum fields:
+
 - `timestamp`
 - `module`
 - `correlation_id`
@@ -145,6 +230,7 @@ Append-only log for:
 - `latency_ms`
 
 ### Metrics
+
 - order submit latency
 - market snapshot latency
 - websocket reconnect count
@@ -157,6 +243,7 @@ Append-only log for:
 - spread filter hit rate
 
 ### Alerts
+
 - execution failure burst
 - position reconciliation mismatch
 - stale market data
@@ -165,17 +252,18 @@ Append-only log for:
 - daily loss threshold breach
 - kill switch activated
 
-## Replay and postmortem
+## Replay and Postmortem
 
-Обязательный операционный режим:
-- восстановить состояние на timestamp T;
-- понять, какие сигналы пришли;
-- какие проверки прошли/не прошли;
-- какой ордер был отправлен;
-- какой fill получен;
-- почему позиция осталась открытой или была пропущена.
+Replay is a required operating mode. Operators should be able to:
 
-### Для этого нужно хранить
+- reconstruct system state at a timestamp `T`;
+- see which signals arrived;
+- inspect which checks passed or failed;
+- understand which intent or order lifecycle path was taken;
+- explain why a position remained open, was simulated, or was skipped.
+
+Required retained artifacts:
+
 - market snapshots
 - signal history
 - candidate intents
@@ -183,7 +271,9 @@ Append-only log for:
 - execution events
 - final position state
 
-## Risk console in CLI
+## Risk Console in CLI
+
+Representative future commands:
 
 ```text
 pm risk exposure
@@ -196,9 +286,10 @@ pm risk kill-switch off
 pm risk daily-stop show
 ```
 
-## Incident operations
+## Incident Operations
 
 ### Types of incidents
+
 - duplicate execution
 - stale data execution
 - missed cancel
@@ -209,29 +300,30 @@ pm risk daily-stop show
 - websocket data gap
 
 ### Incident workflow
+
 1. detect
 2. freeze or scope-limit
 3. reconcile
 4. produce postmortem
-5. patch rule/spec
-6. replay affected window
+5. patch rule or spec
+6. replay the affected window
 
-## MVP definition
+## MVP Definition
 
-CLI/ops считается готовым, если:
+CLI and operations support are considered minimally ready when:
 
-1. все боевые функции доступны из CLI;
-2. есть JSON output mode;
-3. есть audit trail;
-4. есть risk console;
-5. есть replay;
-6. kill switch работает глобально и на уровне стратегии;
-7. можно понять, что произошло после сбоя.
+1. the public read-only CLI surface is available through canonical namespaces;
+2. JSON output mode exists with a stable normalized contract;
+3. command behavior is auditable;
+4. replay workflows exist;
+5. a risk console can express operator controls;
+6. kill switch behavior is defined globally and at the strategy level;
+7. operators can understand what happened after a failure.
 
-## Phase 2 expansion
+## Later Expansion
 
-- TUI dashboard;
-- web control panel;
-- role-based access;
-- scheduled jobs UI;
-- alert routing in Slack/Telegram/Discord.
+- TUI dashboard
+- web control panel
+- role-based access
+- scheduled job UI
+- alert routing in Slack, Telegram, or Discord

@@ -88,11 +88,13 @@ py -3.11 -m venv .venv
 .venv\Scripts\pm market search --query btc --limit 2 --json
 .venv\Scripts\pm market show --slug bitboy-convicted --json
 .venv\Scripts\pm market event --slug bitcoin-above-on-march-16 --json
-.venv\Scripts\pm market book --token-id 75467129615908319583031474642658885479135630431889036121812713428992454630178 --json
-.venv\Scripts\pm market price --token-id 75467129615908319583031474642658885479135630431889036121812713428992454630178 --json
+.venv\Scripts\pm clob book --token-id 75467129615908319583031474642658885479135630431889036121812713428992454630178 --json
+.venv\Scripts\pm clob price --token-id 75467129615908319583031474642658885479135630431889036121812713428992454630178 --json
 ```
 
 The market CLI now uses Gamma public REST for discovery and public CLOB REST for books and prices. It remains read-only and does not use auth, wallets, CLOB trading, or execution logic.
+
+The canonical public read surface is `pm market ...` for discovery and `pm clob ...` for public CLOB reads. `pm market book` and `pm market price` should be treated as temporary compatibility aliases only until the namespace split is fully settled in code.
 
 ## Related Docs
 
@@ -104,3 +106,4 @@ The market CLI now uses Gamma public REST for discovery and public CLOB REST for
 - `docs/specs/05-strategy-orchestrator.md`
 - `docs/specs/06-cli-ops.md`
 - `docs/specs/07-codex-workflow.md`
+- `docs/research/polymarket-cli-analysis.md`
