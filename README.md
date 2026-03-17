@@ -88,11 +88,13 @@ py -3.11 -m venv .venv
 .venv\Scripts\pm market search --query btc --limit 2 --json
 .venv\Scripts\pm market show --slug bitboy-convicted --json
 .venv\Scripts\pm market event --slug bitcoin-above-on-march-16 --json
-.venv\Scripts\pm market book --token-id 75467129615908319583031474642658885479135630431889036121812713428992454630178 --json
-.venv\Scripts\pm market price --token-id 75467129615908319583031474642658885479135630431889036121812713428992454630178 --json
+.venv\Scripts\pm clob book --token-id 75467129615908319583031474642658885479135630431889036121812713428992454630178 --json
+.venv\Scripts\pm clob price --token-id 75467129615908319583031474642658885479135630431889036121812713428992454630178 --json
 ```
 
 The market CLI now uses Gamma public REST for discovery and public CLOB REST for books and prices. It remains read-only and does not use auth, wallets, CLOB trading, or execution logic.
+
+Part 02B defines `pm clob book` and `pm clob price` as the canonical public CLOB command surface. The current branch still exposes `pm market book` and `pm market price` until the compatibility alias migration is implemented in code.
 
 ## Related Docs
 

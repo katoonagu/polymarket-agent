@@ -53,7 +53,41 @@ Build reliable market discovery and monitoring without creating any order-placem
 - Operator can discover and inspect markets from CLI or internal interfaces
 - Watched markets can produce normalized snapshots
 - Recurring market resolution is deterministic for the first supported series
+- Canonical read-only CLI contracts are documented for both Gamma discovery and public CLOB reads
 - No read-only component contains direct execution logic
+
+### Part 02B: Official CLI Alignment
+
+**Objective**
+
+Align this repo's CLI documentation with the strongest read-only command-surface and output-contract patterns from the official `Polymarket/polymarket-cli`, without adopting its Rust architecture or authenticated command set.
+
+**Scope / Deliverables**
+
+- Upstream research note under `docs/research/`
+- Canonical namespace split for public reads:
+  - `pm market`
+  - `pm clob`
+- Global output contract for future CLI implementation:
+  - `--output table|json`
+  - `--json` compatibility alias
+- Structured JSON error contract for CLI failures
+- Alias and deprecation policy for temporary compatibility commands
+- README and CLI spec consistency for the canonical read-only surface
+
+**Non-goals**
+
+- Code changes
+- Adopting the official Rust CLI architecture
+- Authenticated wallet, approval, or trading command work
+- Any mutating or execution-capable CLI behavior
+
+**Exit Criteria**
+
+- Upstream analysis explicitly states what is adopted now, later, and rejected
+- `README.md`, `ROADMAP.md`, and `docs/specs/06-cli-ops.md` agree on the canonical public read command surface
+- The CLI spec documents normalized success JSON and structured JSON errors
+- `pm market book` and `pm market price` are documented as temporary aliases, not long-term canonical commands
 
 ## Phase 3: Paper Trading
 
