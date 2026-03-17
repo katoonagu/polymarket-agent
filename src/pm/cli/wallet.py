@@ -1,4 +1,4 @@
-"""Tracked-wallet registry and shadow-intelligence CLI commands."""
+"""Tracked-wallet registry, discovery, and wallet-intelligence CLI commands."""
 
 from __future__ import annotations
 
@@ -6,20 +6,23 @@ import typer
 
 from pm.cli.support import emit_command_error, emit_command_output
 from pm.data import DataClientError, DataNotFoundError, DataValidationError
-from pm.data.models import (
-    NormalizedActivity,
-    NormalizedCurrentPosition,
-    NormalizedTrade,
-)
+from pm.data.models import NormalizedActivity, NormalizedCurrentPosition, NormalizedTrade
 from pm.wallet import (
     TrackedWallet,
     WalletActivityResponse,
     WalletAlreadyTrackedError,
+    WalletCompareResponse,
+    WalletDiscoveryItem,
+    WalletHoldersDiscoveryResponse,
+    WalletLeaderboardDiscoveryResponse,
     WalletListResponse,
     WalletMutationResponse,
     WalletNotTrackedError,
     WalletPositionsResponse,
+    WalletRankTrackedResponse,
     WalletRegistryError,
+    WalletScoreComponent,
+    WalletScoreResponse,
     WalletSectionError,
     WalletShadowService,
     WalletSnapshotItem,
@@ -30,13 +33,31 @@ from pm.wallet import (
 
 app = typer.Typer(
     add_completion=False,
-    help="Local tracked-wallet registry and read-only shadow intelligence.",
+    help="Local tracked-wallet registry plus read-only discovery and wallet intelligence.",
     no_args_is_help=True,
 )
+discover_app = typer.Typer(
+    add_completion=False,
+    help="Non-mutating wallet discovery from public holder and leaderboard data.",
+    no_args_is_help=True,
+)
+rank_app = typer.Typer(
+    add_completion=False,
+    help="Deterministic tracked-wallet ranking commands.",
+    no_args_is_help=True,
+)
+app.add_typer(discover_app, name="discover")
+app.add_typer(rank_app, name="rank")
+
 ADDRESS_OPTION = typer.Option(
     ...,
     "--address",
     help="Tracked 0x-prefixed EVM wallet address.",
+)
+COMPARE_ADDRESS_OPTION = typer.Option(
+    ...,
+    "--address",
+    help="Provide exactly two public 0x-prefixed EVM wallet addresses.",
 )
 LABEL_OPTION = typer.Option(
     None,
@@ -52,6 +73,11 @@ NOTE_OPTION = typer.Option(
     None,
     "--note",
     help="Optional local note for the tracked wallet.",
+)
+MARKET_OPTION = typer.Option(
+    ...,
+    "--market",
+    help="Market slug or 0x-prefixed condition ID.",
 )
 JSON_OPTION = typer.Option(
     False,
@@ -259,6 +285,125 @@ def wallet_snapshot(
     )
 
 
+@discover_app.command("leaderboard")
+def discover_leaderboard(
+    ctx: typer.Context,
+    limit: int = REPORT_LIMIT_OPTION,
+    json_output: bool = JSON_OPTION,
+) -> None:
+    """Discover wallet candidates from the public trader leaderboard."""
+    try:
+        result = WalletShadowService().discover_leaderboard(limit=limit)
+    except WalletRegistryError as exc:
+        _emit_wallet_error(ctx, exc=exc, json_output=json_output)
+        raise typer.Exit(1) from exc
+
+    emit_command_output(
+        ctx,
+        result.model_dump(mode="json"),
+        text=_format_leaderboard_discovery(result),
+        local_json_output=json_output,
+    )
+
+
+@discover_app.command("holders")
+def discover_holders(
+    ctx: typer.Context,
+    market: str = MARKET_OPTION,
+    limit: int = REPORT_LIMIT_OPTION,
+    json_output: bool = JSON_OPTION,
+) -> None:
+    """Discover unique wallet candidates from a market's public holder rows."""
+    try:
+        result = WalletShadowService().discover_holders(market, limit=limit)
+    except WalletRegistryError as exc:
+        _emit_wallet_error(ctx, exc=exc, json_output=json_output)
+        raise typer.Exit(1) from exc
+    except DataValidationError as exc:
+        _emit_market_error(ctx, exc=exc, market=market, json_output=json_output)
+        raise typer.Exit(1) from exc
+
+    emit_command_output(
+        ctx,
+        result.model_dump(mode="json"),
+        text=_format_holders_discovery(result),
+        local_json_output=json_output,
+    )
+
+
+@app.command("score")
+def score_wallet(
+    ctx: typer.Context,
+    address: str = ADDRESS_OPTION,
+    json_output: bool = JSON_OPTION,
+) -> None:
+    """Calculate a deterministic public wallet score."""
+    try:
+        result = WalletShadowService().score_wallet(address)
+    except (WalletRegistryError, DataValidationError) as exc:
+        _emit_wallet_error(ctx, exc=exc, address=address, json_output=json_output)
+        raise typer.Exit(1) from exc
+
+    emit_command_output(
+        ctx,
+        result.model_dump(mode="json"),
+        text=_format_wallet_score(result),
+        local_json_output=json_output,
+    )
+
+
+@rank_app.command("tracked")
+def rank_tracked(
+    ctx: typer.Context,
+    json_output: bool = JSON_OPTION,
+) -> None:
+    """Rank all tracked wallets by deterministic public score."""
+    try:
+        result = WalletShadowService().rank_tracked_wallets()
+    except WalletRegistryError as exc:
+        _emit_wallet_error(ctx, exc=exc, json_output=json_output)
+        raise typer.Exit(1) from exc
+
+    emit_command_output(
+        ctx,
+        result.model_dump(mode="json"),
+        text=_format_wallet_rank(result),
+        local_json_output=json_output,
+    )
+
+
+@app.command("compare")
+def compare_wallets(
+    ctx: typer.Context,
+    address: list[str] = COMPARE_ADDRESS_OPTION,
+    json_output: bool = JSON_OPTION,
+) -> None:
+    """Compare exactly two public wallet scores."""
+    if len(address) != 2:
+        emit_command_error(
+            ctx,
+            code="invalid_argument",
+            message="Provide exactly two --address values.",
+            resource="wallet",
+            local_json_output=json_output,
+        )
+        raise typer.Exit(1)
+
+    try:
+        result = WalletShadowService().compare_wallets(address[0], address[1])
+    except (WalletRegistryError, DataValidationError) as exc:
+        identifier = address[0] if len(address) == 1 else None
+        _emit_wallet_error(ctx, exc=exc, address=identifier, json_output=json_output)
+        raise typer.Exit(1) from exc
+
+    emit_command_output(
+        ctx,
+        result.model_dump(mode="json"),
+        text=_format_wallet_compare(result),
+        local_json_output=json_output,
+    )
+
+
 def _emit_wallet_error(
     ctx: typer.Context,
     *,
@@ -272,6 +417,23 @@ def _emit_wallet_error(
         message=str(exc),
         resource="wallet",
         identifier=address.strip().lower() if address is not None else None,
+        local_json_output=json_output,
+    )
+
+
+def _emit_market_error(
+    ctx: typer.Context,
+    *,
+    exc: Exception,
+    market: str,
+    json_output: bool,
+) -> None:
+    emit_command_error(
+        ctx,
+        code="invalid_argument",
+        message=str(exc),
+        resource="market",
+        identifier=market.strip(),
         local_json_output=json_output,
     )
 
@@ -387,12 +549,153 @@ def _format_snapshot_item(snapshot_item: WalletSnapshotItem) -> str:
     return "\n".join(lines)
 
 
+def _format_leaderboard_discovery(response: WalletLeaderboardDiscoveryResponse) -> str:
+    lines = [f"Leaderboard candidates: {response.total}", "Items:"]
+    lines.append(
+        "\n\n".join(_format_discovery_item(item) for item in response.items)
+        if response.items
+        else "-"
+    )
+    if response.errors:
+        lines.append("Warnings:")
+        lines.extend(_format_section_error(error) for error in response.errors)
+    return "\n".join(lines)
+
+
+def _format_holders_discovery(response: WalletHoldersDiscoveryResponse) -> str:
+    lines = [
+        f"Market slug: {response.market_slug or '-'}",
+        f"Condition ID: {response.condition_id or '-'}",
+        f"Holder candidates: {response.total}",
+        "Items:",
+    ]
+    lines.append(
+        "\n\n".join(_format_discovery_item(item) for item in response.items)
+        if response.items
+        else "-"
+    )
+    if response.errors:
+        lines.append("Warnings:")
+        lines.extend(_format_section_error(error) for error in response.errors)
+    return "\n".join(lines)
+
+
+def _format_wallet_score(response: WalletScoreResponse) -> str:
+    lines = [
+        *_format_wallet_identity(response.address, response.tracked_wallet),
+        f"Total score: {_format_float(response.total_score)}",
+        f"Available weight: {_format_float(response.available_weight)}",
+        "Components:",
+    ]
+    for component_name, component in response.components.items():
+        lines.extend(_format_score_component(component_name, component))
+    if response.errors:
+        lines.append("Warnings:")
+        lines.extend(_format_section_error(error) for error in response.errors)
+    return "\n".join(lines)
+
+
+def _format_wallet_rank(response: WalletRankTrackedResponse) -> str:
+    if not response.items:
+        return "No tracked wallets."
+    return "\n\n".join(_format_rank_item(item.rank, item.score) for item in response.items)
+
+
+def _format_wallet_compare(response: WalletCompareResponse) -> str:
+    lines = [
+        "Left:",
+        _indent(_format_wallet_score(response.left)),
+        "Right:",
+        _indent(_format_wallet_score(response.right)),
+        f"Winner: {response.winner_address or 'tie'}",
+        f"Score delta: {_format_float(response.score_delta)}",
+        "Component deltas:",
+    ]
+    for component_name, delta in response.component_deltas.items():
+        lines.append(f"  {_component_label(component_name)}: {_format_float(delta)}")
+    return "\n".join(lines)
+
+
+def _format_rank_item(rank: int, score: WalletScoreResponse) -> str:
+    lines = [f"Rank: {rank}", *_format_wallet_identity(score.address, score.tracked_wallet)]
+    lines.append(f"Total score: {_format_float(score.total_score)}")
+    lines.append(
+        f"Leaderboard component: {_format_float(score.components['leaderboard_component'].score)}"
+    )
+    lines.append(
+        "Realized performance component: "
+        f"{_format_float(score.components['realized_performance_component'].score)}"
+    )
+    if score.errors:
+        lines.append("Warnings:")
+        lines.extend(_format_section_error(error) for error in score.errors)
+    return "\n".join(lines)
+
+
+def _format_discovery_item(item: WalletDiscoveryItem) -> str:
+    lines = [
+        *_format_wallet_identity(item.address, item.tracked_wallet),
+        f"Source: {item.source}",
+        f"Display name: {item.display_name or '-'}",
+        f"User name: {item.user_name or '-'}",
+        f"Rank: {item.rank if item.rank is not None else '-'}",
+        f"PnL: {item.pnl or '-'}",
+        f"Volume: {item.volume or '-'}",
+        f"Market slug: {item.market_slug or '-'}",
+        f"Condition ID: {item.condition_id or '-'}",
+        "Token exposures:",
+    ]
+    if item.token_exposures:
+        lines.extend(
+            f"  Token ID: {exposure.token_id}, Amount: {exposure.amount}, "
+            "Outcome index: "
+            f"{exposure.outcome_index if exposure.outcome_index is not None else '-'}"
+            for exposure in item.token_exposures
+        )
+    else:
+        lines.append("  -")
+    return "\n".join(lines)
+
+
+def _format_score_component(name: str, component: WalletScoreComponent) -> list[str]:
+    lines = [
+        f"  {_component_label(name)}:",
+        f"    Weight: {_format_float(component.weight)}",
+        f"    Available: {'yes' if component.available else 'no'}",
+        f"    Score: {_format_float(component.score)}",
+        "    Inputs:",
+    ]
+    if component.inputs:
+        lines.extend(f"      {key}: {value}" for key, value in component.inputs.items())
+    else:
+        lines.append("      -")
+    return lines
+
+
+def _component_label(name: str) -> str:
+    return name.replace("_", " ").replace(" component", "").title()
+
+
 def _format_section_error(error: WalletSectionError) -> str:
     return f"  {error.section}: {error.code} - {error.message}"
 
 
 def _format_metric_line(label: str, value: int | None) -> str:
     return f"{label}: {value if value is not None else '-'}"
+
+
+def _format_wallet_identity(address: str, tracked_wallet: TrackedWallet | None) -> list[str]:
+    lines = [f"Address: {address}", f"Tracked: {'yes' if tracked_wallet is not None else 'no'}"]
+    if tracked_wallet is not None:
+        lines.extend(
+            [
+                f"Label: {tracked_wallet.label or '-'}",
+                f"Tags: {', '.join(tracked_wallet.tags) if tracked_wallet.tags else '-'}",
+                f"Note: {tracked_wallet.note or '-'}",
+                f"Added at: {tracked_wallet.added_at}",
+            ]
+        )
+    return lines
 
 
 def _format_tracked_wallet(wallet: TrackedWallet) -> str:
@@ -456,3 +759,16 @@ def _format_position(item: NormalizedCurrentPosition) -> str:
             f"Percent PnL: {item.percent_pnl or '-'}",
         ]
     )
+
+
+def _format_float(value: float | None) -> str:
+    if value is None:
+        return "-"
+    text = f"{value:.2f}"
+    if "." in text:
+        text = text.rstrip("0").rstrip(".")
+    return text
+
+
+def _indent(text: str) -> str:
+    return "\n".join(f"  {line}" for line in text.splitlines())

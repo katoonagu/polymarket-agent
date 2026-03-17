@@ -104,6 +104,17 @@ class NormalizedTradedCount(BaseModel):
     traded: int
 
 
+class NormalizedLeaderboardEntry(BaseModel):
+    """Normalized public leaderboard row."""
+
+    address: str
+    rank: int | None = None
+    display_name: str | None = None
+    user_name: str | None = None
+    pnl: str | None = None
+    volume: str | None = None
+
+
 class TradesResponse(BaseModel):
     """Normalized trades response."""
 
@@ -142,4 +153,11 @@ class HoldersResponse(BaseModel):
     market_slug: str | None = None
     condition_id: str
     items: list[NormalizedHolder] = Field(default_factory=list)
+    total: int = 0
+
+
+class LeaderboardResponse(BaseModel):
+    """Normalized leaderboard response."""
+
+    items: list[NormalizedLeaderboardEntry] = Field(default_factory=list)
     total: int = 0

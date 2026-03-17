@@ -14,6 +14,7 @@ from pm.data import (
     NormalizedCurrentPosition,
     NormalizedHolder,
     NormalizedHoldingsValue,
+    NormalizedLeaderboardEntry,
     NormalizedOpenInterest,
     NormalizedTrade,
     NormalizedTradedCount,
@@ -309,6 +310,47 @@ def test_get_holdings_value_and_traded_count_normalize_summary_responses() -> No
     assert traded_route.called
     assert value == NormalizedHoldingsValue(user=USER, value="100.50")
     assert traded == NormalizedTradedCount(user=USER, traded=17)
+
+
+@respx.mock
+def test_get_leaderboard_calls_endpoint_and_normalizes_response() -> None:
+    route = respx.get(f"{DATA_URL}/v1/leaderboard").mock(
+        return_value=httpx.Response(
+            200,
+            json=[
+                {
+                    "proxyWallet": USER,
+                    "rank": 7,
+                    "displayName": "Alpha",
+                    "userName": "alpha_user",
+                    "pnl": "1234.56",
+                    "volume": "9876.54",
+                }
+            ],
+        )
+    )
+
+    with DataClient() as client:
+        result = client.get_leaderboard(limit=5, user=USER)
+
+    assert route.called
+    request = route.calls[0].request
+    assert request.url.params["category"] == "OVERALL"
+    assert request.url.params["timePeriod"] == "ALL"
+    assert request.url.params["orderBy"] == "PNL"
+    assert request.url.params["limit"] == "5"
+    assert request.url.params["user"] == USER
+    assert result.total == 1
+    assert result.items == [
+        NormalizedLeaderboardEntry(
+            address=USER,
+            rank=7,
+            display_name="Alpha",
+            user_name="alpha_user",
+            pnl="1234.56",
+            volume="9876.54",
+        )
+    ]
 
 
 @respx.mock

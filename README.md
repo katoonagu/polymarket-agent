@@ -98,7 +98,12 @@ py -3.11 -m venv .venv
 .venv\Scripts\pm data closed-positions --user <0x...> --json
 .venv\Scripts\pm data holders --market <market-slug-or-condition-id> --limit 20 --json
 .venv\Scripts\pm wallet add --address <0x...> --label "desk-1"
+.venv\Scripts\pm wallet discover leaderboard --limit 20 --json
+.venv\Scripts\pm wallet discover holders --market <market-slug-or-condition-id> --limit 20 --json
 .venv\Scripts\pm wallet summary --address <0x...> --json
+.venv\Scripts\pm wallet score --address <0x...> --json
+.venv\Scripts\pm wallet rank tracked --json
+.venv\Scripts\pm wallet compare --address <0x...> --address <0x...> --json
 .venv\Scripts\pm wallet snapshot --limit 20 --json
 ```
 
@@ -109,6 +114,17 @@ The current CLI is intentionally small. It is read-only, uses only public Gamma,
 `pm data` currently supports `trades`, `activity`, `positions`, `closed-positions`, `holders`, `open-interest`, `value`, and `traded`. For market-scoped reads, `--market` accepts either a market slug or a condition ID and resolves it through the public Gamma adapter before calling the Data API.
 
 `pm wallet` manages a local tracked-wallet registry at `.pm/state/wallets.json`. That file is gitignored, repo-local, and used only for read-only shadow intelligence in this phase. Tracked-wallet summaries and snapshots are built from the existing public Data API client; there is still no auth, signing, polling daemon, or live copy-trading.
+
+`pm wallet discover` is non-mutating. It surfaces candidate wallets from the public trader leaderboard and from public holder data without auto-adding them to the local registry.
+
+`pm wallet score`, `pm wallet rank tracked`, and `pm wallet compare` use a transparent deterministic score built from four weighted components:
+
+- `leaderboard_component` = `0.25`
+- `realized_performance_component` = `0.35`
+- `activity_component` = `0.20`
+- `footprint_component` = `0.20`
+
+Legitimate no-data cases score as available zeroes. Real request or parsing failures are returned as structured partial errors and are excluded from the available-weight denominator.
 
 ## Related Docs
 

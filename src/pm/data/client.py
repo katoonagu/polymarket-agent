@@ -13,11 +13,13 @@ from pm.data.models import (
     ActivityResponse,
     ClosedPositionsResponse,
     HoldersResponse,
+    LeaderboardResponse,
     NormalizedActivity,
     NormalizedClosedPosition,
     NormalizedCurrentPosition,
     NormalizedHolder,
     NormalizedHoldingsValue,
+    NormalizedLeaderboardEntry,
     NormalizedOpenInterest,
     NormalizedTrade,
     NormalizedTradedCount,
@@ -236,6 +238,40 @@ class DataClient:
             traded=traded,
         )
 
+    def get_leaderboard(
+        self,
+        *,
+        limit: int = DEFAULT_LIMIT,
+        user: str | None = None,
+        category: str = "OVERALL",
+        time_period: str = "ALL",
+        order_by: str = "PNL",
+    ) -> LeaderboardResponse:
+        """Fetch public trader leaderboard rows."""
+        normalized_user = validate_user_address(user) if user is not None else None
+        payload = self._get_json(
+            "/v1/leaderboard",
+            params={
+                "category": category,
+                "timePeriod": time_period,
+                "orderBy": order_by,
+                "limit": limit,
+                "user": normalized_user,
+            },
+        )
+        items = _ensure_leaderboard_items(payload)
+        entries: list[NormalizedLeaderboardEntry] = []
+
+        for item in items:
+            entry = _normalize_leaderboard_entry(item)
+            if entry is None:
+                continue
+            if normalized_user is not None and entry.address.lower() != normalized_user.lower():
+                continue
+            entries.append(entry)
+
+        return LeaderboardResponse(items=entries, total=len(entries))
+
     def _resolve_market_ref(self, market_ref: str) -> ResolvedMarket:
         normalized_ref = market_ref.strip()
         if not normalized_ref:
@@ -317,10 +353,57 @@ def _ensure_list(payload: Any, label: str) -> list[dict[str, Any]]:
     return [item for item in payload if isinstance(item, dict)]
 
 
+def _ensure_leaderboard_items(payload: Any) -> list[dict[str, Any]]:
+    if isinstance(payload, list):
+        return [item for item in payload if isinstance(item, dict)]
+
+    if isinstance(payload, dict):
+        for key in ("items", "results", "data", "leaderboard", "users"):
+            value = payload.get(key)
+            if isinstance(value, list):
+                return [item for item in value if isinstance(item, dict)]
+
+    raise DataClientError("Data API leaderboard response was not a list.")
+
+
 def _ensure_mapping(payload: Any, label: str) -> dict[str, Any]:
     if not isinstance(payload, dict):
         raise DataClientError(f"Data API {label} response was not an object.")
     return payload
+
+
+def _normalize_leaderboard_entry(payload: dict[str, Any]) -> NormalizedLeaderboardEntry | None:
+    address = _string_or_none(
+        payload.get("proxyWallet")
+        if "proxyWallet" in payload
+        else payload.get("address")
+        if "address" in payload
+        else payload.get("user")
+        if "user" in payload
+        else payload.get("wallet")
+    )
+    if address is None or not ADDRESS_RE.match(address):
+        return None
+
+    return NormalizedLeaderboardEntry(
+        address=address.lower(),
+        rank=_int_or_none(payload.get("rank"))
+        or _int_or_none(payload.get("position"))
+        or _int_or_none(payload.get("leaderboardPosition")),
+        display_name=_string_or_none(payload.get("displayName"))
+        or _string_or_none(payload.get("name")),
+        user_name=_string_or_none(payload.get("userName"))
+        or _string_or_none(payload.get("username"))
+        or _string_or_none(payload.get("pseudonym")),
+        pnl=_decimal_or_none(payload.get("pnl"))
+        or _decimal_or_none(payload.get("profit"))
+        or _decimal_or_none(payload.get("profitAndLoss"))
+        or _decimal_or_none(payload.get("totalPnl")),
+        volume=_decimal_or_none(payload.get("volume"))
+        or _decimal_or_none(payload.get("totalVolume"))
+        or _decimal_or_none(payload.get("volumeUsd"))
+        or _decimal_or_none(payload.get("amount")),
+    )
 
 
 def _normalize_holders(
@@ -413,4 +496,9 @@ def _decimal_or_default(value: Any, default: str) -> str:
 
 
 def _int_or_none(value: Any) -> int | None:
-    return value if isinstance(value, int) else None
+    if isinstance(value, int):
+        return value
+    if isinstance(value, str):
+        stripped = value.strip()
+        return int(stripped) if stripped.isdigit() else None
+    return None

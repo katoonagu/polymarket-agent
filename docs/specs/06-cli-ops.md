@@ -21,7 +21,7 @@ For the current phase, the CLI is read-only. It may read public Gamma, public CL
   - Trades, activity, positions, closed positions, holders, open interest, value, and traded-count reads
 - `pm wallet`
   - Local tracked-wallet registry and read-only shadow intelligence
-  - Registry CRUD, tracked-wallet summary, tracked-wallet trades/activity/positions, and compact snapshots
+  - Registry CRUD, non-mutating wallet discovery, deterministic wallet scoring, tracked-wallet summary, tracked-wallet trades/activity/positions, and compact snapshots
 
 ### Temporary compatibility aliases
 
@@ -132,10 +132,15 @@ Rules:
 pm wallet add --address <0x...> [--label <text>] [--tag <text>] [--note <text>]
 pm wallet list [--json]
 pm wallet remove --address <0x...>
+pm wallet discover leaderboard --limit <n> [--json]
+pm wallet discover holders --market <market-slug-or-condition-id> --limit <n> [--json]
 pm wallet summary --address <0x...> [--limit <n>] [--json]
 pm wallet trades --address <0x...> [--limit <n>] [--json]
 pm wallet activity --address <0x...> [--limit <n>] [--json]
 pm wallet positions --address <0x...> [--json]
+pm wallet score --address <0x...> [--json]
+pm wallet rank tracked [--json]
+pm wallet compare --address <0x...> --address <0x...> [--json]
 pm wallet snapshot [--limit <n>] [--json]
 ```
 
@@ -144,9 +149,17 @@ Rules:
 - Registry state lives only in `.pm/state/wallets.json`.
 - Registry state is local-only and must be gitignored.
 - Address-based `pm wallet` reads are tracked-wallet operations only; untracked addresses return a deterministic `not_tracked` error.
+- `pm wallet discover` is non-mutating. It may read the public trader leaderboard and public holder data, but it must not auto-add discovered wallets to the local registry.
+- `pm wallet score` and `pm wallet compare` accept any valid public address; `pm wallet rank tracked` is registry-only.
 - `summary` aggregates tracked metadata plus holdings value, traded count, open-position count, closed-position count, recent trades, and recent activity from the existing public Data API client.
 - `snapshot` is compact and deterministic: registry order, wallet metadata, holdings value, traded count, open-position count, closed-position count, and structured partial errors only.
-- `summary` and `snapshot` use partial-result mode for Data API sub-call failures; only registry and validation failures should make the whole command exit non-zero.
+- Discovery, scoring, compare, `summary`, and `snapshot` use partial-result mode for public sub-call failures; only registry and validation failures should make the whole command exit non-zero.
+- The deterministic wallet score uses these explicit component weights:
+  - `leaderboard_component = 0.25`
+  - `realized_performance_component = 0.35`
+  - `activity_component = 0.20`
+  - `footprint_component = 0.20`
+- Legitimate no-data cases count as available zero-score components. Request, transport, or parse failures become structured partial errors and are excluded from the available-weight denominator.
 - This namespace is still shadow intelligence only: no auth, no signing, no live copy-trading, no daemon, and no execution logic.
 
 ## Human Output Expectations

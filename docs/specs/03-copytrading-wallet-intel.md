@@ -262,12 +262,25 @@ This branch only implements the read-only foundation for the wallet module. The 
   - `pm wallet add`
   - `pm wallet list`
   - `pm wallet remove`
+  - `pm wallet discover leaderboard`
+  - `pm wallet discover holders`
   - `pm wallet summary`
   - `pm wallet trades`
   - `pm wallet activity`
   - `pm wallet positions`
+  - `pm wallet score`
+  - `pm wallet rank tracked`
+  - `pm wallet compare`
   - `pm wallet snapshot`
 - Shadow intelligence built only from the existing public Data API client
+- Non-mutating wallet discovery from:
+  - the public trader leaderboard
+  - public market holder data
+- Deterministic wallet scoring with transparent components and weights:
+  - `leaderboard_component = 0.25`
+  - `realized_performance_component = 0.35`
+  - `activity_component = 0.20`
+  - `footprint_component = 0.20`
 
 ### Explicitly not implemented now
 
@@ -292,3 +305,16 @@ This branch only implements the read-only foundation for the wallet module. The 
 - recent activity
 
 `pm wallet snapshot` is compact and registry-ordered. It returns per-wallet metadata, holdings value, traded count, current positions count, closed positions count, and structured partial errors when a public sub-call fails.
+
+`pm wallet discover` is non-mutating. It returns candidate wallets from public holder and leaderboard reads, preserves deterministic order, and includes local tracked-wallet metadata when the candidate is already in the registry.
+
+`pm wallet score --address <0x...>` works for any valid public address. The score is deterministic and explainable:
+
+- leaderboard rank contributes `25%`
+- realized PnL across closed positions contributes `35%`
+- traded-count activity contributes `20%`
+- current footprint contributes `20%`
+
+Legitimate no-data cases score as available zeroes. Real request or payload failures are returned as structured partial errors and are excluded from the available-weight denominator.
+
+`pm wallet rank tracked` scores and ranks all tracked wallets with deterministic tie-breaks. `pm wallet compare` preserves left/right input order and returns the winner, score delta, and per-component deltas without mutating the local registry.
