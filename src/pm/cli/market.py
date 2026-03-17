@@ -4,25 +4,29 @@ from __future__ import annotations
 
 import typer
 
-from pm.common.output import emit_output
+from pm.cli.clob import run_book_command, run_price_command
+from pm.cli.support import (
+    LOCAL_JSON_OPTION,
+    LOCAL_OUTPUT_OPTION,
+    emit_cli_error,
+    resolve_output_mode,
+)
+from pm.common import OutputMode, emit_output
 from pm.market import (
-    ClobClient,
-    ClobClientError,
-    ClobNotFoundError,
     GammaClient,
     GammaClientError,
     GammaNotFoundError,
     MarketSearchResponse,
-    NormalizedBook,
-    NormalizedBookLevel,
     NormalizedEvent,
     NormalizedMarket,
-    NormalizedPriceQuote,
 )
 
 app = typer.Typer(
     add_completion=False,
-    help="Read-only market discovery commands.",
+    help=(
+        "Read-only Gamma market discovery commands. "
+        "Series commands are deferred until a normalized Gamma series adapter exists."
+    ),
     no_args_is_help=True,
 )
 QUERY_OPTION = typer.Option(
@@ -40,16 +44,6 @@ SLUG_OPTION = typer.Option(
     ...,
     "--slug",
     help="Gamma market or event slug.",
-)
-TOKEN_ID_OPTION = typer.Option(
-    ...,
-    "--token-id",
-    help="Outcome token ID from `pm market show`.",
-)
-JSON_OPTION = typer.Option(
-    False,
-    "--json",
-    help="Emit deterministic JSON output for automation and tests.",
 )
 
 
@@ -107,155 +101,108 @@ def _render_event_block(event: NormalizedEvent) -> str:
     return "\n".join(lines)
 
 
-def _render_book_levels(title: str, levels: list[NormalizedBookLevel]) -> str:
-    lines = [f"{title}:"]
-    if not levels:
-        lines.append("  -")
-        return "\n".join(lines)
-
-    lines.extend(f"  price={level.price} size={level.size}" for level in levels)
-    return "\n".join(lines)
-
-
-def _render_book_block(book: NormalizedBook) -> str:
-    sections = [
-        f"Token ID: {book.token_id}",
-        f"Tick Size: {_format_optional(book.tick_size)}",
-        f"Min Order Size: {_format_optional(book.min_order_size)}",
-        _render_book_levels("Bids", book.bids),
-        _render_book_levels("Asks", book.asks),
-    ]
-    return "\n".join(sections)
-
-
-def _render_price_block(price_quote: NormalizedPriceQuote) -> str:
-    lines = [
-        f"Token ID: {price_quote.token_id}",
-        f"Buy Price: {_format_optional(price_quote.buy_price)}",
-        f"Sell Price: {_format_optional(price_quote.sell_price)}",
-    ]
-    return "\n".join(lines)
-
-
-def _emit_cli_error(
-    *,
-    resource: str,
-    identifier: str,
-    error: str,
-    message: str,
-    json_output: bool,
-) -> None:
-    payload = {
-        "error": error,
-        "message": message,
-        "resource": resource,
-        "slug": identifier,
-    }
-    emit_output(
-        payload,
-        json_output=json_output,
-        text=f"Error: {message}",
-    )
-    raise typer.Exit(code=1)
-
-
 @app.command("search")
 def search_market(
+    ctx: typer.Context,
     query: str = QUERY_OPTION,
     limit: int = LIMIT_OPTION,
-    json_output: bool = JSON_OPTION,
+    output: OutputMode | None = LOCAL_OUTPUT_OPTION,
+    json_output: bool = LOCAL_JSON_OPTION,
 ) -> None:
     """Search markets using Gamma public search."""
+    output_mode = resolve_output_mode(ctx, output=output, json_output=json_output)
+    normalized_query = query.strip()
     try:
         with GammaClient() as client:
-            results = client.search_markets(query, limit)
+            results = client.search_markets(normalized_query, limit)
     except GammaClientError as exc:
-        payload = {
-            "error": "request_failed",
-            "message": str(exc),
-            "query": query.strip(),
-            "resource": "market_search",
-        }
-        emit_output(payload, json_output=json_output, text=f"Error: {exc}")
-        raise typer.Exit(code=1) from exc
+        emit_cli_error(
+            code="request_failed",
+            message=str(exc),
+            resource="market_search",
+            identifier=normalized_query,
+            output_mode=output_mode,
+        )
 
-    result = MarketSearchResponse(query=query.strip(), results=results, total=len(results))
-    if json_output:
-        emit_output(result.model_dump(mode="json"), json_output=True, text="")
-        return
-
+    result = MarketSearchResponse(query=normalized_query, results=results, total=len(results))
     if not result.results:
         emit_output(
-            {"query": result.query, "total": result.total},
-            json_output=False,
+            result.model_dump(mode="json"),
+            output_mode=output_mode,
             text=f"No markets found for query '{result.query}'.",
         )
         return
 
     emit_output(
         result.model_dump(mode="json"),
-        json_output=False,
+        output_mode=output_mode,
         text="\n\n".join(_render_market_block(market) for market in result.results),
     )
 
 
 @app.command("show")
 def show_market(
+    ctx: typer.Context,
     slug: str = SLUG_OPTION,
-    json_output: bool = JSON_OPTION,
+    output: OutputMode | None = LOCAL_OUTPUT_OPTION,
+    json_output: bool = LOCAL_JSON_OPTION,
 ) -> None:
     """Show a normalized market by slug."""
+    output_mode = resolve_output_mode(ctx, output=output, json_output=json_output)
     try:
         with GammaClient() as client:
             market = client.get_market_by_slug(slug)
     except GammaNotFoundError as exc:
-        _emit_cli_error(
+        emit_cli_error(
+            code="not_found",
+            message=str(exc),
             resource="market",
             identifier=slug,
-            error="not_found",
-            message=str(exc),
-            json_output=json_output,
+            output_mode=output_mode,
         )
     except GammaClientError as exc:
-        _emit_cli_error(
+        emit_cli_error(
+            code="request_failed",
+            message=str(exc),
             resource="market",
             identifier=slug,
-            error="request_failed",
-            message=str(exc),
-            json_output=json_output,
+            output_mode=output_mode,
         )
 
     emit_output(
         market.model_dump(mode="json"),
-        json_output=json_output,
+        output_mode=output_mode,
         text=_render_market_block(market),
     )
 
 
 @app.command("event")
 def show_event(
+    ctx: typer.Context,
     slug: str = SLUG_OPTION,
-    json_output: bool = JSON_OPTION,
+    output: OutputMode | None = LOCAL_OUTPUT_OPTION,
+    json_output: bool = LOCAL_JSON_OPTION,
 ) -> None:
     """Show a normalized event and its child markets by slug."""
+    output_mode = resolve_output_mode(ctx, output=output, json_output=json_output)
     try:
         with GammaClient() as client:
             event = client.get_event_by_slug(slug)
     except GammaNotFoundError as exc:
-        _emit_cli_error(
+        emit_cli_error(
+            code="not_found",
+            message=str(exc),
             resource="event",
             identifier=slug,
-            error="not_found",
-            message=str(exc),
-            json_output=json_output,
+            output_mode=output_mode,
         )
     except GammaClientError as exc:
-        _emit_cli_error(
+        emit_cli_error(
+            code="request_failed",
+            message=str(exc),
             resource="event",
             identifier=slug,
-            error="request_failed",
-            message=str(exc),
-            json_output=json_output,
+            output_mode=output_mode,
         )
 
     market_blocks = "\n\n".join(_render_market_block(market) for market in event.markets)
@@ -265,72 +212,36 @@ def show_event(
 
     emit_output(
         event.model_dump(mode="json"),
-        json_output=json_output,
+        output_mode=output_mode,
         text=text,
     )
 
 
-@app.command("book")
-def show_book(
-    token_id: str = TOKEN_ID_OPTION,
-    json_output: bool = JSON_OPTION,
+@app.command("book", help="Deprecated alias for `pm clob book`.")
+def show_book_alias(
+    ctx: typer.Context,
+    token_id: str = typer.Option(
+        ...,
+        "--token-id",
+        help="Outcome token ID from `pm market show`.",
+    ),
+    output: OutputMode | None = LOCAL_OUTPUT_OPTION,
+    json_output: bool = LOCAL_JSON_OPTION,
 ) -> None:
-    """Show a public order book for a token ID."""
-    try:
-        with ClobClient() as client:
-            book = client.get_book(token_id)
-    except ClobNotFoundError as exc:
-        _emit_cli_error(
-            resource="book",
-            identifier=token_id,
-            error="not_found",
-            message=str(exc),
-            json_output=json_output,
-        )
-    except ClobClientError as exc:
-        _emit_cli_error(
-            resource="book",
-            identifier=token_id,
-            error="request_failed",
-            message=str(exc),
-            json_output=json_output,
-        )
-
-    emit_output(
-        book.model_dump(mode="json"),
-        json_output=json_output,
-        text=_render_book_block(book),
-    )
+    """Deprecated alias for `pm clob book`."""
+    run_book_command(ctx=ctx, token_id=token_id, output=output, json_output=json_output)
 
 
-@app.command("price")
-def show_price(
-    token_id: str = TOKEN_ID_OPTION,
-    json_output: bool = JSON_OPTION,
+@app.command("price", help="Deprecated alias for `pm clob price`.")
+def show_price_alias(
+    ctx: typer.Context,
+    token_id: str = typer.Option(
+        ...,
+        "--token-id",
+        help="Outcome token ID from `pm market show`.",
+    ),
+    output: OutputMode | None = LOCAL_OUTPUT_OPTION,
+    json_output: bool = LOCAL_JSON_OPTION,
 ) -> None:
-    """Show public BUY and SELL prices for a token ID."""
-    try:
-        with ClobClient() as client:
-            price_quote = client.get_prices(token_id)
-    except ClobNotFoundError as exc:
-        _emit_cli_error(
-            resource="price",
-            identifier=token_id,
-            error="not_found",
-            message=str(exc),
-            json_output=json_output,
-        )
-    except ClobClientError as exc:
-        _emit_cli_error(
-            resource="price",
-            identifier=token_id,
-            error="request_failed",
-            message=str(exc),
-            json_output=json_output,
-        )
-
-    emit_output(
-        price_quote.model_dump(mode="json"),
-        json_output=json_output,
-        text=_render_price_block(price_quote),
-    )
+    """Deprecated alias for `pm clob price`."""
+    run_price_command(ctx=ctx, token_id=token_id, output=output, json_output=json_output)

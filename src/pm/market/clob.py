@@ -9,7 +9,15 @@ import httpx
 
 from pm import __version__
 from pm.market.exceptions import ClobClientError, ClobNotFoundError
-from pm.market.models import ClobBookWire, NormalizedBook, NormalizedPriceQuote
+from pm.market.models import (
+    ClobBookWire,
+    ClobMidpointWire,
+    ClobSpreadWire,
+    NormalizedBook,
+    NormalizedMidpointQuote,
+    NormalizedPriceQuote,
+    NormalizedSpreadQuote,
+)
 
 DEFAULT_CLOB_URL = "https://clob.polymarket.com"
 DEFAULT_TIMEOUT_SECONDS = 10.0
@@ -74,6 +82,28 @@ class ClobClient:
             buy_price=token_prices.get("BUY"),
             sell_price=token_prices.get("SELL"),
         )
+
+    def get_midpoint(self, token_id: str) -> NormalizedMidpointQuote:
+        """Fetch the public midpoint for a token ID."""
+        payload = self._request_json(
+            "GET",
+            "/midpoint",
+            params={"token_id": token_id},
+            not_found=("midpoint", token_id),
+        )
+        midpoint = ClobMidpointWire.model_validate(payload)
+        return NormalizedMidpointQuote.from_wire(token_id=token_id, midpoint=midpoint)
+
+    def get_spread(self, token_id: str) -> NormalizedSpreadQuote:
+        """Fetch the public spread for a token ID."""
+        payload = self._request_json(
+            "GET",
+            "/spread",
+            params={"token_id": token_id},
+            not_found=("spread", token_id),
+        )
+        spread = ClobSpreadWire.model_validate(payload)
+        return NormalizedSpreadQuote.from_wire(token_id=token_id, spread=spread)
 
     def _request_json(
         self,

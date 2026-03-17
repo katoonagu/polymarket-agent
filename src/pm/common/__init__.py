@@ -1,5 +1,5 @@
 """Shared utilities for the bootstrap scaffold."""
 
-from pm.common.output import emit_output
+from pm.common.output import OutputMode, emit_output
 
-__all__ = ["emit_output"]
+__all__ = ["OutputMode", "emit_output"]

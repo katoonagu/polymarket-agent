@@ -187,6 +187,22 @@ class ClobBookWire(BaseModel):
     min_order_size: str | None = None
 
 
+class ClobMidpointWire(BaseModel):
+    """Raw midpoint payload from the public CLOB API."""
+
+    model_config = ConfigDict(extra="ignore")
+
+    midpoint: str = Field(alias="mid")
+
+
+class ClobSpreadWire(BaseModel):
+    """Raw spread payload from the public CLOB API."""
+
+    model_config = ConfigDict(extra="ignore")
+
+    spread: str
+
+
 class NormalizedBookLevel(BaseModel):
     """Normalized book level exposed by the CLI and CLOB adapter."""
 
@@ -226,3 +242,27 @@ class NormalizedPriceQuote(BaseModel):
     token_id: str
     buy_price: str | None = None
     sell_price: str | None = None
+
+
+class NormalizedMidpointQuote(BaseModel):
+    """Normalized public midpoint quote for a token."""
+
+    token_id: str
+    midpoint: str
+
+    @classmethod
+    def from_wire(cls, *, token_id: str, midpoint: ClobMidpointWire) -> Self:
+        """Normalize a raw midpoint payload."""
+        return cls(token_id=token_id, midpoint=midpoint.midpoint)
+
+
+class NormalizedSpreadQuote(BaseModel):
+    """Normalized public spread quote for a token."""
+
+    token_id: str
+    spread: str
+
+    @classmethod
+    def from_wire(cls, *, token_id: str, spread: ClobSpreadWire) -> Self:
+        """Normalize a raw spread payload."""
+        return cls(token_id=token_id, spread=spread.spread)
