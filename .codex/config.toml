@@ -6,4 +6,4 @@ allow_login_shell = false
 web_search = "cached"
 
 [windows]
-sandbox = "elevated"
+sandbox = "unelevated"

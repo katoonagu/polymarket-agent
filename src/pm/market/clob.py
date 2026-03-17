@@ -1,4 +1,4 @@
-"""Public read-only CLOB client for books and prices."""
+"""Public read-only CLOB client for books, prices, midpoint, and spread."""
 
 from __future__ import annotations
 
@@ -9,7 +9,13 @@ import httpx
 
 from pm import __version__
 from pm.market.exceptions import ClobClientError, ClobNotFoundError
-from pm.market.models import ClobBookWire, NormalizedBook, NormalizedPriceQuote
+from pm.market.models import (
+    ClobBookWire,
+    NormalizedBook,
+    NormalizedMidpointQuote,
+    NormalizedPriceQuote,
+    NormalizedSpreadQuote,
+)
 
 DEFAULT_CLOB_URL = "https://clob.polymarket.com"
 DEFAULT_TIMEOUT_SECONDS = 10.0
@@ -75,6 +81,38 @@ class ClobClient:
             sell_price=token_prices.get("SELL"),
         )
 
+    def get_midpoint(self, token_id: str) -> NormalizedMidpointQuote:
+        """Fetch the public midpoint for a token ID."""
+        payload = self._request_json(
+            "GET",
+            "/midpoint",
+            params={"token_id": token_id},
+            not_found=("midpoint", token_id),
+        )
+        midpoint = self._extract_scalar_field(
+            payload,
+            field_name="mid",
+            resource="midpoint",
+            token_id=token_id,
+        )
+        return NormalizedMidpointQuote(token_id=token_id, midpoint=midpoint)
+
+    def get_spread(self, token_id: str) -> NormalizedSpreadQuote:
+        """Fetch the public spread for a token ID."""
+        payload = self._request_json(
+            "GET",
+            "/spread",
+            params={"token_id": token_id},
+            not_found=("spread", token_id),
+        )
+        spread = self._extract_scalar_field(
+            payload,
+            field_name="spread",
+            resource="spread",
+            token_id=token_id,
+        )
+        return NormalizedSpreadQuote(token_id=token_id, spread=spread)
+
     def _request_json(
         self,
         method: str,
@@ -118,3 +156,21 @@ class ClobClient:
             if value is not None:
                 prices[side] = str(value)
         return prices
+
+    def _extract_scalar_field(
+        self,
+        payload: Any,
+        *,
+        field_name: str,
+        resource: str,
+        token_id: str,
+    ) -> str:
+        if not isinstance(payload, dict):
+            msg = f"CLOB returned an unexpected {resource} payload shape."
+            raise ClobClientError(msg)
+
+        value = payload.get(field_name)
+        if value is None:
+            raise ClobNotFoundError(resource=resource, identifier=token_id)
+
+        return str(value)

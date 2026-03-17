@@ -14,7 +14,9 @@ from pm.market.models import (
     NormalizedBookLevel,
     NormalizedEvent,
     NormalizedMarket,
+    NormalizedMidpointQuote,
     NormalizedPriceQuote,
+    NormalizedSpreadQuote,
 )
 
 __all__ = [
@@ -29,5 +31,7 @@ __all__ = [
     "NormalizedBookLevel",
     "NormalizedEvent",
     "NormalizedMarket",
+    "NormalizedMidpointQuote",
     "NormalizedPriceQuote",
+    "NormalizedSpreadQuote",
 ]

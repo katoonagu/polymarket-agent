@@ -26,6 +26,10 @@ def test_clob_smoke_round_trip() -> None:
     with ClobClient() as clob_client:
         book = clob_client.get_book(token_id)
         prices = clob_client.get_prices(token_id)
+        midpoint = clob_client.get_midpoint(token_id)
+        spread = clob_client.get_spread(token_id)
 
     assert book.token_id == token_id
     assert prices.token_id == token_id
+    assert midpoint.token_id == token_id
+    assert spread.token_id == token_id

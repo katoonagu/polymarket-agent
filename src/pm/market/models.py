@@ -226,3 +226,17 @@ class NormalizedPriceQuote(BaseModel):
     token_id: str
     buy_price: str | None = None
     sell_price: str | None = None
+
+
+class NormalizedMidpointQuote(BaseModel):
+    """Normalized midpoint quote for a token."""
+
+    token_id: str
+    midpoint: str
+
+
+class NormalizedSpreadQuote(BaseModel):
+    """Normalized spread quote for a token."""
+
+    token_id: str
+    spread: str

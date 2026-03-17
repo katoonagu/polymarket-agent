@@ -85,7 +85,7 @@ This repo now includes a minimal Python 3.11+ package scaffold for read-only mar
 py -3.11 -m venv .venv
 .venv\Scripts\python -m pip install -e ".[dev]"
 .venv\Scripts\pm --help
-.venv\Scripts\pm market search --query btc --limit 2 --json
+.venv\Scripts\pm --output json market search --query btc --limit 2
 .venv\Scripts\pm market show --slug bitboy-convicted --json
 .venv\Scripts\pm market event --slug bitcoin-above-on-march-16 --json
 .venv\Scripts\pm clob book --token-id 75467129615908319583031474642658885479135630431889036121812713428992454630178 --json
@@ -94,7 +94,9 @@ py -3.11 -m venv .venv
 
 The market CLI now uses Gamma public REST for discovery and public CLOB REST for books and prices. It remains read-only and does not use auth, wallets, CLOB trading, or execution logic.
 
-The canonical public read surface is `pm market ...` for discovery and `pm clob ...` for public CLOB reads. `pm market book` and `pm market price` should be treated as temporary compatibility aliases only until the namespace split is fully settled in code.
+Commands support a root-level `--output table|json`, and command-local `--json` remains a compatibility alias during the transition.
+
+The canonical public read surface is `pm market ...` for discovery and `pm clob ...` for public CLOB reads. `pm market book` and `pm market price` should be treated as temporary compatibility aliases only until the namespace split is fully settled in code. Series support is deferred until a normalized Gamma series adapter exists.
 
 ## Related Docs
 
