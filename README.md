@@ -77,6 +77,19 @@ scripts/                         Development and repo automation scripts
 - No live wallet automation.
 - No new dependencies.
 
+## Python Bootstrap
+
+This repo now includes a minimal Python 3.11+ scaffold for read-only market discovery wiring only.
+
+```powershell
+py -3.11 -m venv .venv
+.venv\Scripts\python -m pip install -e ".[dev]"
+.venv\Scripts\pm --help
+.venv\Scripts\pm market search --query btc --json
+```
+
+The initial CLI is intentionally small. It is read-only, does not call Polymarket yet, and does not include wallet auth, order placement, websocket, database, or execution logic.
+
 ## Related Docs
 
 - `docs/specs/README.md`
