@@ -27,6 +27,9 @@
 - `strategy`
   - Purpose: strategy definitions, signal evaluation, orchestration, approvals, and conflict resolution.
   - Spec: `docs/specs/05-strategy-orchestrator.md`
+- `data`
+  - Purpose: normalized read-only Data API access for public user and market analytics.
+  - Spec: `docs/specs/06-cli-ops.md`
 - `cli` and `ops`
   - Purpose: operator workflows, replay, audit visibility, and operational controls.
   - Spec: `docs/specs/06-cli-ops.md`
@@ -38,6 +41,7 @@ docs/specs/                      Source-of-truth module and workflow specs
 src/pm/
   execution/                     Execution-only order handling boundary
   market/                        Read-only market discovery and monitoring
+  data/                          Read-only Data API clients and normalized models
   wallet/                        Wallet intelligence and copy-trade signals
   arkham/                        Arkham intelligence and enrichment
   strategy/                      Strategy and orchestration logic
@@ -90,11 +94,16 @@ py -3.11 -m venv .venv
 .venv\Scripts\pm market event --slug <event-slug> --json
 .venv\Scripts\pm clob book --token-id <token-id> --json
 .venv\Scripts\pm clob price --token-id <token-id> --json
+.venv\Scripts\pm data trades --user <0x...> --limit 20 --json
+.venv\Scripts\pm data closed-positions --user <0x...> --json
+.venv\Scripts\pm data holders --market <market-slug-or-condition-id> --limit 20 --json
 ```
 
-The current CLI is intentionally small. It is read-only, uses only public Gamma and public CLOB endpoints, and does not include wallet auth, order placement, websocket, database, or execution logic.
+The current CLI is intentionally small. It is read-only, uses only public Gamma, public CLOB, and public Data API endpoints, and does not include wallet auth, order placement, websocket, database, or execution logic.
 
 `pm market book` and `pm market price` remain temporary compatibility aliases for `pm clob book` and `pm clob price`.
+
+`pm data` currently supports `trades`, `activity`, `positions`, `closed-positions`, `holders`, `open-interest`, `value`, and `traded`. For market-scoped reads, `--market` accepts either a market slug or a condition ID and resolves it through the public Gamma adapter before calling the Data API.
 
 ## Related Docs
 

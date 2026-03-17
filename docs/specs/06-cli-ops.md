@@ -16,6 +16,9 @@ For the current phase, the CLI is read-only. It may read public Gamma and public
 - `pm clob`
   - Public CLOB order book and price reads
   - Book, price, midpoint, and spread
+- `pm data`
+  - Public Data API reads
+  - Trades, activity, positions, closed positions, holders, open interest, value, and traded-count reads
 
 ### Temporary compatibility aliases
 
@@ -98,6 +101,27 @@ pm clob spread --token-id <id> [--json]
 ```
 
 These commands are public and read-only. They must not depend on auth, private keys, trading SDKs, or websocket sessions.
+
+### Public Data API reads
+
+```text
+pm data trades --user <0x...> [--limit <n>] [--json]
+pm data activity --user <0x...> [--limit <n>] [--json]
+pm data positions --user <0x...> [--json]
+pm data closed-positions --user <0x...> [--json]
+pm data holders --market <market-slug-or-condition-id> [--limit <n>] [--json]
+pm data open-interest --market <market-slug-or-condition-id> [--json]
+pm data value --user <0x...> [--json]
+pm data traded --user <0x...> [--json]
+```
+
+Rules:
+
+- `--user` must be a public EVM address in `0x` + 40 hex format.
+- `--market` may be either a market slug or a `0x` + 64 hex condition ID.
+- Market references are resolved through the public Gamma adapter before Data API calls when needed.
+- JSON output remains normalized, deterministic, and snake_case.
+- These commands are public and read-only. They must not depend on auth, private keys, websocket sessions, or local persistence.
 
 ## Human Output Expectations
 

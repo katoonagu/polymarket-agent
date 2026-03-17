@@ -13,6 +13,10 @@ from pm.cli.app import app
 runner = CliRunner()
 GAMMA_URL = "https://gamma-api.polymarket.com"
 CLOB_URL = "https://clob.polymarket.com"
+DATA_URL = "https://data-api.polymarket.com"
+USER = "0x1111111111111111111111111111111111111111"
+CONDITION_ID = "0x" + ("a" * 64)
+MARKET_SLUG = "btc-above-100k"
 
 
 def test_root_help() -> None:
@@ -21,6 +25,7 @@ def test_root_help() -> None:
     assert result.exit_code == 0
     assert "market" in result.stdout
     assert "clob" in result.stdout
+    assert "data" in result.stdout
 
 
 def test_market_help() -> None:
@@ -43,6 +48,20 @@ def test_clob_help() -> None:
     assert "price" in result.stdout
     assert "midpoint" in result.stdout
     assert "spread" in result.stdout
+
+
+def test_data_help() -> None:
+    result = runner.invoke(app, ["data", "--help"])
+
+    assert result.exit_code == 0
+    assert "trades" in result.stdout
+    assert "activity" in result.stdout
+    assert "positions" in result.stdout
+    assert "closed-positions" in result.stdout
+    assert "holders" in result.stdout
+    assert "open-interest" in result.stdout
+    assert "value" in result.stdout
+    assert "traded" in result.stdout
 
 
 @respx.mock
@@ -262,6 +281,296 @@ def test_market_show_event_slug_hint_json() -> None:
     }
 
 
+@respx.mock
+def test_data_trades_json() -> None:
+    respx.get(f"{DATA_URL}/trades").mock(
+        return_value=httpx.Response(
+            200,
+            json=[
+                {
+                    "proxyWallet": USER,
+                    "slug": MARKET_SLUG,
+                    "conditionId": CONDITION_ID,
+                    "asset": "100",
+                    "side": "BUY",
+                    "outcome": "Yes",
+                    "price": "0.45",
+                    "size": "10",
+                    "timestamp": 1710000000,
+                    "transactionHash": "0xtrade",
+                }
+            ],
+        )
+    )
+
+    result = runner.invoke(app, ["data", "trades", "--user", USER, "--limit", "1", "--json"])
+
+    assert result.exit_code == 0
+    payload = json.loads(result.stdout)
+    assert payload == {
+        "items": [
+            {
+                "condition_id": CONDITION_ID,
+                "market_slug": MARKET_SLUG,
+                "outcome": "Yes",
+                "price": "0.45",
+                "side": "BUY",
+                "size": "10",
+                "timestamp": 1710000000,
+                "token_id": "100",
+                "transaction_hash": "0xtrade",
+                "user": USER,
+            }
+        ],
+        "total": 1,
+        "user": USER,
+    }
+
+
+@respx.mock
+def test_data_activity_json() -> None:
+    respx.get(f"{DATA_URL}/activity").mock(
+        return_value=httpx.Response(
+            200,
+            json=[
+                {
+                    "proxyWallet": USER,
+                    "slug": MARKET_SLUG,
+                    "conditionId": CONDITION_ID,
+                    "asset": "100",
+                    "type": "TRADE",
+                    "side": "SELL",
+                    "outcome": "No",
+                    "price": "0.55",
+                    "size": "7",
+                    "usdcSize": "3.85",
+                    "timestamp": 1710000100,
+                    "transactionHash": "0xactivity",
+                }
+            ],
+        )
+    )
+
+    result = runner.invoke(app, ["data", "activity", "--user", USER, "--limit", "1", "--json"])
+
+    assert result.exit_code == 0
+    payload = json.loads(result.stdout)
+    assert payload["items"][0]["activity_type"] == "TRADE"
+    assert payload["items"][0]["usdc_size"] == "3.85"
+
+
+@respx.mock
+def test_data_positions_json() -> None:
+    respx.get(f"{DATA_URL}/positions").mock(
+        return_value=httpx.Response(
+            200,
+            json=[
+                {
+                    "proxyWallet": USER,
+                    "slug": MARKET_SLUG,
+                    "conditionId": CONDITION_ID,
+                    "asset": "100",
+                    "outcome": "Yes",
+                    "size": "12",
+                    "avgPrice": "0.41",
+                    "initialValue": "4.92",
+                    "currentValue": "5.52",
+                    "cashPnl": "0.60",
+                    "percentPnl": "12.19",
+                }
+            ],
+        )
+    )
+
+    result = runner.invoke(app, ["data", "positions", "--user", USER, "--json"])
+
+    assert result.exit_code == 0
+    payload = json.loads(result.stdout)
+    assert payload["items"][0]["current_value"] == "5.52"
+    assert payload["items"][0]["percent_pnl"] == "12.19"
+
+
+@respx.mock
+def test_data_closed_positions_json() -> None:
+    respx.get(f"{DATA_URL}/closed-positions").mock(
+        return_value=httpx.Response(
+            200,
+            json=[
+                {
+                    "proxyWallet": USER,
+                    "slug": MARKET_SLUG,
+                    "conditionId": CONDITION_ID,
+                    "asset": "100",
+                    "outcome": "Yes",
+                    "avgPrice": "0.40",
+                    "totalBought": "10",
+                    "realizedPnl": "1.25",
+                    "curPrice": "0.53",
+                    "timestamp": 1710000200,
+                }
+            ],
+        )
+    )
+
+    result = runner.invoke(app, ["data", "closed-positions", "--user", USER, "--json"])
+
+    assert result.exit_code == 0
+    payload = json.loads(result.stdout)
+    assert payload["items"][0]["realized_pnl"] == "1.25"
+    assert payload["items"][0]["current_price"] == "0.53"
+
+
+@respx.mock
+def test_data_holders_json_with_slug_resolution() -> None:
+    respx.get(f"{GAMMA_URL}/markets/slug/{MARKET_SLUG}").mock(
+        return_value=httpx.Response(
+            200,
+            json=_market_payload(slug=MARKET_SLUG, question="Will BTC reach 100k?"),
+        )
+    )
+    respx.get(f"{DATA_URL}/holders").mock(
+        return_value=httpx.Response(
+            200,
+            json=[
+                {
+                    "token": "100",
+                    "holders": [
+                        {
+                            "proxyWallet": USER,
+                            "amount": "5",
+                            "name": "Alice",
+                            "pseudonym": "alice",
+                            "outcomeIndex": 0,
+                        }
+                    ],
+                }
+            ],
+        )
+    )
+
+    result = runner.invoke(
+        app,
+        ["data", "holders", "--market", MARKET_SLUG, "--limit", "1", "--json"],
+    )
+
+    assert result.exit_code == 0
+    payload = json.loads(result.stdout)
+    assert payload == {
+        "condition_id": CONDITION_ID,
+        "items": [
+            {
+                "amount": "5",
+                "condition_id": CONDITION_ID,
+                "holder_address": USER,
+                "market_slug": MARKET_SLUG,
+                "name": "Alice",
+                "outcome_index": 0,
+                "pseudonym": "alice",
+                "rank": 1,
+                "token_id": "100",
+            }
+        ],
+        "market_slug": MARKET_SLUG,
+        "total": 1,
+    }
+
+
+@respx.mock
+def test_data_open_interest_json_with_condition_id() -> None:
+    respx.get(f"{GAMMA_URL}/markets").mock(
+        return_value=httpx.Response(
+            200,
+            json=[_market_payload(slug=MARKET_SLUG, question="Will BTC reach 100k?")],
+        )
+    )
+    respx.get(f"{DATA_URL}/oi").mock(
+        return_value=httpx.Response(200, json=[{"market": CONDITION_ID, "value": "123.45"}])
+    )
+
+    result = runner.invoke(app, ["data", "open-interest", "--market", CONDITION_ID, "--json"])
+
+    assert result.exit_code == 0
+    payload = json.loads(result.stdout)
+    assert payload == {
+        "condition_id": CONDITION_ID,
+        "market_slug": MARKET_SLUG,
+        "open_interest": "123.45",
+    }
+
+
+@respx.mock
+def test_data_value_and_traded_json() -> None:
+    respx.get(f"{DATA_URL}/value").mock(
+        return_value=httpx.Response(200, json={"user": USER, "value": "100.50"})
+    )
+    respx.get(f"{DATA_URL}/traded").mock(
+        return_value=httpx.Response(200, json={"user": USER, "traded": 17})
+    )
+
+    value_result = runner.invoke(app, ["data", "value", "--user", USER, "--json"])
+    traded_result = runner.invoke(app, ["data", "traded", "--user", USER, "--json"])
+
+    assert value_result.exit_code == 0
+    assert traded_result.exit_code == 0
+    assert json.loads(value_result.stdout) == {"user": USER, "value": "100.50"}
+    assert json.loads(traded_result.stdout) == {"traded": 17, "user": USER}
+
+
+@respx.mock
+def test_root_output_json_for_data_command() -> None:
+    respx.get(f"{DATA_URL}/traded").mock(
+        return_value=httpx.Response(200, json={"user": USER, "traded": 17})
+    )
+
+    result = runner.invoke(app, ["--output", "json", "data", "traded", "--user", USER])
+
+    assert result.exit_code == 0
+    assert json.loads(result.stdout) == {"traded": 17, "user": USER}
+
+
+def test_data_invalid_wallet_json_error() -> None:
+    result = runner.invoke(app, ["data", "trades", "--user", "bad-wallet", "--json"])
+
+    assert result.exit_code == 1
+    assert json.loads(result.stdout) == {
+        "error": {
+            "code": "invalid_argument",
+            "identifier": "bad-wallet",
+            "message": "Wallet addresses must use 0x followed by 40 hex characters.",
+            "resource": "user",
+        },
+        "ok": False,
+    }
+
+
+def test_data_invalid_condition_id_json_error() -> None:
+    result = runner.invoke(app, ["data", "holders", "--market", "0x1234", "--json"])
+
+    assert result.exit_code == 1
+    assert json.loads(result.stdout) == {
+        "error": {
+            "code": "invalid_argument",
+            "identifier": "0x1234",
+            "message": "Condition IDs must use 0x followed by 64 hex characters.",
+            "resource": "market",
+        },
+        "ok": False,
+    }
+
+
+def _market_payload(*, slug: str, question: str) -> dict[str, object]:
+    return {
+        "slug": slug,
+        "question": question,
+        "active": True,
+        "closed": False,
+        "enableOrderBook": True,
+        "conditionId": CONDITION_ID,
+        "clobTokenIds": ["100", "101"],
+        "outcomes": ["Yes", "No"],
+    }
+
+
 def _event_payload() -> dict[str, object]:
     return {
         "slug": "bitcoin-event",
@@ -270,15 +579,6 @@ def _event_payload() -> dict[str, object]:
         "closed": False,
         "enableOrderBook": True,
         "markets": [
-            {
-                "slug": "btc-above-100k",
-                "question": "Will BTC reach 100k?",
-                "active": True,
-                "closed": False,
-                "enableOrderBook": True,
-                "conditionId": "0xcondition",
-                "clobTokenIds": ["100", "101"],
-                "outcomes": ["Yes", "No"],
-            }
+            _market_payload(slug="btc-above-100k", question="Will BTC reach 100k?"),
         ],
     }

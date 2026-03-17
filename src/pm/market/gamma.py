@@ -105,6 +105,23 @@ class GammaClient:
             raise GammaClientError("Gamma market response was not an object.")
         return _normalize_market(payload)
 
+    def get_market_by_condition_id(self, condition_id: str) -> NormalizedMarket:
+        """Fetch a single market by condition ID."""
+        payload = self._get_json(
+            "/markets",
+            params={"condition_ids": condition_id, "limit": 1},
+            resource="market",
+            identifier=condition_id,
+        )
+        if not isinstance(payload, list):
+            raise GammaClientError("Gamma market-by-condition response was not a list.")
+        if not payload:
+            raise GammaNotFoundError(f"market '{condition_id}' was not found.")
+        first_market = payload[0]
+        if not isinstance(first_market, dict):
+            raise GammaClientError("Gamma market-by-condition response item was not an object.")
+        return _normalize_market(first_market)
+
     def get_event_by_slug(self, slug: str) -> NormalizedEvent:
         """Fetch a single event by slug."""
         payload = self._get_json(f"/events/slug/{slug}", resource="event", identifier=slug)
