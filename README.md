@@ -88,9 +88,13 @@ py -3.11 -m venv .venv
 .venv\Scripts\pm market search --query btc --limit 2 --json
 .venv\Scripts\pm market show --slug <market-slug> --json
 .venv\Scripts\pm market event --slug <event-slug> --json
+.venv\Scripts\pm clob book --token-id <token-id> --json
+.venv\Scripts\pm clob price --token-id <token-id> --json
 ```
 
-The current CLI is intentionally small. It is read-only, uses only public Gamma endpoints, and does not include wallet auth, order placement, websocket, database, or execution logic.
+The current CLI is intentionally small. It is read-only, uses only public Gamma and public CLOB endpoints, and does not include wallet auth, order placement, websocket, database, or execution logic.
+
+`pm market book` and `pm market price` remain temporary compatibility aliases for `pm clob book` and `pm clob price`.
 
 ## Related Docs
 

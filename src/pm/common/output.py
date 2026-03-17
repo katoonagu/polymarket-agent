@@ -26,6 +26,7 @@ def emit_error(
     json_output: bool,
     resource: str | None = None,
     identifier: str | None = None,
+    hint: Mapping[str, Any] | None = None,
 ) -> None:
     """Render a deterministic error payload or a small human-readable message."""
     if json_output:
@@ -40,6 +41,8 @@ def emit_error(
             payload["error"]["resource"] = resource
         if identifier is not None:
             payload["error"]["identifier"] = identifier
+        if hint is not None:
+            payload["hint"] = dict(hint)
         print(json.dumps(payload, indent=2, sort_keys=True))
         return
 

@@ -20,6 +20,45 @@ class NormalizedMarket(BaseModel):
     outcomes: list[str] = Field(default_factory=list)
 
 
+class NormalizedBookLevel(BaseModel):
+    """Normalized book level for public CLOB reads."""
+
+    price: str
+    size: str
+
+
+class NormalizedBook(BaseModel):
+    """Normalized order book payload exposed by the CLI."""
+
+    token_id: str
+    bids: list[NormalizedBookLevel] = Field(default_factory=list)
+    asks: list[NormalizedBookLevel] = Field(default_factory=list)
+    tick_size: str | None = None
+    min_order_size: str | None = None
+
+
+class NormalizedPriceQuote(BaseModel):
+    """Normalized buy and sell price quote for a token."""
+
+    token_id: str
+    buy_price: str | None = None
+    sell_price: str | None = None
+
+
+class NormalizedMidpointQuote(BaseModel):
+    """Normalized midpoint quote for a token."""
+
+    token_id: str
+    midpoint: str
+
+
+class NormalizedSpreadQuote(BaseModel):
+    """Normalized spread quote for a token."""
+
+    token_id: str
+    spread: str
+
+
 class NormalizedEvent(BaseModel):
     """Normalized event fields exposed by the CLI."""
 

@@ -1,240 +1,84 @@
-# 06 — CLI, Storage, Observability & Operations Spec
+# 06 - CLI, Storage, Observability & Operations Spec
 
-## Назначение
+## Purpose
 
-Управление системой начинается с CLI. Это правильно для v1, потому что:
+The CLI is the first operator surface for this repository. It exists to expose deterministic, auditable workflows while keeping research, market intelligence, and execution boundaries explicit.
 
-- быстро разрабатывать;
-- легко аудировать команды;
-- меньше surface area, чем у веб-панели;
-- проще накладывать операционные ограничения;
-- легко подключить later TUI or web console.
+For the current phase, the CLI is read-only. It may read public Gamma and public CLOB data, but it must not authenticate, place orders, cancel orders, manage wallets, or persist state in a database.
 
-## CLI design principles
+## Current Read-Only CLI Contract
 
-### 1. Verb-first grammar
-Команды должны быть читаемыми:
+### Canonical namespaces
 
-```text
-pm market watch add ...
-pm wallet copy enable ...
-pm exec buy ...
-pm arkham enrich ...
-```
+- `pm market`
+  - Public Gamma market discovery
+  - Search, market lookup, and event lookup
+- `pm clob`
+  - Public CLOB order book and price reads
+  - Book, price, midpoint, and spread
 
-### 2. Dry-run by default where possible
-Любая опасная операция должна поддерживать:
-- `--dry-run`
-- `--confirm`
-- `--json`
+### Temporary compatibility aliases
 
-### 3. Deterministic output
-CLI должен уметь печатать:
-- human view;
-- machine view (JSON).
+The following commands remain available for backward compatibility only:
 
-### 4. Auditability
-Каждая команда должна логироваться с:
-- actor
-- timestamp
-- params hash
-- result
-- side effects
+- `pm market book`
+- `pm market price`
 
-## Основные CLI namespace
+They are deprecated aliases for:
 
-### `pm market`
-Работа с рынками, watchlists, snapshots, alerts.
+- `pm clob book`
+- `pm clob price`
 
-### `pm wallet`
-Работа с адресами, статистикой, copy configs.
+Primary examples and new automation should use the canonical `pm clob` namespace.
 
-### `pm arkham`
-Обогащение адресов, графы, dossiers, alerts.
+## Output Contract
 
-### `pm strategy`
-Стратегии, сигналы, approve/reject.
+### Global output mode
 
-### `pm exec`
-Dry-run/live execution, order status, cancel.
-
-### `pm risk`
-Лимиты, kill switches, exposure tables.
-
-### `pm ops`
-Health, metrics, reconciliation, replay, incidents.
-
-## Пример командного набора
+All read-only commands support a root output contract:
 
 ```text
-pm market search --query "btc 15 min"
-pm market watch add --slug btc-updown-15m-...
-pm wallet add --address 0x...
-pm wallet copy enable --address 0x... --mode fixed --size 1
-pm arkham enrich --address 0x...
-pm strategy list
-pm exec dry-run --market <slug> --side yes --price 0.57 --size 5
-pm exec buy --market <slug> --side yes --price 0.57 --size 5 --confirm
-pm risk exposure
-pm ops health
-pm ops replay --from 2026-02-17T00:00:00Z --to 2026-02-17T12:00:00Z
+pm --output table market search --query "btc"
+pm --output json clob book --token-id <id>
+pm --json market event --slug <slug>
 ```
 
-## Storage requirements
+Rules:
 
-### Core database
-Postgres preferred.
+- `--output table|json` is the canonical selector.
+- `--json` is a convenience alias for `--output json`.
+- Default output mode is `table`.
+- Command-local `--json` remains supported for compatibility and overrides root `--output table`.
 
-### Cache / queue
-Redis for:
-- recent snapshots;
-- transient locks;
-- idempotency windows;
-- work queues.
+### Success JSON
 
-### Event log
-Append-only log for:
-- signals;
-- approvals;
-- trade intents;
-- execution events;
-- fills;
-- reconciliations;
-- alerts.
+Successful JSON responses must:
 
-## Suggested database model
+- remain deterministic;
+- use normalized snake_case keys;
+- avoid exposing raw Gamma or raw CLOB wire payloads as the user-facing contract.
 
-### Core tables
-- `markets`
-- `market_snapshots`
-- `wallet_profiles`
-- `wallet_events`
-- `strategies`
-- `signals`
-- `candidate_intents`
-- `trade_intents`
-- `orders`
-- `fills`
-- `positions`
-- `alerts`
-- `audit_events`
-- `risk_limits`
+### Error JSON
 
-### Optional later
-- `clusters`
-- `entities`
-- `news_briefs`
-- `semantic_relationships`
+Error responses must use this envelope:
 
-## Observability
-
-### Structured logging
-Минимум:
-- `timestamp`
-- `module`
-- `correlation_id`
-- `intent_id`
-- `wallet_id`
-- `market_slug`
-- `event_type`
-- `status`
-- `latency_ms`
-
-### Metrics
-- order submit latency
-- market snapshot latency
-- websocket reconnect count
-- rate-limit events
-- copied trades count
-- skipped trades count
-- rejected intents count
-- pnl by strategy
-- exposure by topic
-- spread filter hit rate
-
-### Alerts
-- execution failure burst
-- position reconciliation mismatch
-- stale market data
-- wallet monitor lag
-- Arkham enrichment failure
-- daily loss threshold breach
-- kill switch activated
-
-## Replay and postmortem
-
-Обязательный операционный режим:
-- восстановить состояние на timestamp T;
-- понять, какие сигналы пришли;
-- какие проверки прошли/не прошли;
-- какой ордер был отправлен;
-- какой fill получен;
-- почему позиция осталась открытой или была пропущена.
-
-### Для этого нужно хранить
-- market snapshots
-- signal history
-- candidate intents
-- approvals
-- execution events
-- final position state
-
-## Risk console in CLI
-
-```text
-pm risk exposure
-pm risk exposure --by strategy
-pm risk exposure --by wallet
-pm risk limits show
-pm risk limits set --market-cap 25
-pm risk kill-switch on
-pm risk kill-switch off
-pm risk daily-stop show
+```json
+{
+  "ok": false,
+  "error": {
+    "code": "not_found",
+    "message": "...",
+    "resource": "...",
+    "identifier": "..."
+  }
+}
 ```
 
-## Incident operations
+Commands may add a sibling `hint` object when that improves operator UX without changing the base error shape.
 
-### Types of incidents
-- duplicate execution
-- stale data execution
-- missed cancel
-- overexposure
-- wallet misclassification
-- replay mismatch
-- rate-limit degradation
-- websocket data gap
+## Current Commands
 
-### Incident workflow
-1. detect
-2. freeze or scope-limit
-3. reconcile
-4. produce postmortem
-5. patch rule/spec
-6. replay affected window
-
-## MVP definition
-
-CLI/ops считается готовым, если:
-
-1. все боевые функции доступны из CLI;
-2. есть JSON output mode;
-3. есть audit trail;
-4. есть risk console;
-5. есть replay;
-6. kill switch работает глобально и на уровне стратегии;
-7. можно понять, что произошло после сбоя.
-
-## Phase 2 expansion
-
-- TUI dashboard;
-- web control panel;
-- role-based access;
-- scheduled jobs UI;
-- alert routing in Slack/Telegram/Discord.
-
-## Phase 1 Read-Only CLI Notes
-
-The current CLI surface for market discovery is intentionally narrow and read-only.
+### Market discovery
 
 ```text
 pm market search --query "<text>" --limit <n> [--json]
@@ -242,9 +86,37 @@ pm market show --slug <market-slug> [--json]
 pm market event --slug <event-slug> [--json]
 ```
 
-For this phase:
+`pm market show` should help the operator recover from slug misuse. If the provided slug is not a market slug but resolves as an event slug, the CLI should return a clear hint directing the operator to `pm market event --slug ...` and include returned `market_slug` values when available.
 
-- `--json` must return deterministic normalized snake_case payloads.
-- Human output must use a fixed field order for stable operator workflows.
-- CLI errors should be deterministic and machine-friendly in JSON mode.
-- No auth, wallet flows, execution logic, websocket subscriptions, or database-backed state are allowed.
+### Public CLOB reads
+
+```text
+pm clob book --token-id <id> [--json]
+pm clob price --token-id <id> [--json]
+pm clob midpoint --token-id <id> [--json]
+pm clob spread --token-id <id> [--json]
+```
+
+These commands are public and read-only. They must not depend on auth, private keys, trading SDKs, or websocket sessions.
+
+## Human Output Expectations
+
+Human-readable output should stay deterministic and operator-friendly:
+
+- fixed field order for market and event output;
+- explicit outcome-to-token mappings when token IDs align with outcomes;
+- clear follow-up cues for public CLOB reads;
+- stable wording for not-found and hint flows.
+
+`table` refers to the human-readable mode name. It does not require literal grid rendering for every command in this phase.
+
+## Storage and Observability Direction
+
+Later phases may add:
+
+- audit trails for command invocations;
+- replay and postmortem workflows;
+- structured logging and metrics;
+- operational surfaces for health, replay, and incident response.
+
+Those concerns remain part of this spec, but they are out of scope for the current read-only CLI phase.
