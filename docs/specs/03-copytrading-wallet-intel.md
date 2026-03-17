@@ -244,3 +244,51 @@ pm wallet signal review --address <0x...>
 - strategy attribution by wallet;
 - public leaderboard import;
 - confidence decay over time.
+
+## Read-Only Addendum (Current Phase)
+
+This branch only implements the read-only foundation for the wallet module. The current scope is intentionally narrower than the full copy-trading vision above.
+
+### Implemented now
+
+- Local tracked-wallet registry at `.pm/state/wallets.json`
+- Registry metadata:
+  - `address`
+  - `label`
+  - `tags`
+  - `note`
+  - `added_at`
+- Read-only wallet inspection commands:
+  - `pm wallet add`
+  - `pm wallet list`
+  - `pm wallet remove`
+  - `pm wallet summary`
+  - `pm wallet trades`
+  - `pm wallet activity`
+  - `pm wallet positions`
+  - `pm wallet snapshot`
+- Shadow intelligence built only from the existing public Data API client
+
+### Explicitly not implemented now
+
+- wallet auth or signing
+- live wallet management
+- polling daemons
+- live copy-trading
+- order generation
+- execution coupling
+- database-backed wallet state
+
+### Current summary contract
+
+`pm wallet summary --address <0x...>` aggregates:
+
+- tracked metadata from the local registry
+- holdings value
+- traded count
+- current positions count
+- closed positions count
+- recent trades
+- recent activity
+
+`pm wallet snapshot` is compact and registry-ordered. It returns per-wallet metadata, holdings value, traded count, current positions count, closed positions count, and structured partial errors when a public sub-call fails.

@@ -10,12 +10,13 @@ from pm.cli.clob import app as clob_app
 from pm.cli.data import app as data_app
 from pm.cli.market import app as market_app
 from pm.cli.support import set_root_output_mode
+from pm.cli.wallet import app as wallet_app
 
 OutputMode = Literal["table", "json"]
 
 app = typer.Typer(
     add_completion=False,
-    help="Read-only Polymarket public market, CLOB, and data CLI.",
+    help="Read-only Polymarket public market, CLOB, data, and wallet CLI.",
     no_args_is_help=True,
 )
 OUTPUT_OPTION = typer.Option(
@@ -31,6 +32,7 @@ JSON_OPTION = typer.Option(
 app.add_typer(market_app, name="market")
 app.add_typer(clob_app, name="clob")
 app.add_typer(data_app, name="data")
+app.add_typer(wallet_app, name="wallet")
 
 
 @app.callback()

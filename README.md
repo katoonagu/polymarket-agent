@@ -19,7 +19,7 @@
   - Purpose: market discovery, watchlists, snapshots, recurring market support, and market context.
   - Spec: `docs/specs/02-market-intel.md`
 - `wallet`
-  - Purpose: wallet intelligence and copy-trading signal generation with strict policy gating.
+  - Purpose: tracked-wallet registry, read-only shadow intelligence, and later copy-trading signal generation with strict policy gating.
   - Spec: `docs/specs/03-copytrading-wallet-intel.md`
 - `arkham`
   - Purpose: on-chain enrichment, clustering, dossiers, and watchlist-grade intelligence.
@@ -97,6 +97,9 @@ py -3.11 -m venv .venv
 .venv\Scripts\pm data trades --user <0x...> --limit 20 --json
 .venv\Scripts\pm data closed-positions --user <0x...> --json
 .venv\Scripts\pm data holders --market <market-slug-or-condition-id> --limit 20 --json
+.venv\Scripts\pm wallet add --address <0x...> --label "desk-1"
+.venv\Scripts\pm wallet summary --address <0x...> --json
+.venv\Scripts\pm wallet snapshot --limit 20 --json
 ```
 
 The current CLI is intentionally small. It is read-only, uses only public Gamma, public CLOB, and public Data API endpoints, and does not include wallet auth, order placement, websocket, database, or execution logic.
@@ -104,6 +107,8 @@ The current CLI is intentionally small. It is read-only, uses only public Gamma,
 `pm market book` and `pm market price` remain temporary compatibility aliases for `pm clob book` and `pm clob price`.
 
 `pm data` currently supports `trades`, `activity`, `positions`, `closed-positions`, `holders`, `open-interest`, `value`, and `traded`. For market-scoped reads, `--market` accepts either a market slug or a condition ID and resolves it through the public Gamma adapter before calling the Data API.
+
+`pm wallet` manages a local tracked-wallet registry at `.pm/state/wallets.json`. That file is gitignored, repo-local, and used only for read-only shadow intelligence in this phase. Tracked-wallet summaries and snapshots are built from the existing public Data API client; there is still no auth, signing, polling daemon, or live copy-trading.
 
 ## Related Docs
 

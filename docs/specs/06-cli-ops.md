@@ -4,7 +4,7 @@
 
 The CLI is the first operator surface for this repository. It exists to expose deterministic, auditable workflows while keeping research, market intelligence, and execution boundaries explicit.
 
-For the current phase, the CLI is read-only. It may read public Gamma and public CLOB data, but it must not authenticate, place orders, cancel orders, manage wallets, or persist state in a database.
+For the current phase, the CLI is read-only. It may read public Gamma, public CLOB, and public Data API data, and it may manage a local gitignored tracked-wallet registry. It must not authenticate, sign, place orders, cancel orders, manage live wallets, or persist state in a database.
 
 ## Current Read-Only CLI Contract
 
@@ -19,6 +19,9 @@ For the current phase, the CLI is read-only. It may read public Gamma and public
 - `pm data`
   - Public Data API reads
   - Trades, activity, positions, closed positions, holders, open interest, value, and traded-count reads
+- `pm wallet`
+  - Local tracked-wallet registry and read-only shadow intelligence
+  - Registry CRUD, tracked-wallet summary, tracked-wallet trades/activity/positions, and compact snapshots
 
 ### Temporary compatibility aliases
 
@@ -122,6 +125,29 @@ Rules:
 - Market references are resolved through the public Gamma adapter before Data API calls when needed.
 - JSON output remains normalized, deterministic, and snake_case.
 - These commands are public and read-only. They must not depend on auth, private keys, websocket sessions, or local persistence.
+
+### Local tracked-wallet registry and shadow intelligence
+
+```text
+pm wallet add --address <0x...> [--label <text>] [--tag <text>] [--note <text>]
+pm wallet list [--json]
+pm wallet remove --address <0x...>
+pm wallet summary --address <0x...> [--limit <n>] [--json]
+pm wallet trades --address <0x...> [--limit <n>] [--json]
+pm wallet activity --address <0x...> [--limit <n>] [--json]
+pm wallet positions --address <0x...> [--json]
+pm wallet snapshot [--limit <n>] [--json]
+```
+
+Rules:
+
+- Registry state lives only in `.pm/state/wallets.json`.
+- Registry state is local-only and must be gitignored.
+- Address-based `pm wallet` reads are tracked-wallet operations only; untracked addresses return a deterministic `not_tracked` error.
+- `summary` aggregates tracked metadata plus holdings value, traded count, open-position count, closed-position count, recent trades, and recent activity from the existing public Data API client.
+- `snapshot` is compact and deterministic: registry order, wallet metadata, holdings value, traded count, open-position count, closed-position count, and structured partial errors only.
+- `summary` and `snapshot` use partial-result mode for Data API sub-call failures; only registry and validation failures should make the whole command exit non-zero.
+- This namespace is still shadow intelligence only: no auth, no signing, no live copy-trading, no daemon, and no execution logic.
 
 ## Human Output Expectations
 

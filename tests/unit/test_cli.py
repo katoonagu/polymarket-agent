@@ -5,16 +5,19 @@ from __future__ import annotations
 import json
 
 import httpx
+import pytest
 import respx
 from typer.testing import CliRunner
 
 from pm.cli.app import app
+from pm.wallet import WalletRegistryService
 
 runner = CliRunner()
 GAMMA_URL = "https://gamma-api.polymarket.com"
 CLOB_URL = "https://clob.polymarket.com"
 DATA_URL = "https://data-api.polymarket.com"
 USER = "0x1111111111111111111111111111111111111111"
+USER_TWO = "0x2222222222222222222222222222222222222222"
 CONDITION_ID = "0x" + ("a" * 64)
 MARKET_SLUG = "btc-above-100k"
 
@@ -26,6 +29,7 @@ def test_root_help() -> None:
     assert "market" in result.stdout
     assert "clob" in result.stdout
     assert "data" in result.stdout
+    assert "wallet" in result.stdout
 
 
 def test_market_help() -> None:
@@ -62,6 +66,20 @@ def test_data_help() -> None:
     assert "open-interest" in result.stdout
     assert "value" in result.stdout
     assert "traded" in result.stdout
+
+
+def test_wallet_help() -> None:
+    result = runner.invoke(app, ["wallet", "--help"])
+
+    assert result.exit_code == 0
+    assert "add" in result.stdout
+    assert "list" in result.stdout
+    assert "remove" in result.stdout
+    assert "summary" in result.stdout
+    assert "trades" in result.stdout
+    assert "activity" in result.stdout
+    assert "positions" in result.stdout
+    assert "snapshot" in result.stdout
 
 
 @respx.mock
@@ -558,6 +576,253 @@ def test_data_invalid_condition_id_json_error() -> None:
     }
 
 
+def test_wallet_add_list_and_remove_json(tmp_path, monkeypatch) -> None:
+    registry_path = tmp_path / "wallets.json"
+    monkeypatch.setenv("PM_WALLET_REGISTRY_PATH", str(registry_path))
+
+    add_result = runner.invoke(
+        app,
+        [
+            "--output",
+            "json",
+            "wallet",
+            "add",
+            "--address",
+            USER,
+            "--label",
+            "Alpha",
+            "--tag",
+            "beta",
+            "--tag",
+            "alpha",
+            "--note",
+            "Shadow",
+        ],
+    )
+    list_result = runner.invoke(app, ["wallet", "list", "--json"])
+    remove_result = runner.invoke(
+        app,
+        ["--output", "json", "wallet", "remove", "--address", USER],
+    )
+
+    assert add_result.exit_code == 0
+    added_payload = json.loads(add_result.stdout)
+    assert added_payload["wallet"]["address"] == USER
+    assert added_payload["wallet"]["label"] == "Alpha"
+    assert added_payload["wallet"]["tags"] == ["alpha", "beta"]
+    assert added_payload["wallet"]["note"] == "Shadow"
+
+    assert list_result.exit_code == 0
+    assert json.loads(list_result.stdout)["total"] == 1
+
+    assert remove_result.exit_code == 0
+    assert json.loads(remove_result.stdout)["wallet"]["address"] == USER
+
+
+def test_wallet_duplicate_add_json_error(tmp_path, monkeypatch) -> None:
+    registry_path = tmp_path / "wallets.json"
+    monkeypatch.setenv("PM_WALLET_REGISTRY_PATH", str(registry_path))
+    runner.invoke(app, ["wallet", "add", "--address", USER])
+
+    duplicate_result = runner.invoke(
+        app,
+        [
+            "--output",
+            "json",
+            "wallet",
+            "add",
+            "--address",
+            USER[:2] + USER[2:].upper(),
+        ],
+    )
+
+    assert duplicate_result.exit_code == 1
+    assert json.loads(duplicate_result.stdout) == {
+        "error": {
+            "code": "already_tracked",
+            "identifier": USER,
+            "message": f"wallet '{USER}' is already tracked.",
+            "resource": "wallet",
+        },
+        "ok": False,
+    }
+
+
+def test_wallet_invalid_address_json_error() -> None:
+    result = runner.invoke(
+        app,
+        ["--output", "json", "wallet", "add", "--address", "bad-wallet"],
+    )
+
+    assert result.exit_code == 1
+    assert json.loads(result.stdout) == {
+        "error": {
+            "code": "invalid_argument",
+            "identifier": "bad-wallet",
+            "message": "Wallet addresses must use 0x followed by 40 hex characters.",
+            "resource": "wallet",
+        },
+        "ok": False,
+    }
+
+
+@pytest.mark.parametrize("command", ["summary", "trades", "activity", "positions"])
+def test_wallet_tracked_only_json_error(command: str, tmp_path, monkeypatch) -> None:
+    registry_path = tmp_path / "wallets.json"
+    monkeypatch.setenv("PM_WALLET_REGISTRY_PATH", str(registry_path))
+
+    result = runner.invoke(app, ["wallet", command, "--address", USER, "--json"])
+
+    assert result.exit_code == 1
+    assert json.loads(result.stdout) == {
+        "error": {
+            "code": "not_tracked",
+            "identifier": USER,
+            "message": (
+                f"wallet '{USER}' is not tracked. "
+                f"Use `pm wallet add --address {USER}` first."
+            ),
+            "resource": "wallet",
+        },
+        "ok": False,
+    }
+
+
+@respx.mock
+def test_wallet_summary_json(tmp_path, monkeypatch) -> None:
+    _seed_tracked_wallet(tmp_path, monkeypatch, USER, label="Alpha")
+    respx.get(f"{DATA_URL}/value").mock(
+        return_value=httpx.Response(200, json={"user": USER, "value": "100.50"})
+    )
+    respx.get(f"{DATA_URL}/traded").mock(
+        return_value=httpx.Response(200, json={"user": USER, "traded": 17})
+    )
+    respx.get(f"{DATA_URL}/positions").mock(
+        return_value=httpx.Response(200, json=[_wallet_position_payload()])
+    )
+    respx.get(f"{DATA_URL}/closed-positions").mock(
+        return_value=httpx.Response(200, json=[_wallet_closed_position_payload()])
+    )
+    respx.get(f"{DATA_URL}/trades").mock(
+        return_value=httpx.Response(200, json=[_wallet_trade_payload()])
+    )
+    respx.get(f"{DATA_URL}/activity").mock(
+        return_value=httpx.Response(200, json=[_wallet_activity_payload()])
+    )
+
+    result = runner.invoke(app, ["wallet", "summary", "--address", USER, "--limit", "1", "--json"])
+
+    assert result.exit_code == 0
+    payload = json.loads(result.stdout)
+    assert payload["wallet"]["address"] == USER
+    assert payload["wallet"]["label"] == "Alpha"
+    assert payload["metrics"] == {
+        "closed_positions_count": 1,
+        "current_positions_count": 1,
+        "holdings_value": "100.50",
+        "traded_count": 17,
+    }
+    assert payload["recent_trades"]["total"] == 1
+    assert payload["recent_activity"]["total"] == 1
+    assert payload["errors"] == []
+
+
+@respx.mock
+def test_wallet_trades_json(tmp_path, monkeypatch) -> None:
+    _seed_tracked_wallet(tmp_path, monkeypatch, USER)
+    respx.get(f"{DATA_URL}/trades").mock(
+        return_value=httpx.Response(200, json=[_wallet_trade_payload()])
+    )
+
+    result = runner.invoke(app, ["wallet", "trades", "--address", USER, "--limit", "1", "--json"])
+
+    assert result.exit_code == 0
+    payload = json.loads(result.stdout)
+    assert payload["wallet"]["address"] == USER
+    assert payload["items"][0]["market_slug"] == MARKET_SLUG
+    assert payload["total"] == 1
+
+
+@respx.mock
+def test_wallet_activity_json(tmp_path, monkeypatch) -> None:
+    _seed_tracked_wallet(tmp_path, monkeypatch, USER)
+    respx.get(f"{DATA_URL}/activity").mock(
+        return_value=httpx.Response(200, json=[_wallet_activity_payload()])
+    )
+
+    result = runner.invoke(app, ["wallet", "activity", "--address", USER, "--limit", "1", "--json"])
+
+    assert result.exit_code == 0
+    payload = json.loads(result.stdout)
+    assert payload["wallet"]["address"] == USER
+    assert payload["items"][0]["activity_type"] == "TRADE"
+    assert payload["total"] == 1
+
+
+@respx.mock
+def test_wallet_positions_json(tmp_path, monkeypatch) -> None:
+    _seed_tracked_wallet(tmp_path, monkeypatch, USER)
+    respx.get(f"{DATA_URL}/positions").mock(
+        return_value=httpx.Response(200, json=[_wallet_position_payload()])
+    )
+
+    result = runner.invoke(app, ["wallet", "positions", "--address", USER, "--json"])
+
+    assert result.exit_code == 0
+    payload = json.loads(result.stdout)
+    assert payload["wallet"]["address"] == USER
+    assert payload["items"][0]["current_value"] == "5.52"
+    assert payload["total"] == 1
+
+
+@respx.mock
+def test_wallet_snapshot_json(tmp_path, monkeypatch) -> None:
+    _seed_tracked_wallet(tmp_path, monkeypatch, USER, label="First")
+    _seed_tracked_wallet(tmp_path, monkeypatch, USER_TWO, label="Second")
+    respx.get(f"{DATA_URL}/value").mock(
+        return_value=httpx.Response(200, json={"user": USER, "value": "100.50"})
+    )
+    respx.get(f"{DATA_URL}/traded").mock(
+        return_value=httpx.Response(200, json={"user": USER, "traded": 17})
+    )
+    respx.get(f"{DATA_URL}/positions").mock(
+        return_value=httpx.Response(200, json=[_wallet_position_payload()])
+    )
+    respx.get(f"{DATA_URL}/closed-positions").mock(
+        return_value=httpx.Response(200, json=[_wallet_closed_position_payload()])
+    )
+
+    result = runner.invoke(app, ["wallet", "snapshot", "--limit", "1", "--json"])
+
+    assert result.exit_code == 0
+    payload = json.loads(result.stdout)
+    assert payload["total"] == 1
+    assert payload["items"][0]["wallet"]["address"] == USER
+    assert payload["items"][0]["wallet"]["label"] == "First"
+    assert payload["items"][0]["metrics"]["holdings_value"] == "100.50"
+
+
+@respx.mock
+def test_wallet_summary_partial_errors_json(tmp_path, monkeypatch) -> None:
+    _seed_tracked_wallet(tmp_path, monkeypatch, USER)
+    respx.get(f"{DATA_URL}/value").mock(return_value=httpx.Response(500))
+    respx.get(f"{DATA_URL}/traded").mock(
+        return_value=httpx.Response(200, json={"user": USER, "traded": 17})
+    )
+    respx.get(f"{DATA_URL}/positions").mock(return_value=httpx.Response(200, json=[]))
+    respx.get(f"{DATA_URL}/closed-positions").mock(return_value=httpx.Response(200, json=[]))
+    respx.get(f"{DATA_URL}/trades").mock(return_value=httpx.Response(200, json=[]))
+    respx.get(f"{DATA_URL}/activity").mock(return_value=httpx.Response(200, json=[]))
+
+    result = runner.invoke(app, ["wallet", "summary", "--address", USER, "--json"])
+
+    assert result.exit_code == 0
+    payload = json.loads(result.stdout)
+    assert payload["metrics"]["holdings_value"] is None
+    assert payload["errors"][0]["section"] == "holdings_value"
+    assert payload["errors"][0]["code"] == "request_failed"
+
+
 def _market_payload(*, slug: str, question: str) -> dict[str, object]:
     return {
         "slug": slug,
@@ -581,4 +846,74 @@ def _event_payload() -> dict[str, object]:
         "markets": [
             _market_payload(slug="btc-above-100k", question="Will BTC reach 100k?"),
         ],
+    }
+
+
+def _seed_tracked_wallet(tmp_path, monkeypatch, address: str, *, label: str | None = None) -> None:
+    registry_path = tmp_path / "wallets.json"
+    monkeypatch.setenv("PM_WALLET_REGISTRY_PATH", str(registry_path))
+    registry = WalletRegistryService(path=registry_path)
+    registry.add_wallet(address, label=label, added_at="2026-03-18T00:00:00Z")
+
+
+def _wallet_trade_payload() -> dict[str, object]:
+    return {
+        "proxyWallet": USER,
+        "slug": MARKET_SLUG,
+        "conditionId": CONDITION_ID,
+        "asset": "100",
+        "side": "BUY",
+        "outcome": "Yes",
+        "price": "0.45",
+        "size": "10",
+        "timestamp": 1710000000,
+        "transactionHash": "0xtrade",
+    }
+
+
+def _wallet_activity_payload() -> dict[str, object]:
+    return {
+        "proxyWallet": USER,
+        "slug": MARKET_SLUG,
+        "conditionId": CONDITION_ID,
+        "asset": "100",
+        "type": "TRADE",
+        "side": "SELL",
+        "outcome": "No",
+        "price": "0.55",
+        "size": "7",
+        "usdcSize": "3.85",
+        "timestamp": 1710000100,
+        "transactionHash": "0xactivity",
+    }
+
+
+def _wallet_position_payload() -> dict[str, object]:
+    return {
+        "proxyWallet": USER,
+        "slug": MARKET_SLUG,
+        "conditionId": CONDITION_ID,
+        "asset": "100",
+        "outcome": "Yes",
+        "size": "12",
+        "avgPrice": "0.41",
+        "initialValue": "4.92",
+        "currentValue": "5.52",
+        "cashPnl": "0.60",
+        "percentPnl": "12.19",
+    }
+
+
+def _wallet_closed_position_payload() -> dict[str, object]:
+    return {
+        "proxyWallet": USER,
+        "slug": MARKET_SLUG,
+        "conditionId": CONDITION_ID,
+        "asset": "100",
+        "outcome": "Yes",
+        "avgPrice": "0.40",
+        "totalBought": "10",
+        "realizedPnl": "1.25",
+        "curPrice": "0.53",
+        "timestamp": 1710000200,
     }
