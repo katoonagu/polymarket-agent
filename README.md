@@ -95,7 +95,7 @@ This namespace is still fully read-only. `evaluate` persists candidate intents a
 
 ## Authenticated Execution Foundation
 
-The first authenticated layer now covers non-mutating setup, approval inspection, paper-default order lifecycle planning, and explicitly gated live writes.
+The first authenticated layer now covers non-mutating setup, approval inspection, paper-default order lifecycle planning, explicitly gated live writes, and bounded operator-driven user-channel observation.
 
 ```powershell
 .venv\Scripts\pm setup doctor --json
@@ -111,6 +111,10 @@ The first authenticated layer now covers non-mutating setup, approval inspection
 .venv\Scripts\pm exec post --market <market-slug-or-condition-id> --outcome yes --side buy --price 0.55 --size 10 --live --confirm --json
 .venv\Scripts\pm exec orders open --json
 .venv\Scripts\pm exec order get --order-id <id> --json
+.venv\Scripts\pm exec watch --market <condition-id> --seconds 5 --max-events 20 --json
+.venv\Scripts\pm exec order wait --order-id <id> --seconds 10 --json
+.venv\Scripts\pm exec events --limit 20 --json
+.venv\Scripts\pm exec reconcile --json
 .venv\Scripts\pm exec cancel --order-id <id> --json
 .venv\Scripts\pm exec cancel-all --json
 .venv\Scripts\pm exec cancel-market --market <condition-id> [--token-id <asset-id>] --json
@@ -126,6 +130,8 @@ Rules:
 - real approval writes and real exchange mutations require explicit `--live --confirm`
 - geoblock checks run before live approval writes and live order writes
 - `pm exec dry-run` still builds and signs locally without posting
+- `pm exec watch` and `pm exec order wait` use the authenticated user websocket only in bounded operator-driven sessions
+- `pm exec reconcile` compares recent persisted websocket events against authenticated REST order views
 - strategy and orchestrator flows still do not auto-submit anything
 
 ## Output Contract
@@ -169,6 +175,8 @@ This branch uses local file-backed state under `.pm/state/`. These files are rep
 - `approval-results.json`
 - `execution-order-plans.json`
 - `execution-order-results.json`
+- `execution-events.jsonl`
+- `execution-reconciliations.json`
 
 They are append-only or registry-style JSON documents used for deterministic operator workflows. They are not a database and they do not enable background daemons or live execution. This phase does not add any local auth cache, API-key cache, or private-key state file.
 
@@ -186,9 +194,9 @@ py -3.11 -m venv .venv
 ## Current Non-Goals
 
 - no replace flow yet
-- no user websocket
 - no public stream daemon
 - no background daemon
+- no background user-websocket daemon
 - no automatic retry loop
 - no strategy auto-submit
 - no database

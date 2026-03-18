@@ -264,7 +264,7 @@ class AuthService:
         """Derive ephemeral Level 2 API credentials without persisting them."""
         settings = self.require_valid_config()
         auth = self._context_from_settings(settings)
-        creds = self._derive_api_credentials(settings)
+        creds = self.get_api_credentials(settings)
         return AuthDeriveApiKeyResponse(
             auth=auth,
             api_credentials=DerivedApiCredentials(
@@ -426,7 +426,7 @@ class AuthService:
         resolved = settings or self.require_valid_config()
         try:
             client = self.build_level_1_client(resolved)
-            creds = self._derive_api_credentials(resolved)
+            creds = self.get_api_credentials(resolved)
             client.set_api_creds(creds)
             return client
         except AuthClientError:
@@ -435,6 +435,11 @@ class AuthService:
             raise AuthClientError(
                 "Could not initialize authenticated Level 2 CLOB client."
             ) from exc
+
+    def get_api_credentials(self, settings: AuthSettings | None = None) -> ApiCreds:
+        """Return ephemeral Level 2 API credentials without persisting them."""
+        resolved = settings or self.require_valid_config()
+        return self._derive_api_credentials(resolved)
 
     def _derive_api_credentials(self, settings: AuthSettings) -> ApiCreds:
         try:

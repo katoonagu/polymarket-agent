@@ -9,3 +9,7 @@ class ExecutionError(RuntimeError):
 
 class ExecutionValidationError(ExecutionError):
     """Raised when dry-run CLI arguments are invalid."""
+
+
+class ExecutionNotFoundError(ExecutionError):
+    """Raised when an expected execution resource could not be found."""

@@ -12,12 +12,12 @@ The current phase introduces the first controlled write path:
 - local dry-run order construction and signing
 - paper-default order posting and cancellation lifecycle
 - explicitly gated live order submission and cancellation
+- bounded authenticated user-channel watch and reconciliation
 
 The current phase still does not include:
 
 - replace flows
 - automatic retry loops
-- user websocket sessions
 - background daemons
 - strategy auto-submit
 - database-backed execution state
@@ -37,6 +37,10 @@ Implemented now:
 - `pm exec post`
 - `pm exec orders open`
 - `pm exec order get`
+- `pm exec watch`
+- `pm exec order wait`
+- `pm exec events`
+- `pm exec reconcile`
 - `pm exec cancel`
 - `pm exec cancel-all`
 - `pm exec cancel-market`
@@ -44,9 +48,9 @@ Implemented now:
 Still out of scope:
 
 - replace flows
-- automatic fills reconciliation
+- automatic or daemonized reconciliation loops
 - live order polling loops
-- private websocket order status channels
+- unbounded private websocket monitoring
 - execution orchestration from strategy
 
 ## Design Principles
@@ -261,6 +265,100 @@ Authenticated live read for a single order by `--order-id`.
 
 These commands read exchange state through the official authenticated client. They do not use paper-mode local state as a replacement for exchange reads.
 
+## Authenticated Execution Watch
+
+### `pm exec watch`
+
+`pm exec watch` opens a bounded authenticated user-websocket session.
+
+Inputs:
+
+- optional `--market <condition_id>`
+- optional `--seconds <n>`, default `10`
+- optional `--max-events <n>`
+
+Rules:
+
+- the websocket uses ephemeral Level 2 API credentials derived through the auth layer
+- credentials are not persisted locally
+- sessions are always bounded by time or event count
+- if `--market` is omitted, the command derives condition IDs from current open orders
+- if no open-order condition IDs are available and no `--market` is provided, the command returns a deterministic `not_found` error
+- reconnects are limited and there is no infinite retry loop
+
+Normalized event fields include:
+
+- `session_id`
+- `source`
+- `captured_at`
+- `condition_id`
+- `order_id`
+- `asset_id`
+- `event_type`
+- `trade_status`
+- `side`
+- `price`
+- `size`
+- `status`
+- `timestamp`
+
+Supported normalized order events:
+
+- `PLACEMENT`
+- `UPDATE`
+- `CANCELLATION`
+
+Supported normalized trade statuses:
+
+- `MATCHED`
+- `MINED`
+- `CONFIRMED`
+- `RETRYING`
+- `FAILED`
+
+### `pm exec order wait`
+
+`pm exec order wait --order-id <id> --seconds <n>`:
+
+- resolves the order through authenticated REST first
+- subscribes to that order's condition ID only
+- persists matching normalized events locally
+- returns success JSON on both terminal completion and timeout
+
+Terminal outcomes in this phase:
+
+- `CANCELLATION`
+- `CONFIRMED`
+- `FAILED`
+
+Non-terminal statuses in this phase:
+
+- `MATCHED`
+- `MINED`
+- `RETRYING`
+
+On timeout, the command performs one final authenticated `order get` read and includes it in the response when available.
+
+### `pm exec events`
+
+`pm exec events` reads the local persisted execution event log only. It does not open a websocket session.
+
+### `pm exec reconcile`
+
+`pm exec reconcile` compares the latest persisted execution websocket events with:
+
+- one authenticated `orders open` view
+- per-order authenticated `order get` views
+
+The current phase uses a fixed reconciliation window of the latest 100 persisted execution events and classifies each recent order as:
+
+- `consistent_open`
+- `consistent_closed`
+- `inconclusive`
+- `mismatch`
+
+Each run persists a local reconciliation summary.
+
 ## Cancellation Surface
 
 ### `pm exec cancel`
@@ -311,6 +409,8 @@ The current execution phase persists append-only local audit state under `.pm/st
 - `approval-results.json`
 - `execution-order-plans.json`
 - `execution-order-results.json`
+- `execution-events.jsonl`
+- `execution-reconciliations.json`
 
 Rules:
 
@@ -318,6 +418,14 @@ Rules:
 - atomic writes
 - append-only records
 - explicit state errors on invalid or corrupted files
+
+## Still Out of Scope
+
+- replace flows
+- background or daemonized private websocket monitoring
+- automatic retry loops
+- strategy-driven auto-submit or auto-cancel
+- database-backed execution storage
 
 The current phase still adds no local cache for:
 
@@ -356,8 +464,8 @@ The execution module remains the only owner of:
 - approval writes
 - order posting
 - order cancellation
+- bounded authenticated execution status tracking
 - future replace flows
-- future execution status tracking
 - future fills reconciliation
 
 Strategy and orchestrator flows must remain unable to auto-submit during this phase.
@@ -377,7 +485,7 @@ Later phases may add:
 - replace flows
 - richer execution status views
 - fills reconciliation
-- private websocket execution status
+- background private websocket monitoring
 - guarded operator shell and status surfaces
 - replay and audit tooling
 

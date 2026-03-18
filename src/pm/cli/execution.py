@@ -9,11 +9,18 @@ from pm.cli.support import LOCAL_JSON_OPTION, emit_command_error, emit_command_o
 from pm.execution import (
     DryRunResponse,
     DryRunService,
+    ExecutionEventsResponse,
     ExecutionMutationResponse,
+    ExecutionNotFoundError,
+    ExecutionReconciliationResponse,
+    ExecutionStateError,
     ExecutionValidationError,
+    ExecutionWatchResponse,
+    ExecutionWatchService,
     OpenOrdersResponse,
     OrderGetResponse,
     OrderLifecycleService,
+    OrderWaitResponse,
     PostOrderResponse,
 )
 
@@ -120,6 +127,39 @@ def post_order(
     )
 
 
+@app.command("watch")
+def watch(
+    ctx: typer.Context,
+    market: str | None = typer.Option(None, "--market", help="Condition id filter."),
+    seconds: int = typer.Option(10, "--seconds", help="Bounded watch duration in seconds."),
+    max_events: int | None = typer.Option(None, "--max-events", help="Optional event cap."),
+    json_output: bool = LOCAL_JSON_OPTION,
+) -> None:
+    """Run one bounded authenticated execution-watch session."""
+    try:
+        result = ExecutionWatchService().watch(
+            market=market,
+            seconds=seconds,
+            max_events=max_events,
+        )
+    except (
+        AuthValidationError,
+        AuthClientError,
+        ExecutionNotFoundError,
+        ExecutionStateError,
+        ExecutionValidationError,
+    ) as exc:
+        _emit_exec_error(ctx, exc=exc, json_output=json_output)
+        raise typer.Exit(1) from exc
+
+    emit_command_output(
+        ctx,
+        result.model_dump(mode="json"),
+        text=_format_watch(result),
+        local_json_output=json_output,
+    )
+
+
 @orders_app.command("open")
 def open_orders(
     ctx: typer.Context,
@@ -157,6 +197,78 @@ def get_order(
         ctx,
         result.model_dump(mode="json"),
         text=_format_order_get(result),
+        local_json_output=json_output,
+    )
+
+
+@order_app.command("wait")
+def wait_for_order(
+    ctx: typer.Context,
+    order_id: str = typer.Option(..., "--order-id", help="Exchange order id."),
+    seconds: int = typer.Option(..., "--seconds", help="Bounded wait duration in seconds."),
+    json_output: bool = LOCAL_JSON_OPTION,
+) -> None:
+    """Observe one order until a terminal event or timeout."""
+    try:
+        result = ExecutionWatchService().wait_for_order(order_id=order_id, seconds=seconds)
+    except (
+        AuthValidationError,
+        AuthClientError,
+        ExecutionNotFoundError,
+        ExecutionStateError,
+        ExecutionValidationError,
+    ) as exc:
+        _emit_exec_error(ctx, exc=exc, json_output=json_output)
+        raise typer.Exit(1) from exc
+    emit_command_output(
+        ctx,
+        result.model_dump(mode="json"),
+        text=_format_order_wait(result),
+        local_json_output=json_output,
+    )
+
+
+@app.command("events")
+def events(
+    ctx: typer.Context,
+    limit: int = typer.Option(20, "--limit", help="Maximum number of events to return."),
+    json_output: bool = LOCAL_JSON_OPTION,
+) -> None:
+    """List recent persisted execution-watch events."""
+    try:
+        result = ExecutionWatchService().list_events(limit=limit)
+    except (ExecutionStateError, ExecutionValidationError) as exc:
+        _emit_exec_error(ctx, exc=exc, json_output=json_output)
+        raise typer.Exit(1) from exc
+    emit_command_output(
+        ctx,
+        result.model_dump(mode="json"),
+        text=_format_events(result),
+        local_json_output=json_output,
+    )
+
+
+@app.command("reconcile")
+def reconcile(
+    ctx: typer.Context,
+    json_output: bool = LOCAL_JSON_OPTION,
+) -> None:
+    """Compare recent websocket execution events against authenticated REST views."""
+    try:
+        result = ExecutionWatchService().reconcile()
+    except (
+        AuthValidationError,
+        AuthClientError,
+        ExecutionNotFoundError,
+        ExecutionStateError,
+        ExecutionValidationError,
+    ) as exc:
+        _emit_exec_error(ctx, exc=exc, json_output=json_output)
+        raise typer.Exit(1) from exc
+    emit_command_output(
+        ctx,
+        result.model_dump(mode="json"),
+        text=_format_reconcile(result),
         local_json_output=json_output,
     )
 
@@ -268,9 +380,13 @@ def _emit_exec_error(
 ) -> None:
     emit_command_error(
         ctx,
-        code="invalid_argument"
-        if isinstance(exc, (AuthValidationError, ExecutionValidationError))
-        else "request_failed",
+        code=(
+            "not_found"
+            if isinstance(exc, ExecutionNotFoundError)
+            else "invalid_argument"
+            if isinstance(exc, (AuthValidationError, ExecutionValidationError))
+            else "request_failed"
+        ),
         message=str(exc),
         resource="execution",
         local_json_output=json_output,
@@ -348,6 +464,108 @@ def _format_post(response: PostOrderResponse) -> str:
         lines.append("Live exchange response included in JSON output.")
     elif response.signed_order is not None:
         lines.append("Signed order payload included in JSON output.")
+    return "\n".join(lines)
+
+
+def _format_watch(response: ExecutionWatchResponse) -> str:
+    lines = [
+        f"Session ID: {response.session.session_id}",
+        f"Duration: {response.session.duration_seconds}s",
+        f"Requested: {response.session.requested_seconds}s",
+        f"Captured events: {response.session.captured_event_count}",
+        f"Reconnects: {response.summary.reconnect_count}",
+        (
+            "Watched conditions: "
+            + (", ".join(response.summary.watched_condition_ids) or "-")
+        ),
+        f"Distinct orders: {response.summary.distinct_order_count}",
+        "Event counts:",
+    ]
+    lines.extend(f"  {key}: {value}" for key, value in response.summary.event_counts.items())
+    lines.append("Trade statuses:")
+    lines.extend(
+        f"  {key}: {value}" for key, value in response.summary.trade_status_counts.items()
+    )
+    if response.errors:
+        lines.append("Errors:")
+        lines.extend(f"  {item.section}: {item.code} - {item.message}" for item in response.errors)
+    return "\n".join(lines)
+
+
+def _format_order_wait(response: OrderWaitResponse) -> str:
+    lines = [
+        f"Order ID: {response.order_id}",
+        f"Condition ID: {response.condition_id or '-'}",
+        f"Timed out: {response.timed_out}",
+        f"Terminal: {response.terminal}",
+        f"Terminal outcome: {response.terminal_outcome or '-'}",
+        f"Captured events: {len(response.events)}",
+        f"Reconnects: {response.session.reconnect_count}",
+    ]
+    if response.final_order is not None:
+        lines.extend(
+            [
+                f"Final REST status: {response.final_order.status or '-'}",
+                f"Final REST market: {response.final_order.market or '-'}",
+            ]
+        )
+    if response.final_event is not None:
+        lines.extend(
+            [
+                f"Final event type: {response.final_event.event_type}",
+                f"Final trade status: {response.final_event.trade_status or '-'}",
+            ]
+        )
+    if response.errors:
+        lines.append("Errors:")
+        lines.extend(f"  {item.section}: {item.code} - {item.message}" for item in response.errors)
+    return "\n".join(lines)
+
+
+def _format_events(response: ExecutionEventsResponse) -> str:
+    lines = [f"Total events: {response.total}"]
+    for item in response.items:
+        lines.extend(
+            [
+                "",
+                f"Captured at: {item.captured_at}",
+                f"Order ID: {item.order_id or '-'}",
+                f"Condition ID: {item.condition_id or '-'}",
+                f"Event type: {item.event_type}",
+                f"Trade status: {item.trade_status or '-'}",
+                f"Status: {item.status or '-'}",
+                f"Price: {item.price or '-'}",
+                f"Size: {item.size or '-'}",
+            ]
+        )
+    return "\n".join(lines)
+
+
+def _format_reconcile(response: ExecutionReconciliationResponse) -> str:
+    lines = [
+        f"Reconciliation ID: {response.reconciliation_id}",
+        f"Created at: {response.created_at}",
+        f"Window events: {response.summary.window_event_count}",
+        f"Orders: {response.summary.total_orders}",
+        f"Consistent open: {response.summary.consistent_open}",
+        f"Consistent closed: {response.summary.consistent_closed}",
+        f"Inconclusive: {response.summary.inconclusive}",
+        f"Mismatch: {response.summary.mismatch}",
+    ]
+    for item in response.items:
+        lines.extend(
+            [
+                "",
+                f"Order ID: {item.order_id}",
+                f"Classification: {item.classification}",
+                f"Latest event: {item.latest_event_type}",
+                f"Latest trade status: {item.latest_trade_status or '-'}",
+                f"Message: {item.message}",
+            ]
+        )
+    if response.errors:
+        lines.append("Errors:")
+        lines.extend(f"  {item.section}: {item.code} - {item.message}" for item in response.errors)
     return "\n".join(lines)
 
 

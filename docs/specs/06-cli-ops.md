@@ -17,11 +17,13 @@ In the current phase, the CLI supports public intelligence plus authenticated pa
 - inspect and preview approval writes
 - build and sign dry-run orders locally without submission
 - preview paper-mode order posting and cancellation
+- open bounded authenticated execution-watch sessions
+- reconcile recent execution websocket events against authenticated REST order views
 - submit or cancel live orders only behind explicit operator gates
 
 It must not:
 
-- open private websocket sessions
+- open unbounded or background private websocket sessions
 - start background daemons
 - replace orders yet
 - auto-submit from strategy or orchestration
@@ -144,6 +146,10 @@ pm exec dry-run --market <market-slug-or-condition-id> --outcome <yes|no> --side
 pm exec post --market <market-slug-or-condition-id> --outcome <yes|no> --side <buy|sell> --price <p> --size <n> [--order-type <gtc|gtd|fok>] [--expires-at <iso8601>] [--post-only] [--paper] [--live] [--confirm] [--json]
 pm exec orders open [--market <condition_id>] [--token-id <asset_id>] [--json]
 pm exec order get --order-id <id> [--json]
+pm exec watch [--market <condition_id>] [--seconds <n>] [--max-events <n>] [--json]
+pm exec order wait --order-id <id> --seconds <n> [--json]
+pm exec events [--limit <n>] [--json]
+pm exec reconcile [--json]
 pm exec cancel --order-id <id> [--paper] [--live] [--confirm] [--json]
 pm exec cancel-all [--paper] [--live] [--confirm] [--json]
 pm exec cancel-market --market <condition_id> [--token-id <asset_id>] [--paper] [--live] [--confirm] [--json]
@@ -157,6 +163,9 @@ Rules:
 - `post`, `cancel`, `cancel-all`, and `cancel-market` are paper-by-default
 - live order submission and live cancellations require both `--live` and `--confirm`
 - `orders open` and `order get` are authenticated live reads
+- `watch` and `order wait` use the authenticated user websocket only in bounded sessions
+- `events` reads local persisted execution events only
+- `reconcile` compares the latest persisted execution events with authenticated REST order views
 - `gtd` requires `--expires-at`
 - `--post-only` is valid only for `gtc` and `gtd`
 - local execution audit records are persisted for preview, paper, and live lifecycle actions
@@ -274,7 +283,7 @@ Rules:
 - market stream commands use the public market websocket only
 - crypto stream commands use public RTDS feeds only
 - `pm stream recurring` reuses the recurring resolver and combines market stream context with Binance RTDS context
-- no command opens a private user websocket or calls execution code
+- `pm stream` never opens the authenticated private user websocket or calls execution code
 
 ### `pm strategy`
 
@@ -317,6 +326,8 @@ Current file-backed state under `.pm/state/`:
 - `approval-results.json`
 - `execution-order-plans.json`
 - `execution-order-results.json`
+- `execution-events.jsonl`
+- `execution-reconciliations.json`
 
 Rules:
 
@@ -332,6 +343,9 @@ Some higher-level commands are aggregations over multiple public sub-calls. They
 
 Current partial-result flows include:
 
+- `pm exec watch`
+- `pm exec order wait`
+- `pm exec reconcile`
 - `pm market watch snapshot`
 - `pm market watch refresh`
 - `pm wallet summary`

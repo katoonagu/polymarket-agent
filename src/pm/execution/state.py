@@ -16,10 +16,13 @@ from pm.execution.models import (
     ApprovalPlansFile,
     ApprovalResultRecord,
     ApprovalResultsFile,
+    CapturedExecutionEvent,
     ExecutionOrderPlanRecord,
     ExecutionOrderPlansFile,
     ExecutionOrderResultRecord,
     ExecutionOrderResultsFile,
+    ExecutionReconciliationRecord,
+    ExecutionReconciliationsFile,
 )
 
 DEFAULT_STATE_DIR_RELATIVE_PATH = Path(".pm") / "state"
@@ -28,11 +31,14 @@ APPROVAL_PLANS_FILENAME = "approval-plans.json"
 APPROVAL_RESULTS_FILENAME = "approval-results.json"
 ORDER_PLANS_FILENAME = "execution-order-plans.json"
 ORDER_RESULTS_FILENAME = "execution-order-results.json"
+EVENTS_FILENAME = "execution-events.jsonl"
+RECONCILIATIONS_FILENAME = "execution-reconciliations.json"
 
 DocumentT = TypeVar(
     "DocumentT",
     ApprovalPlansFile,
     ApprovalResultsFile,
+    ExecutionReconciliationsFile,
     ExecutionOrderPlansFile,
     ExecutionOrderResultsFile,
 )
@@ -52,6 +58,8 @@ class ExecutionStateService:
         approval_results_path: Path | None = None,
         order_plans_path: Path | None = None,
         order_results_path: Path | None = None,
+        events_path: Path | None = None,
+        reconciliations_path: Path | None = None,
     ) -> None:
         state_dir = get_execution_state_dir()
         self._approval_plans_path = approval_plans_path or (state_dir / APPROVAL_PLANS_FILENAME)
@@ -60,6 +68,10 @@ class ExecutionStateService:
         )
         self._order_plans_path = order_plans_path or (state_dir / ORDER_PLANS_FILENAME)
         self._order_results_path = order_results_path or (state_dir / ORDER_RESULTS_FILENAME)
+        self._events_path = events_path or (state_dir / EVENTS_FILENAME)
+        self._reconciliations_path = reconciliations_path or (
+            state_dir / RECONCILIATIONS_FILENAME
+        )
 
     def list_approval_plans(self) -> list[ApprovalPlanRecord]:
         """Return approval plans in append order."""
@@ -100,6 +112,73 @@ class ExecutionStateService:
         document = self._load_document(self._order_results_path, ExecutionOrderResultsFile)
         document.results.append(record)
         self._write_document(self._order_results_path, document)
+
+    def list_execution_events(
+        self,
+        *,
+        session_id: str | None = None,
+    ) -> list[CapturedExecutionEvent]:
+        """Read execution-watch events in append order."""
+        if not self._events_path.exists():
+            return []
+
+        try:
+            raw_lines = self._events_path.read_text(encoding="utf-8").splitlines()
+        except OSError as exc:
+            raise ExecutionStateError(
+                f"Could not read execution state at '{self._events_path}'."
+            ) from exc
+
+        items: list[CapturedExecutionEvent] = []
+        try:
+            for line in raw_lines:
+                if not line.strip():
+                    continue
+                item = CapturedExecutionEvent.model_validate_json(line)
+                if session_id is None or item.session_id == session_id:
+                    items.append(item)
+        except (ValidationError, ValueError) as exc:
+            raise ExecutionStateError(
+                f"Execution state at '{self._events_path}' is invalid."
+            ) from exc
+        return items
+
+    def append_execution_event(self, record: CapturedExecutionEvent) -> None:
+        """Append one normalized execution event as JSONL."""
+        self.append_execution_events([record])
+
+    def append_execution_events(self, records: list[CapturedExecutionEvent]) -> None:
+        """Append normalized execution events in deterministic order."""
+        if not records:
+            return
+
+        self._events_path.parent.mkdir(parents=True, exist_ok=True)
+        try:
+            with self._events_path.open("a", encoding="utf-8", newline="\n") as handle:
+                for record in records:
+                    payload = json.dumps(record.model_dump(mode="json"), sort_keys=True)
+                    handle.write(payload + "\n")
+        except OSError as exc:
+            raise ExecutionStateError(
+                f"Could not write execution state at '{self._events_path}'."
+            ) from exc
+
+    def list_reconciliations(self) -> list[ExecutionReconciliationRecord]:
+        """Return persisted reconciliation runs in append order."""
+        document = self._load_document(
+            self._reconciliations_path,
+            ExecutionReconciliationsFile,
+        )
+        return document.reconciliations
+
+    def append_reconciliation(self, record: ExecutionReconciliationRecord) -> None:
+        """Append one reconciliation run record."""
+        document = self._load_document(
+            self._reconciliations_path,
+            ExecutionReconciliationsFile,
+        )
+        document.reconciliations.append(record)
+        self._write_document(self._reconciliations_path, document)
 
     def _load_document(self, path: Path, model_type: type[DocumentT]) -> DocumentT:
         if not path.exists():

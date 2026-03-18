@@ -1,4 +1,4 @@
-"""Models for dry-run execution, approvals, and order lifecycle audit state."""
+"""Models for dry-run execution, order lifecycle, and execution-watch state."""
 
 from __future__ import annotations
 
@@ -7,6 +7,7 @@ from typing import Any
 from pydantic import BaseModel, Field
 
 from pm.auth.models import AuthContext, BalanceAllowanceView
+from pm.stream.models import BoundedStreamSession, StreamSectionError
 
 
 class ExecutionReasonBlock(BaseModel):
@@ -279,3 +280,129 @@ class ExecutionOrderResultsFile(BaseModel):
 
     version: int = 1
     results: list[ExecutionOrderResultRecord] = Field(default_factory=list)
+
+
+class NormalizedExecutionEvent(BaseModel):
+    """Normalized authenticated user-websocket execution event."""
+
+    condition_id: str | None = None
+    order_id: str | None = None
+    asset_id: str | None = None
+    event_type: str
+    trade_status: str | None = None
+    side: str | None = None
+    price: str | None = None
+    size: str | None = None
+    status: str | None = None
+    timestamp: int | None = None
+
+
+class CapturedExecutionEvent(BaseModel):
+    """Persisted authenticated execution event envelope."""
+
+    session_id: str
+    stream_kind: str = "execution_user"
+    source: str
+    captured_at: str
+    condition_id: str | None = None
+    order_id: str | None = None
+    asset_id: str | None = None
+    event_type: str
+    trade_status: str | None = None
+    side: str | None = None
+    price: str | None = None
+    size: str | None = None
+    status: str | None = None
+    timestamp: int | None = None
+
+
+class ExecutionWatchSummary(BaseModel):
+    """Compact bounded execution-watch session summary."""
+
+    watched_condition_ids: list[str] = Field(default_factory=list)
+    event_counts: dict[str, int] = Field(default_factory=dict)
+    trade_status_counts: dict[str, int] = Field(default_factory=dict)
+    distinct_order_count: int = 0
+    reconnect_count: int = 0
+
+
+class ExecutionWatchResponse(BaseModel):
+    """Bounded authenticated execution-watch response."""
+
+    session: BoundedStreamSession
+    summary: ExecutionWatchSummary
+    events: list[CapturedExecutionEvent] = Field(default_factory=list)
+    errors: list[StreamSectionError] = Field(default_factory=list)
+
+
+class OrderWaitResponse(BaseModel):
+    """Bounded order-wait response."""
+
+    order_id: str
+    condition_id: str | None = None
+    session: BoundedStreamSession
+    terminal: bool = False
+    timed_out: bool = False
+    terminal_outcome: str | None = None
+    final_event: CapturedExecutionEvent | None = None
+    final_order: NormalizedOrder | None = None
+    events: list[CapturedExecutionEvent] = Field(default_factory=list)
+    errors: list[StreamSectionError] = Field(default_factory=list)
+
+
+class ExecutionEventsResponse(BaseModel):
+    """Persisted execution-event listing response."""
+
+    items: list[CapturedExecutionEvent] = Field(default_factory=list)
+    total: int = 0
+
+
+class ExecutionReconciliationItem(BaseModel):
+    """Reconciliation result for one order id."""
+
+    order_id: str
+    condition_id: str | None = None
+    latest_event: CapturedExecutionEvent
+    latest_event_type: str
+    latest_trade_status: str | None = None
+    classification: str
+    message: str
+    rest_order: NormalizedOrder | None = None
+
+
+class ExecutionReconciliationSummary(BaseModel):
+    """Compact execution reconciliation counters."""
+
+    window_event_count: int = 0
+    total_orders: int = 0
+    consistent_open: int = 0
+    consistent_closed: int = 0
+    inconclusive: int = 0
+    mismatch: int = 0
+
+
+class ExecutionReconciliationResponse(BaseModel):
+    """Authenticated reconciliation response."""
+
+    reconciliation_id: str
+    created_at: str
+    summary: ExecutionReconciliationSummary
+    items: list[ExecutionReconciliationItem] = Field(default_factory=list)
+    errors: list[StreamSectionError] = Field(default_factory=list)
+
+
+class ExecutionReconciliationRecord(BaseModel):
+    """Append-only persisted reconciliation run."""
+
+    reconciliation_id: str
+    created_at: str
+    summary: ExecutionReconciliationSummary
+    items: list[ExecutionReconciliationItem] = Field(default_factory=list)
+    errors: list[StreamSectionError] = Field(default_factory=list)
+
+
+class ExecutionReconciliationsFile(BaseModel):
+    """Versioned local reconciliation state document."""
+
+    version: int = 1
+    reconciliations: list[ExecutionReconciliationRecord] = Field(default_factory=list)

@@ -1,6 +1,10 @@
-"""Authenticated dry-run execution planning package."""
+"""Authenticated execution planning, lifecycle, and bounded watch package."""
 
-from pm.execution.exceptions import ExecutionError, ExecutionValidationError
+from pm.execution.exceptions import (
+    ExecutionError,
+    ExecutionNotFoundError,
+    ExecutionValidationError,
+)
 from pm.execution.lifecycle import OrderLifecycleService
 from pm.execution.models import (
     ApprovalAssetStatus,
@@ -11,25 +15,41 @@ from pm.execution.models import (
     ApprovalResultsFile,
     ApprovalSetRequest,
     ApprovalSetResponse,
+    CapturedExecutionEvent,
     DryRunBookContext,
     DryRunPostContext,
     DryRunRequest,
     DryRunResolvedMarket,
     DryRunResponse,
+    ExecutionEventsResponse,
     ExecutionMutationResponse,
     ExecutionOrderPlanRecord,
     ExecutionOrderPlansFile,
     ExecutionOrderResultRecord,
     ExecutionOrderResultsFile,
     ExecutionReasonBlock,
+    ExecutionReconciliationItem,
+    ExecutionReconciliationRecord,
+    ExecutionReconciliationResponse,
+    ExecutionReconciliationsFile,
+    ExecutionReconciliationSummary,
+    ExecutionWatchResponse,
+    ExecutionWatchSummary,
+    NormalizedExecutionEvent,
     NormalizedOrder,
     OpenOrdersResponse,
     OrderGetResponse,
+    OrderWaitResponse,
     PostOrderRequest,
     PostOrderResponse,
 )
 from pm.execution.service import DryRunService
 from pm.execution.state import ExecutionStateError, ExecutionStateService
+from pm.execution.watch import (
+    ExecutionUserWebSocketClient,
+    ExecutionWatchService,
+    normalize_user_message,
+)
 
 __all__ = [
     "ApprovalAssetStatus",
@@ -38,6 +58,9 @@ __all__ = [
     "ApprovalPlansFile",
     "ApprovalResultRecord",
     "ApprovalResultsFile",
+    "ApprovalSetRequest",
+    "ApprovalSetResponse",
+    "CapturedExecutionEvent",
     "DryRunBookContext",
     "DryRunPostContext",
     "DryRunRequest",
@@ -45,21 +68,33 @@ __all__ = [
     "DryRunResponse",
     "DryRunService",
     "ExecutionError",
+    "ExecutionEventsResponse",
     "ExecutionMutationResponse",
+    "ExecutionNotFoundError",
     "ExecutionOrderPlanRecord",
     "ExecutionOrderPlansFile",
     "ExecutionOrderResultRecord",
     "ExecutionOrderResultsFile",
     "ExecutionReasonBlock",
+    "ExecutionReconciliationItem",
+    "ExecutionReconciliationRecord",
+    "ExecutionReconciliationsFile",
+    "ExecutionReconciliationResponse",
+    "ExecutionReconciliationSummary",
     "ExecutionStateError",
     "ExecutionStateService",
+    "ExecutionUserWebSocketClient",
     "ExecutionValidationError",
+    "ExecutionWatchResponse",
+    "ExecutionWatchService",
+    "ExecutionWatchSummary",
+    "NormalizedExecutionEvent",
     "NormalizedOrder",
     "OpenOrdersResponse",
     "OrderGetResponse",
     "OrderLifecycleService",
+    "OrderWaitResponse",
     "PostOrderRequest",
     "PostOrderResponse",
-    "ApprovalSetRequest",
-    "ApprovalSetResponse",
+    "normalize_user_message",
 ]
