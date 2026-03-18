@@ -3,30 +3,17 @@
 from __future__ import annotations
 
 import json
-<<<<<<< HEAD
 from collections.abc import Mapping
 from typing import Any
 
 import typer
-=======
-import sys
-from collections.abc import Mapping
-from typing import Any
-
->>>>>>> feat/02a-python-scaffold
 from rich.console import Console
 
 
 def emit_output(payload: Mapping[str, Any], *, json_output: bool, text: str) -> None:
     """Render deterministic JSON or a small human-readable message."""
     if json_output:
-<<<<<<< HEAD
         typer.echo(json.dumps(payload, indent=2, sort_keys=True))
-        return
-
-    Console().print(text)
-=======
-        print(json.dumps(payload, indent=2, sort_keys=True))
         return
 
     Console().print(text)
@@ -56,8 +43,7 @@ def emit_error(
             payload["error"]["identifier"] = identifier
         if hint is not None:
             payload["hint"] = dict(hint)
-        print(json.dumps(payload, indent=2, sort_keys=True))
+        typer.echo(json.dumps(payload, indent=2, sort_keys=True))
         return
 
-    Console(file=sys.stderr).print(message)
->>>>>>> feat/02a-python-scaffold
+    Console(stderr=True).print(message)

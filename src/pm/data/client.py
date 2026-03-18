@@ -26,7 +26,8 @@ from pm.data.models import (
     PositionsResponse,
     TradesResponse,
 )
-from pm.market import GammaClient, GammaClientError, GammaNotFoundError
+from pm.market.exceptions import GammaClientError, GammaNotFoundError
+from pm.market.gamma import GammaClient
 
 DEFAULT_DATA_URL = "https://data-api.polymarket.com"
 DEFAULT_TIMEOUT = 10.0

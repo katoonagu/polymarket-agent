@@ -1,6 +1,9 @@
 """Read-only Data API client package."""
 
-from pm.data.client import DataClient, DataClientError, DataNotFoundError, DataValidationError
+from __future__ import annotations
+
+from typing import TYPE_CHECKING
+
 from pm.data.models import (
     ActivityResponse,
     ClosedPositionsResponse,
@@ -18,6 +21,14 @@ from pm.data.models import (
     PositionsResponse,
     TradesResponse,
 )
+
+if TYPE_CHECKING:
+    from pm.data.client import (
+        DataClient,
+        DataClientError,
+        DataNotFoundError,
+        DataValidationError,
+    )
 
 __all__ = [
     "ActivityResponse",
@@ -40,3 +51,28 @@ __all__ = [
     "PositionsResponse",
     "TradesResponse",
 ]
+
+
+def __getattr__(name: str) -> object:
+    if name in {
+        "DataClient",
+        "DataClientError",
+        "DataNotFoundError",
+        "DataValidationError",
+    }:
+        from pm.data.client import (
+            DataClient,
+            DataClientError,
+            DataNotFoundError,
+            DataValidationError,
+        )
+
+        exports = {
+            "DataClient": DataClient,
+            "DataClientError": DataClientError,
+            "DataNotFoundError": DataNotFoundError,
+            "DataValidationError": DataValidationError,
+        }
+        return exports[name]
+
+    raise AttributeError(f"module 'pm.data' has no attribute {name!r}")

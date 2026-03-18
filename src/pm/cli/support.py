@@ -1,4 +1,3 @@
-<<<<<<< HEAD
 """Shared support for CLI output and error handling."""
 
 from __future__ import annotations
@@ -8,13 +7,13 @@ import sys
 from collections.abc import Sequence
 from dataclasses import dataclass
 from enum import StrEnum
-from typing import Any, NoReturn
+from typing import Any
 
 import click
 import typer
 from typer.core import TyperGroup
 
-from pm.common.output import emit_output
+from pm.common.output import emit_error, emit_output
 
 
 class OutputMode(StrEnum):
@@ -45,48 +44,29 @@ ROOT_JSON_OPTION = typer.Option(
 LOCAL_JSON_OPTION = typer.Option(
     False,
     "--json",
-    help="Emit JSON output. Compatibility alias for the global output mode.",
+    help="Emit deterministic JSON output. Compatibility alias for the global output mode.",
 )
 _UNKNOWN_COMMAND_PATTERN = re.compile(r"No such command ['\"](?P<command>[^'\"]+)['\"]")
 
 
 def configure_cli_settings(
-=======
-"""Shared CLI support helpers."""
-
-from __future__ import annotations
-
-from typing import Literal, TypedDict
-
-import typer
-
-from pm.common.output import emit_error, emit_output
-
-OutputMode = Literal["table", "json"]
-
-
-class CliState(TypedDict):
-    """Shared root CLI state carried through Typer contexts."""
-
-    output_mode: OutputMode
-
-
-def set_root_output_mode(
->>>>>>> feat/02a-python-scaffold
     ctx: typer.Context,
     *,
     output: OutputMode,
     json_output: bool,
 ) -> None:
-<<<<<<< HEAD
     """Store root-level CLI settings on the root context."""
     resolved_output = OutputMode.JSON if json_output else output
     ctx.obj = CLISettings(output_mode=resolved_output)
 
 
-def resolve_output_mode(ctx: typer.Context, *, json_output: bool) -> OutputMode:
+def resolve_output_mode(
+    ctx: typer.Context,
+    *,
+    local_json_output: bool = False,
+) -> OutputMode:
     """Resolve command output mode with local compatibility overrides."""
-    if json_output:
+    if local_json_output:
         return OutputMode.JSON
 
     root_context = ctx.find_root()
@@ -97,43 +77,41 @@ def resolve_output_mode(ctx: typer.Context, *, json_output: bool) -> OutputMode:
 
 
 def emit_command_output(
-    *,
     ctx: typer.Context,
     payload: dict[str, Any],
+    *,
     text: str,
-    json_output: bool,
+    local_json_output: bool = False,
 ) -> None:
     """Render a successful command response."""
-    output_mode = resolve_output_mode(ctx, json_output=json_output)
-    emit_output(payload, json_output=output_mode is OutputMode.JSON, text=text)
-
-
-def emit_cli_error(
-    *,
-    ctx: typer.Context,
-    code: str,
-    message: str,
-    resource: str,
-    identifier: str,
-    json_output: bool,
-) -> NoReturn:
-    """Render a structured command error and exit."""
-    payload = {
-        "ok": False,
-        "error": {
-            "code": code,
-            "message": message,
-            "resource": resource,
-            "identifier": identifier,
-        },
-    }
-    output_mode = resolve_output_mode(ctx, json_output=json_output)
     emit_output(
         payload,
-        json_output=output_mode is OutputMode.JSON,
-        text=f"Error: {message}",
+        json_output=resolve_output_mode(ctx, local_json_output=local_json_output)
+        is OutputMode.JSON,
+        text=text,
     )
-    raise typer.Exit(code=1)
+
+
+def emit_command_error(
+    ctx: typer.Context,
+    *,
+    code: str,
+    message: str,
+    resource: str | None = None,
+    identifier: str | None = None,
+    local_json_output: bool = False,
+    hint: dict[str, object] | None = None,
+) -> None:
+    """Render a structured command error using the shared output contract."""
+    emit_error(
+        code=code,
+        message=message,
+        json_output=resolve_output_mode(ctx, local_json_output=local_json_output)
+        is OutputMode.JSON,
+        resource=resource,
+        identifier=identifier,
+        hint=hint,
+    )
 
 
 def _wants_json(args: list[str]) -> bool:
@@ -162,9 +140,7 @@ def _get_param_identifier(exc: click.BadParameter) -> str:
     return ""
 
 
-def _classify_click_exception(
-    exc: click.ClickException,
-) -> tuple[str, str, str]:
+def _classify_click_exception(exc: click.ClickException) -> tuple[str, str, str]:
     message = exc.format_message()
 
     if isinstance(exc, click.BadParameter):
@@ -185,20 +161,23 @@ def render_click_exception(exc: click.ClickException, *, args: list[str]) -> Non
     message = exc.format_message()
 
     if not _wants_json(args):
-        typer.echo(f"Error: {message}")
+        typer.echo(f"Error: {message}", err=True)
         return
 
     code, resource, identifier = _classify_click_exception(exc)
-    payload = {
-        "ok": False,
-        "error": {
-            "code": code,
-            "message": message,
-            "resource": resource,
-            "identifier": identifier,
+    emit_output(
+        {
+            "ok": False,
+            "error": {
+                "code": code,
+                "message": message,
+                "resource": resource,
+                "identifier": identifier,
+            },
         },
-    }
-    emit_output(payload, json_output=True, text="")
+        json_output=True,
+        text="",
+    )
 
 
 class JSONAwareTyperGroup(TyperGroup):
@@ -243,59 +222,3 @@ class JSONAwareTyperGroup(TyperGroup):
                 raise
 
             raise SystemExit(1) from None
-=======
-    """Store the resolved root output mode on the Typer context."""
-    ctx.obj = CliState(output_mode="json" if json_output else output)
-
-
-def resolve_output_mode(
-    ctx: typer.Context,
-    *,
-    local_json_output: bool = False,
-) -> OutputMode:
-    """Resolve output mode with local flags overriding root configuration."""
-    if local_json_output:
-        return "json"
-
-    state = ctx.obj if isinstance(ctx.obj, dict) else {}
-    output_mode = state.get("output_mode")
-    if output_mode in ("table", "json"):
-        return output_mode
-    return "table"
-
-
-def emit_command_output(
-    ctx: typer.Context,
-    payload: dict[str, object],
-    *,
-    text: str,
-    local_json_output: bool = False,
-) -> None:
-    """Render command output using the shared output contract."""
-    emit_output(
-        payload,
-        json_output=resolve_output_mode(ctx, local_json_output=local_json_output) == "json",
-        text=text,
-    )
-
-
-def emit_command_error(
-    ctx: typer.Context,
-    *,
-    code: str,
-    message: str,
-    resource: str | None = None,
-    identifier: str | None = None,
-    local_json_output: bool = False,
-    hint: dict[str, object] | None = None,
-) -> None:
-    """Render a deterministic CLI error using the shared output contract."""
-    emit_error(
-        code=code,
-        message=message,
-        json_output=resolve_output_mode(ctx, local_json_output=local_json_output) == "json",
-        resource=resource,
-        identifier=identifier,
-        hint=hint,
-    )
->>>>>>> feat/02a-python-scaffold

@@ -1,265 +1,235 @@
-# 02 — Market Intelligence Spec
+# 02 - Market Intelligence Spec
 
-## Назначение
+## Purpose
 
-Модуль Market Intelligence отвечает за **поиск, нормализацию, наблюдение и ранжирование** рынков Polymarket.
+The market module owns read-only Polymarket market discovery, watchlists, saved snapshots, and deterministic recurring-market resolution. It does not place orders, manage keys, sign transactions, or call execution code.
 
-Это не execution module. Он не торгует. Он формирует **объекты наблюдения** и **market context** для остальных модулей.
+In the current phase, the market module composes:
 
-## Основные задачи
+- public Gamma discovery
+- public CLOB reads
+- public Data API summaries
+- local gitignored market state under `.pm/state/`
 
-1. Обнаруживать новые и существующие рынки.
-2. Поддерживать watchlists.
-3. Загружать market/event metadata.
-4. Следить за ценами YES/NO, spread, volume, orderbook, price history.
-5. Нормализовать recurring markets, например 5m/15m BTC.
-6. Поддерживать pool:
-   - выбранные рынки;
-   - активные рынки;
-   - наблюдаемые рынки;
-   - рынки с открытыми позициями;
-   - рынки в cooldown.
+## Current Responsibilities
 
-## Почему это важно
+### Public market discovery
 
-Для Polymarket самая частая ошибка в ботах — смешивать:
-- market discovery;
-- pricing;
-- strategy logic;
-- execution.
+The market module must support:
 
-В итоге бот либо делает лишние запросы, либо принимает решение по неполному market state.
+- free-text market search
+- market lookup by slug
+- event lookup by slug
+- market lookup by condition ID when higher-level services need it
 
-## Входы
+Normalized public market outputs must include at least:
 
-- ручные команды оператора;
-- strategy subscriptions;
-- recurring discovery rules;
-- wallet activity signals;
-- Arkham-triggered market candidates;
-- news / LLM suggestions;
-- existing positions requiring monitoring.
-
-## Выходы
-
-### 1. MarketRecord
-- `market_id`
-- `slug`
-- `event_id`
+- `market_slug`
+- `event_slug`
 - `question`
-- `description`
-- `category/tag/topic`
-- `outcome_yes_token_id`
-- `outcome_no_token_id`
-- `start_time`
-- `end_time`
-- `active/closed/archived`
-- `fees_enabled`
-- `liquidity metrics`
-- `watch_status`
+- `event_title`
+- `active`
+- `closed`
+- `enable_order_book`
+- `condition_id`
+- `token_ids`
+- `outcomes`
 
-### 2. MarketSnapshot
-- timestamp
-- bid/ask YES
-- bid/ask NO
-- midpoint
-- spread
-- last trade
-- book depth
-- recent volume
-- open interest if needed
-- volatility proxy
+When outcomes and token IDs align by index, the CLI should display explicit outcome-to-token mappings.
 
-### 3. Alerts
-- spread widened
-- price crossed threshold
-- large move
-- unusual size
-- low liquidity
-- recurring market rolled to next interval
-- watched wallet entered watched market
+### Local market watchlist
 
-## Подмодули
+The market watchlist is a local gitignored registry stored at:
 
-### A. Discovery
-Ищет рынки по:
-- slug;
-- id;
-- search query;
-- tags;
-- series-like rules;
-- recurring templates.
+- `.pm/state/market-watchlist.json`
 
-### B. Normalizer
-Приводит market metadata к одной внутренней схеме.
+It is versioned JSON and must use:
 
-### C. Watchlist Manager
-Поддерживает списки:
-- manual watchlist;
-- strategy watchlist;
-- open-position watchlist;
-- high-priority watchlist;
-- archival watchlist.
+- deterministic append order
+- atomic writes
+- schema validation errors instead of silent resets
 
-### D. Snapshot Service
-Снимает market state:
-- polling;
-- websocket subscription;
-- fallback mode при деградации сети.
+Each watched market entry includes:
 
-### E. Event Pool Classifier
-Маркирует рынок по статусу:
-- DISCOVERED
-- WATCHING
-- ELIGIBLE
-- IN_POSITION
-- EXIT_ONLY
-- COOL_DOWN
-- ARCHIVED
+- `market_slug`
+- `event_slug`
+- `question`
+- `label`
+- `tags`
+- `added_at`
 
-### F. Recurring Market Resolver
-Нужен для рынков типа “Bitcoin Up or Down — 15 min”.
-Его задача — не сканировать бесконечную историю, а уметь:
-- вычислять активный временной слот;
-- восстанавливать slug текущего события;
-- переходить на следующий слот;
-- архивировать прошлый слот.
-
-## Поддержка recurring crypto markets
-
-Этот тип рынков требует особого режима:
-
-- внешний price feed для underlying;
-- привязка к time bucket;
-- fast refresh interval;
-- более строгие latency thresholds;
-- отдельные risk limits от политических/новостных рынков.
-
-Для recurring markets нужна сущность:
-
-### `SeriesTemplate`
-- `template_id`
-- `base_asset` (BTC, ETH, etc.)
-- `interval` (5m, 15m, 1h)
-- `slug_rule`
-- `market_rollover_policy`
-- `pre-close handling`
-- `post-close archival`
-
-## Приоритеты наблюдения
-
-### Tier 1 — Open position markets
-Любой рынок, где есть реальный риск, обновляется первым.
-
-### Tier 2 — Execution candidates
-Рынки, по которым стратегия близка к входу.
-
-### Tier 3 — Research watchlist
-Наблюдение для анализа без немедленного входа.
-
-### Tier 4 — Historical archive
-Для replay и postmortem.
-
-## Ключевые метрики
-
-- spread
-- midpoint vs last trade discrepancy
-- best executable price
-- book depth at configured size
-- time since last trade
-- short-term price drift
-- liquidity score
-- market freshness
-- event freshness
-- number of watchers/strategies depending on market
-
-## Объекты хранения
-
-- `markets`
-- `market_events`
-- `market_snapshots`
-- `market_watchlists`
-- `series_templates`
-- `market_alerts`
-- `market_rollovers`
-
-## CLI команды
+Current commands:
 
 ```text
-pm market show --slug <slug>
-pm market event --slug <slug>
-pm market search --query "btc 15 min"
-pm market book --token-id <id>
-pm market price --token-id <id>
-pm market watch add --slug <slug>
-pm market watch remove --slug <slug>
-pm market watch list
-pm market snapshot --slug <slug>
-pm market alerts --slug <slug>
-pm market pool show --status WATCHING
-pm market recurring resolve --series btc-15m
-pm market recurring roll --series btc-15m
+pm market watch add --slug <market_slug> [--label <text>] [--tag <text>]
+pm market watch remove --slug <market_slug>
+pm market watch list [--json]
 ```
 
-## Правила проектирования
+Rules:
 
-### 1. Market data is cacheable, but not forever
-Нельзя полагаться на старые token IDs и stale snapshots.
+- `watch add` validates the slug through the public Gamma adapter first.
+- duplicate watches are rejected deterministically with `already_watched`.
+- tags are stored as unique sorted strings.
+- `watch list` reads only local state.
 
-### 2. Snapshot != execution price
-Displayed price и реально исполнимая цена могут отличаться.
+### Saved market snapshots
 
-### 3. Watchlists must be explicit
-У каждого рынка должен быть ответ на вопрос:
-- зачем мы его держим?
-- кто его подписал?
-- когда можно удалить?
+Saved market snapshots are append-only records stored at:
 
-### 4. Discovery must be deterministic
-Если recurring resolver сегодня нашёл рынок, завтра он должен найти тот же рынок по тем же правилам.
+- `.pm/state/market-snapshots.json`
 
-## Alerts policy
+Current commands:
 
-Модуль должен уметь генерировать алерты по условиям:
+```text
+pm market watch snapshot --slug <market_slug> [--json]
+pm market watch refresh [--json]
+```
 
-- `spread > X`
-- `midpoint moved > Y bps in Z seconds`
-- `watched wallet opened trade`
-- `watched wallet averaged down`
-- `price entered [a, b]`
-- `liquidity below threshold`
-- `resolution time < threshold`
-- `market rolled to next interval`
+Rules:
 
-## MVP definition
+- `snapshot --slug ...` may snapshot any valid market slug.
+- `snapshot --slug ...` does not auto-add the market to the watchlist.
+- `refresh` snapshots every watched market in watchlist order.
+- both commands remain read-only and save local artifacts only.
 
-MVP готов, если умеет:
+## Snapshot Assembly Contract
 
-1. найти рынок по slug;
-2. хранить token IDs;
-3. вести watchlist;
-4. получать snapshot bid/ask/spread;
-5. поддерживать recurring resolver для одной серии (например BTC 15m);
-6. поднимать алерт на crossing price threshold;
-7. отдавать единый market context для execution и strategy module.
+Snapshots are composed from existing public adapters only:
 
-## Phase 2 expansion
+- Gamma for market and event context
+- CLOB for midpoint, spread, and book summaries
+- Data API for open interest and top holders
 
-- related markets graph;
-- contradiction detection;
-- semantic clustering;
-- event summaries;
-- auto-generated watchlists;
-- cross-market hedging candidates.
+Each snapshot record should include:
 
-## Phase 1 Read-Only CLI Contract
+- `snapshot_at`
+- `market_slug`
+- `event_slug`
+- `question`
+- `event_title`
+- `condition_id`
+- `token_ids`
+- `outcomes`
+- `active`
+- `closed`
+- `watch_metadata` when the market is already watched
+- `tokens`
+- `open_interest`
+- `top_holders`
+- `holders_total_returned`
+- `errors`
 
-The current implementation for this phase is limited to public Gamma discovery.
+Token summaries are compact, not raw full-book dumps. Each token summary should include:
+
+- `token_id`
+- `outcome`
+- `midpoint`
+- `spread`
+- `best_bid`
+- `best_ask`
+- `bid_level_count`
+- `ask_level_count`
+
+Holder summaries should keep the first 5 normalized holder rows in Data API order.
+
+Upstream partial failures must not prevent snapshot persistence. They should be stored as structured errors:
+
+```json
+{
+  "section": "open_interest",
+  "code": "request_failed",
+  "message": "..."
+}
+```
+
+## Recurring-Market Resolver
+
+The recurring resolver does not use special recurring-market APIs. It works by applying deterministic heuristics to public Gamma search results.
+
+Current commands:
+
+```text
+pm market recurring latest --query <text> --interval <value> [--json]
+pm market recurring list --query <text> --interval <value> --limit <n> [--json]
+```
+
+Supported intervals:
+
+- `5m`
+- `15m`
+- `1h`
+
+Built-in interval markers:
+
+- `5m`: `5m`, `5 min`, `5 minute`, `5 minutes`
+- `15m`: `15m`, `15 min`, `15 minute`, `15 minutes`
+- `1h`: `1h`, `1 hour`, `60 min`, `60 minutes`
+
+### Ranking rules
+
+Candidates are ranked deterministically in this order:
+
+1. active markets before inactive
+2. open markets before closed
+3. exact interval-marker matches before weaker matches
+4. stronger query-token match score across question, event title, market slug, and event slug
+5. newer or upcoming candidate by Gamma time-like fields when present:
+   - `endDate`
+   - `resolutionDate`
+   - `startDate`
+6. original API order when no recency field exists
+7. `market_slug` ascending as the final tie-break
+
+`latest` returns the single top-ranked candidate from the same ranking logic.
+
+`list` returns ranked candidates plus explainability fields:
+
+- `rank`
+- `match_score`
+- `matched_interval`
+- `recency_source`
+
+## CLI Contract
+
+The current market namespace is:
 
 ```text
 pm market search --query "<text>" --limit <n> [--json]
 pm market show --slug <market-slug> [--json]
 pm market event --slug <event-slug> [--json]
+pm market watch add --slug <market-slug> [--label <text>] [--tag <text>]
+pm market watch remove --slug <market-slug>
+pm market watch list [--json]
+pm market watch snapshot --slug <market-slug> [--json]
+pm market watch refresh [--json]
+pm market recurring latest --query <text> --interval <5m|15m|1h> [--json]
+pm market recurring list --query <text> --interval <5m|15m|1h> --limit <n> [--json]
 ```
 
-Current normalized outputs must stay read-only and machine-friendly. They expose market slug, question, active/closed state, `enableOrderBook`, `conditionId`, `clobTokenIds`, `outcomes`, and event slug/title when available.
+Temporary compatibility aliases also exist:
+
+```text
+pm market book --token-id <id>
+pm market price --token-id <id>
+```
+
+These aliases forward to the canonical public CLOB namespace and should be treated as deprecated.
+
+## Determinism and Non-Goals
+
+The market module must stay:
+
+- read-only
+- deterministic
+- explainable
+- file-backed instead of database-backed in this phase
+
+It must not add:
+
+- wallet auth
+- order placement
+- execution engine calls
+- websocket subscriptions
+- background daemons
+- hidden ranking weights or unsupported recurring APIs

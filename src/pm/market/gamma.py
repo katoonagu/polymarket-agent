@@ -1,11 +1,3 @@
-<<<<<<< HEAD
-"""Read-only Gamma REST client for market discovery."""
-
-from __future__ import annotations
-
-import os
-from typing import Any, Self
-=======
 """Read-only Gamma client for market discovery."""
 
 from __future__ import annotations
@@ -13,29 +5,13 @@ from __future__ import annotations
 import json
 import os
 from collections.abc import Iterable
+from dataclasses import dataclass
 from typing import Any
->>>>>>> feat/02a-python-scaffold
 
 import httpx
 
 from pm import __version__
-<<<<<<< HEAD
 from pm.market.exceptions import GammaClientError, GammaNotFoundError
-from pm.market.models import (
-    GammaEventWire,
-    GammaMarketWire,
-    GammaSearchResponseWire,
-    NormalizedEvent,
-    NormalizedMarket,
-)
-
-DEFAULT_GAMMA_URL = "https://gamma-api.polymarket.com"
-DEFAULT_TIMEOUT_SECONDS = 10.0
-
-
-class GammaClient:
-    """Sync read-only client for the public Gamma API."""
-=======
 from pm.market.models import MarketSearchResponse, NormalizedEvent, NormalizedMarket
 
 DEFAULT_GAMMA_URL = "https://gamma-api.polymarket.com"
@@ -44,34 +20,24 @@ QueryValue = str | int | float | bool | None
 QueryMapping = dict[str, QueryValue]
 
 
-class GammaClientError(RuntimeError):
-    """Raised when Gamma returns an unexpected response."""
+@dataclass(frozen=True, slots=True)
+class GammaSearchCandidate:
+    """Internal normalized search candidate with raw timing context."""
 
-
-class GammaNotFoundError(GammaClientError):
-    """Raised when a Gamma resource lookup returns 404."""
+    market: NormalizedMarket
+    search_index: int
+    start_date: str | None = None
+    end_date: str | None = None
+    resolution_date: str | None = None
 
 
 class GammaClient:
     """Small sync client for the public Gamma API."""
->>>>>>> feat/02a-python-scaffold
 
     def __init__(
         self,
         *,
         base_url: str | None = None,
-<<<<<<< HEAD
-        timeout: float = DEFAULT_TIMEOUT_SECONDS,
-        client: httpx.Client | None = None,
-    ) -> None:
-        resolved_base_url = (
-            base_url or os.getenv("POLYMARKET_GAMMA_URL") or DEFAULT_GAMMA_URL
-        ).rstrip("/")
-        self._owns_client = client is None
-        self._client = client or httpx.Client(
-            base_url=resolved_base_url,
-            follow_redirects=True,
-=======
         timeout: float = DEFAULT_TIMEOUT,
         client: httpx.Client | None = None,
     ) -> None:
@@ -80,40 +46,10 @@ class GammaClient:
             base_url=(
                 base_url or os.getenv("POLYMARKET_GAMMA_URL") or DEFAULT_GAMMA_URL
             ).rstrip("/"),
->>>>>>> feat/02a-python-scaffold
             timeout=timeout,
             headers={"User-Agent": f"polymarket-agent/{__version__}"},
         )
 
-<<<<<<< HEAD
-    def __enter__(self) -> Self:
-        return self
-
-    def __exit__(self, *_args: object) -> None:
-        self.close()
-
-    def close(self) -> None:
-        """Close the owned HTTP client."""
-        if self._owns_client:
-            self._client.close()
-
-    def list_active_markets(self, limit: int, offset: int = 0) -> list[NormalizedMarket]:
-        """List active markets from Gamma."""
-        payload = self._get_json(
-            "/markets",
-            params={
-                "active": "true",
-                "closed": "false",
-                "limit": limit,
-                "offset": offset,
-            },
-        )
-        markets = [GammaMarketWire.model_validate(item) for item in self._expect_list(payload)]
-        return [NormalizedMarket.from_wire(market) for market in markets]
-
-    def search_markets(self, query: str, limit: int) -> list[NormalizedMarket]:
-        """Search markets via Gamma's public search endpoint."""
-=======
     def __enter__(self) -> GammaClient:
         return self
 
@@ -127,61 +63,42 @@ class GammaClient:
 
     def search_markets(self, query: str, limit: int) -> MarketSearchResponse:
         """Search Gamma markets by free-text query."""
->>>>>>> feat/02a-python-scaffold
         normalized_query = query.strip()
+        candidates = self.search_market_candidates(normalized_query, limit=limit)
+        results = [candidate.market for candidate in candidates]
+        return MarketSearchResponse(query=normalized_query, results=results, total=len(results))
+
+    def search_market_candidates(self, query: str, limit: int) -> list[GammaSearchCandidate]:
+        """Return normalized search candidates with raw timing context."""
         payload = self._get_json(
             "/public-search",
             params={
-                "q": normalized_query,
+                "q": query.strip(),
                 "limit_per_type": limit,
                 "search_tags": "false",
                 "search_profiles": "false",
             },
         )
-<<<<<<< HEAD
-        search_response = GammaSearchResponseWire.model_validate(payload)
-        results: list[NormalizedMarket] = []
-        seen_slugs: set[str] = set()
-
-        for event in search_response.events:
-            for market in event.markets:
-                normalized_market = NormalizedMarket.from_wire(
-                    market,
-                    event_slug=event.slug,
-                    event_title=event.title,
-                )
-                if normalized_market.market_slug in seen_slugs:
-                    continue
-                results.append(normalized_market)
-                seen_slugs.add(normalized_market.market_slug)
-                if len(results) >= limit:
-                    return results
-
-        return results
-
-    def get_market_by_slug(self, slug: str) -> NormalizedMarket:
-        """Fetch a single market by slug."""
-        payload = self._get_json(f"/markets/slug/{slug}", not_found=("market", slug))
-        market = GammaMarketWire.model_validate(payload)
-        return NormalizedMarket.from_wire(market)
-
-    def get_event_by_slug(self, slug: str) -> NormalizedEvent:
-        """Fetch a single event by slug."""
-        payload = self._get_json(f"/events/slug/{slug}", not_found=("event", slug))
-        event = GammaEventWire.model_validate(payload)
-        return NormalizedEvent.from_wire(event)
-=======
         events = payload.get("events")
         if not isinstance(events, list):
             raise GammaClientError("Gamma search response did not include an events list.")
 
         seen: set[str] = set()
-        results: list[NormalizedMarket] = []
+        results: list[GammaSearchCandidate] = []
+        search_index = 0
         for event_payload in events:
             if not isinstance(event_payload, dict):
                 continue
             event_slug = _string_or_none(event_payload.get("slug"))
             event_title = _string_or_none(event_payload.get("title"))
+            fallback_start = _first_time_field(event_payload, "startDate", "start_date")
+            fallback_end = _first_time_field(event_payload, "endDate", "end_date")
+            fallback_resolution = _first_time_field(
+                event_payload,
+                "resolutionDate",
+                "resolution_date",
+            )
+
             for market_payload in _iter_markets(event_payload.get("markets")):
                 market = _normalize_market(
                     market_payload,
@@ -190,20 +107,45 @@ class GammaClient:
                 )
                 if market.market_slug in seen:
                     continue
-                seen.add(market.market_slug)
-                results.append(market)
-                if len(results) >= limit:
-                    return MarketSearchResponse(
-                        query=normalized_query,
-                        results=results,
-                        total=len(results),
-                    )
 
-        return MarketSearchResponse(query=normalized_query, results=results, total=len(results))
+                seen.add(market.market_slug)
+                results.append(
+                    GammaSearchCandidate(
+                        market=market,
+                        search_index=search_index,
+                        start_date=_first_time_field(
+                            market_payload,
+                            "startDate",
+                            "start_date",
+                        )
+                        or fallback_start,
+                        end_date=_first_time_field(
+                            market_payload,
+                            "endDate",
+                            "end_date",
+                        )
+                        or fallback_end,
+                        resolution_date=_first_time_field(
+                            market_payload,
+                            "resolutionDate",
+                            "resolution_date",
+                        )
+                        or fallback_resolution,
+                    )
+                )
+                search_index += 1
+                if len(results) >= limit:
+                    return results
+
+        return results
 
     def get_market_by_slug(self, slug: str) -> NormalizedMarket:
         """Fetch a single market by slug."""
-        payload = self._get_json(f"/markets/slug/{slug}", resource="market", identifier=slug)
+        payload = self._get_json(
+            f"/markets/slug/{slug}",
+            resource="market",
+            identifier=slug,
+        )
         if not isinstance(payload, dict):
             raise GammaClientError("Gamma market response was not an object.")
         return _normalize_market(payload)
@@ -219,7 +161,7 @@ class GammaClient:
         if not isinstance(payload, list):
             raise GammaClientError("Gamma market-by-condition response was not a list.")
         if not payload:
-            raise GammaNotFoundError(f"market '{condition_id}' was not found.")
+            raise GammaNotFoundError(resource="market", identifier=condition_id)
         first_market = payload[0]
         if not isinstance(first_market, dict):
             raise GammaClientError("Gamma market-by-condition response item was not an object.")
@@ -227,63 +169,39 @@ class GammaClient:
 
     def get_event_by_slug(self, slug: str) -> NormalizedEvent:
         """Fetch a single event by slug."""
-        payload = self._get_json(f"/events/slug/{slug}", resource="event", identifier=slug)
+        payload = self._get_json(
+            f"/events/slug/{slug}",
+            resource="event",
+            identifier=slug,
+        )
         if not isinstance(payload, dict):
             raise GammaClientError("Gamma event response was not an object.")
         return _normalize_event(payload)
->>>>>>> feat/02a-python-scaffold
 
     def _get_json(
         self,
         path: str,
         *,
-<<<<<<< HEAD
-        params: dict[str, Any] | None = None,
-        not_found: tuple[str, str] | None = None,
-=======
         params: QueryMapping | None = None,
         resource: str | None = None,
         identifier: str | None = None,
->>>>>>> feat/02a-python-scaffold
     ) -> Any:
         try:
             response = self._client.get(path, params=params)
         except httpx.HTTPError as exc:
-<<<<<<< HEAD
-            msg = f"Gamma request failed for '{path}'"
-            raise GammaClientError(msg) from exc
-
-        if response.status_code == 404 and not_found is not None:
-            raise GammaNotFoundError(resource=not_found[0], identifier=not_found[1])
-
-        if response.is_error:
-            msg = f"Gamma request returned status {response.status_code} for '{path}'"
-            raise GammaClientError(msg)
-=======
             raise GammaClientError("Gamma request failed.") from exc
 
         if response.status_code == 404 and resource is not None and identifier is not None:
-            raise GammaNotFoundError(f"{resource} '{identifier}' was not found.")
+            raise GammaNotFoundError(resource=resource, identifier=identifier)
 
         if response.status_code >= 400:
             raise GammaClientError(
                 f"Gamma request failed with status {response.status_code} for {path}."
             )
->>>>>>> feat/02a-python-scaffold
 
         try:
             return response.json()
         except ValueError as exc:
-<<<<<<< HEAD
-            msg = f"Gamma returned invalid JSON for '{path}'"
-            raise GammaClientError(msg) from exc
-
-    def _expect_list(self, payload: Any) -> list[dict[str, Any]]:
-        if isinstance(payload, list):
-            return payload
-        msg = "Gamma returned an unexpected payload shape."
-        raise GammaClientError(msg)
-=======
             raise GammaClientError("Gamma response body was not valid JSON.") from exc
 
 
@@ -336,6 +254,8 @@ def _normalize_market(
         condition_id=_string_or_none(payload.get("conditionId")),
         token_ids=_parse_string_list(payload.get("clobTokenIds")),
         outcomes=_parse_string_list(payload.get("outcomes")),
+        min_tick=_number_or_none(payload.get("orderPriceMinTickSize")),
+        min_order_size=_number_or_none(payload.get("orderMinSize")),
     )
 
 
@@ -387,6 +307,19 @@ def _string_or_none(value: Any) -> str | None:
     return None
 
 
+def _number_or_none(value: Any) -> int | float | None:
+    if isinstance(value, (int, float)):
+        return value
+    return None
+
+
 def _bool_from_value(value: Any) -> bool:
     return bool(value)
->>>>>>> feat/02a-python-scaffold
+
+
+def _first_time_field(payload: dict[str, Any], *names: str) -> str | None:
+    for name in names:
+        value = _string_or_none(payload.get(name))
+        if value is not None:
+            return value
+    return None
