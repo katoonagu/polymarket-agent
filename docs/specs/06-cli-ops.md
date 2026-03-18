@@ -8,6 +8,8 @@ In the current phase, the CLI is read-only. It may:
 
 - read public Gamma data
 - read public CLOB data
+- read bounded public market websocket data
+- read bounded public RTDS crypto price data
 - read public Data API data
 - manage local gitignored watchlists and wallet state
 
@@ -171,6 +173,27 @@ Rules:
 - monitor and shadow commands never execute trades
 - scoring and compare remain deterministic and explainable
 
+### `pm stream`
+
+Bounded read-only public stream sessions for market and crypto context.
+
+```text
+pm stream market --token-id <id> --seconds <n> [--max-events <n>] [--json]
+pm stream crypto --symbol <symbol> --source <binance|chainlink> --seconds <n> [--max-events <n>] [--json]
+pm stream watch --slug <market-slug> --seconds <n> [--max-events <n>] [--json]
+pm stream recurring --query <text> --interval <5m|15m|1h> --seconds <n> [--max-events <n>] [--json]
+```
+
+Rules:
+
+- every stream command requires `--seconds`
+- sessions are bounded and operator-driven, not daemonized
+- captured events are normalized and appended to `.pm/state/stream-events.jsonl`
+- market stream commands use the public market websocket only
+- crypto stream commands use public RTDS feeds only
+- `pm stream recurring` reuses the recurring resolver and combines market stream context with Binance RTDS context
+- no command opens a private user websocket or calls execution code
+
 ## Local Gitignored State
 
 Current file-backed state under `.pm/state/`:
@@ -181,6 +204,7 @@ Current file-backed state under `.pm/state/`:
 - `wallet-shadow-runs.json`
 - `market-watchlist.json`
 - `market-snapshots.json`
+- `stream-events.jsonl`
 
 Rules:
 
@@ -205,6 +229,7 @@ Current partial-result flows include:
 - `pm wallet monitor run`
 - `pm wallet shadow simulate`
 - `pm wallet shadow report`
+- `pm stream recurring`
 
 Structured partial errors should look like:
 

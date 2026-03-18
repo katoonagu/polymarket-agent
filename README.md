@@ -37,6 +37,17 @@
 
 `pm market book` and `pm market price` still exist as compatibility aliases, but the canonical public namespace is `pm clob`.
 
+### Public bounded streams
+
+```powershell
+.venv\Scripts\pm stream market --token-id <token-id> --seconds 5 --max-events 20 --json
+.venv\Scripts\pm stream crypto --symbol BTC --source binance --seconds 5 --max-events 20 --json
+.venv\Scripts\pm stream watch --slug <market-slug> --seconds 5 --max-events 20 --json
+.venv\Scripts\pm stream recurring --query "btc" --interval 15m --seconds 5 --max-events 20 --json
+```
+
+These sessions are always bounded, persist normalized captured events locally, and never open private user streams or call execution code.
+
 ### Public Data API reads
 
 ```powershell
@@ -100,6 +111,7 @@ This branch uses local file-backed state under `.pm/state/`. These files are rep
 - `wallet-shadow-runs.json`
 - `market-watchlist.json`
 - `market-snapshots.json`
+- `stream-events.jsonl`
 
 They are append-only or registry-style JSON documents used for deterministic operator workflows. They are not a database and they do not enable background daemons or live execution.
 
@@ -121,6 +133,7 @@ py -3.11 -m venv .venv
 - no order placement
 - no execution engine calls
 - no user websocket
+- no public stream daemon
 - no background daemon
 - no database
 

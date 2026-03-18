@@ -8,6 +8,8 @@ In the current phase, the market module composes:
 
 - public Gamma discovery
 - public CLOB reads
+- bounded public market websocket reads
+- bounded public RTDS crypto price reads
 - public Data API summaries
 - local gitignored market state under `.pm/state/`
 
@@ -190,6 +192,29 @@ Candidates are ranked deterministically in this order:
 - `matched_interval`
 - `recency_source`
 
+## Public Streaming Layer
+
+The market intelligence surface now includes bounded read-only public stream sessions. These sessions are operator-triggered only. They do not start a daemon, do not open user-authenticated channels, and do not call execution code.
+
+Current commands:
+
+```text
+pm stream market --token-id <id> --seconds <n> [--max-events <n>] [--json]
+pm stream crypto --symbol <symbol> --source <binance|chainlink> --seconds <n> [--max-events <n>] [--json]
+pm stream watch --slug <market-slug> --seconds <n> [--max-events <n>] [--json]
+pm stream recurring --query <text> --interval <5m|15m|1h> --seconds <n> [--max-events <n>] [--json]
+```
+
+Rules:
+
+- all sessions are bounded by required `--seconds`
+- `--max-events` is optional and may end the session early
+- market stream normalization handles `book`, `best_bid_ask`, `price_change`, `last_trade_price`, and `tick_size_change`
+- RTDS normalization supports Binance and Chainlink public crypto price feeds
+- captured events are appended to `.pm/state/stream-events.jsonl`
+- reconnects are limited and deterministic
+- recurring streams reuse the recurring resolver and infer supported crypto symbols from resolved market text
+
 ## CLI Contract
 
 The current market namespace is:
@@ -205,6 +230,10 @@ pm market watch snapshot --slug <market-slug> [--json]
 pm market watch refresh [--json]
 pm market recurring latest --query <text> --interval <5m|15m|1h> [--json]
 pm market recurring list --query <text> --interval <5m|15m|1h> --limit <n> [--json]
+pm stream market --token-id <id> --seconds <n> [--max-events <n>] [--json]
+pm stream crypto --symbol <symbol> --source <binance|chainlink> --seconds <n> [--max-events <n>] [--json]
+pm stream watch --slug <market-slug> --seconds <n> [--max-events <n>] [--json]
+pm stream recurring --query <text> --interval <5m|15m|1h> --seconds <n> [--max-events <n>] [--json]
 ```
 
 Temporary compatibility aliases also exist:
@@ -230,6 +259,6 @@ It must not add:
 - wallet auth
 - order placement
 - execution engine calls
-- websocket subscriptions
+- private websocket subscriptions
 - background daemons
 - hidden ranking weights or unsupported recurring APIs
