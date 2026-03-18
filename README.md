@@ -78,6 +78,21 @@ These sessions are always bounded, persist normalized captured events locally, a
 .venv\Scripts\pm wallet shadow report --address <0x...> --json
 ```
 
+### Read-only strategy registry and orchestrator
+
+```powershell
+.venv\Scripts\pm strategy list --json
+.venv\Scripts\pm strategy show --name wallet_shadow_copy --json
+.venv\Scripts\pm strategy validate --name wallet_shadow_copy --json
+.venv\Scripts\pm strategy evaluate --name wallet_shadow_copy --limit 20 --json
+.venv\Scripts\pm strategy intents --limit 20 --json
+.venv\Scripts\pm strategy review --intent-id <intent-id> --json
+.venv\Scripts\pm strategy approve --intent-id <intent-id> --json
+.venv\Scripts\pm strategy reject --intent-id <intent-id> --reason "operator veto" --json
+```
+
+This namespace is still fully read-only. `evaluate` persists candidate intents and derived decisions only. `approve` and `reject` are local review actions that append decision history; they do not create orders or call execution code.
+
 ## Output Contract
 
 The root CLI supports:
@@ -112,6 +127,9 @@ This branch uses local file-backed state under `.pm/state/`. These files are rep
 - `market-watchlist.json`
 - `market-snapshots.json`
 - `stream-events.jsonl`
+- `strategies.json`
+- `strategy-intents.json`
+- `strategy-decisions.json`
 
 They are append-only or registry-style JSON documents used for deterministic operator workflows. They are not a database and they do not enable background daemons or live execution.
 
@@ -142,4 +160,5 @@ py -3.11 -m venv .venv
 - `docs/specs/01-execution-engine.md`
 - `docs/specs/02-market-intel.md`
 - `docs/specs/03-copytrading-wallet-intel.md`
+- `docs/specs/05-strategy-orchestrator.md`
 - `docs/specs/06-cli-ops.md`

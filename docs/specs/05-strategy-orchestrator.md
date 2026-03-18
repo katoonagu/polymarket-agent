@@ -1,244 +1,220 @@
-# 05 — Strategy Engine & Orchestrator Spec
+# 05 - Read-Only Strategy and Orchestrator Spec
 
-## Назначение
+## Purpose
 
-Strategy Engine генерирует торговые идеи.
-Orchestrator решает, что из них можно превратить в live intent.
+This phase adds a deterministic strategy registry and orchestration layer on top of the existing public intelligence stack. The strategy layer consumes read-only market, wallet, and stream artifacts and produces candidate intents plus manual review decisions only.
 
-Именно здесь должно происходить разделение между:
+It does not:
 
-- “интересно”
-- “наблюдаем”
-- “разрешено к торговле”
-- “исполняем сейчас”
+- authenticate wallets
+- sign transactions
+- place or cancel orders
+- call the execution engine
+- run as a daemon
+- require a database
 
-## Почему это критично
+Execution remains the only module allowed to place or cancel orders in later phases.
 
-Без Orchestrator система превращается в набор автономных модулей, каждый из которых считает себя правым:
-- copy module хочет копировать;
-- AI analyst хочет открыть новую идею;
-- operator вручную добавляет ещё один сигнал;
-- Arkham module поднимает suspicious alert.
+## Current Scope
 
-Нужен один центр policy arbitration.
-
-## Уровни стратегии
-
-### Level 0 — Manual
-Оператор задаёт конкретную сделку.
-
-### Level 1 — Rule-based
-Простые правила:
-- price in range;
-- wallet entered;
-- market is active;
-- spread <= max;
-- position size <= cap.
-
-### Level 2 — Composite
-Несколько условий:
-- wallet signal + market liquidity + event freshness;
-- Arkham alert + manual approval;
-- recurring BTC signal + microstructure filter.
-
-### Level 3 — AI-assisted
-LLM анализирует:
-- рынок;
-- связанные события;
-- новости;
-- комментарии;
-- watchlist context.
-
-Но результатом всё равно должен быть структурированный signal, а не свободный текст.
-
-## Сущности
-
-### StrategyDefinition
-- `strategy_id`
-- `name`
-- `mode` = manual / rules / ai-assisted
-- `status` = active / paused / shadow
-- `markets_scope`
-- `wallet_scope`
-- `risk_profile`
-- `approval_policy`
-- `priority`
-- `cooldown_rules`
-
-### Signal
-- `signal_id`
-- `source_module`
-- `strategy_id`
-- `signal_type`
-- `market_slug`
-- `side`
-- `confidence`
-- `reasoning_summary`
-- `expires_at`
-
-### CandidateIntent
-Это уже почти сделка, но ещё не execution:
-- signal data
-- proposed size
-- proposed price
-- wallet
-- urgency
-- risk score
-- approval requirement
-
-## Подмодули
-
-### A. Strategy Registry
-Реестр стратегий, версий и статусов.
-
-### B. Signal Bus
-Единый intake для сигналов от:
-- manual CLI;
-- market intel;
-- copy-trading;
-- Arkham;
-- AI analyst.
-
-### C. Signal Evaluator
-Оценивает signal:
-- не устарел ли;
-- есть ли рынок;
-- есть ли конфликт;
-- соответствует ли области действия стратегии.
-
-### D. Portfolio Allocator
-Решает:
-- какой кошелёк использовать;
-- какой размер выделить;
-- не конфликтует ли новая позиция с существующими.
-
-### E. Approval Gate
-Режимы:
-- auto
-- manual
-- dual confirmation
-- shadow only
-
-### F. Conflict Resolver
-Например:
-- strategy A хочет BUY YES
-- strategy B хочет BUY NO
-- copy module уже открыл similar exposure
-
-Нужен единый policy:
-- reject
-- reduce size
-- hedge
-- queue
-- ask human
-
-## Рекомендуемые первые стратегии
-
-### Strategy A — Manual trader
-Все действия идут вручную, но через execution policy.
-
-### Strategy B — Smart wallet copier
-Только fixed size, only-entry, tight caps.
-
-### Strategy C — BTC recurring watcher
-Следит за 15m рынком, но сначала только watch/alert, не auto-trade.
-
-### Strategy D — Arkham suspicious alert
-Только создаёт watchlist и human review task.
-
-## Что не делать в v1
-
-- Не использовать LLM для final price selection.
-- Не давать модели прямой доступ к execution secrets.
-- Не объединять все сигналы в “black-box score”, который нельзя объяснить.
-- Не делать dynamic sizing без жёстких потолков.
-
-## Decision states
-
-Для каждого signal/candidate:
-
-- OBSERVE
-- ENRICH
-- WAIT
-- APPROVE
-- REJECT
-- EXECUTE
-- CANCEL
-- ESCALATE_TO_HUMAN
-
-## Пример policy
-
-```text
-IF source = wallet_copy
-AND wallet_status = approved
-AND market_spread <= 0.03
-AND copy_price_drift <= 0.02
-AND market_exposure_after_trade <= cap
-THEN candidate_intent = APPROVED_AUTO
-ELSE candidate_intent = REJECTED or HUMAN_REVIEW
-```
-
-## Пример composite policy
-
-```text
-IF source = arkham_alert
-AND suspicion_score >= 70
-THEN add_to_watchlist
-AND require manual review
-AND prohibit direct auto-trade
-```
-
-## Аллокация по кошелькам
-
-Orchestrator должен уметь:
-
-- выбрать wallet pool;
-- исключить paused wallets;
-- применить wallet-specific caps;
-- избежать концентрации одной стратегии в одном кошельке;
-- учитывать already-open exposure.
-
-## CLI команды
+The current branch exposes a read-only `pm strategy` namespace with:
 
 ```text
 pm strategy list
-pm strategy show --id <strategy>
-pm strategy pause --id <strategy>
-pm strategy resume --id <strategy>
-pm strategy signal review --id <signal>
-pm strategy approve --id <candidate>
-pm strategy reject --id <candidate>
-pm strategy alloc show
-pm strategy alloc rebalance --dry-run
+pm strategy show --name <name>
+pm strategy validate --name <name>
+pm strategy evaluate --name <name> [--limit <n>]
+pm strategy intents [--limit <n>]
+pm strategy review --intent-id <id>
+pm strategy approve --intent-id <id>
+pm strategy reject --intent-id <id> --reason <text>
 ```
 
-## Хранилища
+These commands operate on local gitignored state and existing public intelligence outputs.
 
-- `strategies`
-- `strategy_versions`
-- `signals`
-- `candidate_intents`
-- `approval_decisions`
-- `portfolio_allocations`
-- `strategy_metrics`
+## Local State
 
-## MVP definition
+Strategy state lives under `.pm/state/`:
 
-MVP готов, если система умеет:
+- `strategies.json`
+- `strategy-intents.json`
+- `strategy-decisions.json`
 
-1. регистрировать несколько стратегий;
-2. принимать signal из разных модулей;
-3. проверять approval policy;
-4. решать конфликт сигналов;
-5. строить candidate intent;
-6. передавать только approved intent в execution engine;
-7. логировать причину каждого reject/approve.
+Rules:
 
-## Phase 2 expansion
+- files are versioned JSON documents
+- writes are atomic
+- append order is deterministic
+- validation failures surface as explicit state errors
+- past intents are never mutated in place
+- current review status is derived from the latest decision record for an intent
 
-- probabilistic portfolio allocation;
-- confidence decay;
-- strategy voting;
-- event-topic exposure graph;
-- AI-generated market briefs;
-- auto-suggested rules from analyst mode.
+## Seeded Strategy Registry
+
+The registry is seeded and deterministic in v1. There are no create, edit, pause, or resume commands yet.
+
+Current seeded strategies:
+
+1. `wallet_shadow_copy`
+2. `market_watch_reversion`
+3. `recurring_crypto_interval_observe`
+
+In v1, strategy names match strategy types exactly.
+
+## Strategy Inputs
+
+### `wallet_shadow_copy`
+
+Consumes persisted wallet shadow simulation output:
+
+- `wallet-shadow-runs.json`
+
+It looks only at upstream shadow candidates and never executes them.
+
+### `market_watch_reversion`
+
+Consumes watched-market state:
+
+- `market-watchlist.json`
+- `market-snapshots.json`
+
+It compares the latest saved baseline snapshot to a fresh current snapshot built from public Gamma, CLOB, and Data reads.
+
+### `recurring_crypto_interval_observe`
+
+Consumes recurring market resolution and persisted stream context:
+
+- recurring Gamma resolution
+- `stream-events.jsonl`
+
+It compares recurring market direction with persisted crypto price direction.
+
+## Candidate Intent Contract
+
+Strategy evaluation persists normalized candidate intents with at least:
+
+- `intent_id`
+- `strategy_name`
+- `strategy_type`
+- `source_kind`
+- `market_slug`
+- `condition_id`
+- `token_id`
+- `side`
+- `outcome`
+- `decision`
+- `reason_blocks`
+- `created_at`
+- `source_refs`
+
+`source_refs` point back to the upstream wallet, market, or stream artifacts used to derive the intent.
+
+## Decision States
+
+The current read-only phase uses:
+
+- `OBSERVE`
+- `WAIT`
+- `APPROVE`
+- `REJECT`
+
+Rules:
+
+- `evaluate` may emit only `OBSERVE`, `WAIT`, or `REJECT`
+- `APPROVE` is manual only
+- `approve` and `reject` append local review records only
+- no decision is forwarded to execution in this phase
+
+## Seeded Policy Behavior
+
+### `wallet_shadow_copy`
+
+Source:
+
+- persisted wallet shadow candidate intents
+
+Behavior:
+
+- upstream `WOULD_COPY` candidates with complete context become `WAIT`
+- upstream `WOULD_COPY` candidates with incomplete or stale context become `OBSERVE`
+- upstream `SKIP` candidates become `REJECT`
+
+### `market_watch_reversion`
+
+Source:
+
+- watched markets
+- baseline market snapshots
+- fresh current snapshot context
+
+Behavior:
+
+- default outcome is conservative
+- emits `WAIT` only when the market is active, open, and widened spread plus midpoint drift exceed the seeded thresholds
+- emits `OBSERVE` when data is incomplete or the move is weaker
+- emits `REJECT` when the market is inactive or closed
+
+### `recurring_crypto_interval_observe`
+
+Source:
+
+- recurring resolver output
+- persisted market stream events
+- persisted RTDS crypto events
+
+Behavior:
+
+- emits `WAIT` only when recurring market direction aligns with crypto direction strongly enough
+- emits `OBSERVE` when the recurring candidate is valid but alignment is weak or incomplete
+- emits `REJECT` when the resolved recurring market is inactive or closed
+
+## Explainability and Partial Errors
+
+Every evaluated intent includes explicit `reason_blocks` with:
+
+- `section`
+- `status`
+- `message`
+
+Aggregate outputs may also include structured partial errors:
+
+- `section`
+- `code`
+- `message`
+
+Partial gaps should degrade into explainable `OBSERVE` or `REJECT` outcomes when possible instead of crashing the full evaluation pass.
+
+## Manual Review Lifecycle
+
+The intended operator flow in the current phase is:
+
+1. run `pm strategy evaluate --name ...`
+2. inspect `pm strategy intents`
+3. inspect one candidate with `pm strategy review --intent-id ...`
+4. append a local manual decision with:
+   - `pm strategy approve --intent-id ...`
+   - or `pm strategy reject --intent-id ... --reason "..."`
+
+Manual review records are append-only. The latest review record determines the current manual status shown by `review` and `intents`.
+
+## Non-Goals in This Phase
+
+- no strategy authoring UI
+- no live execution hooks
+- no order payload generation
+- no background orchestration loop
+- no database-backed signal bus
+- no LLM-controlled execution policy
+- no automatic approval path
+
+## Future Direction
+
+Later phases may add:
+
+- richer strategy configuration
+- pause and resume controls
+- execution-bound handoff after explicit approval
+- stronger observability and audit trails
+- shell or TUI review surfaces
+
+Those features are intentionally deferred until auth, signing, approval, and execution boundaries are designed explicitly.

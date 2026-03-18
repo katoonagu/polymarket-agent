@@ -194,6 +194,29 @@ Rules:
 - `pm stream recurring` reuses the recurring resolver and combines market stream context with Binance RTDS context
 - no command opens a private user websocket or calls execution code
 
+### `pm strategy`
+
+Read-only seeded strategy registry and local manual review orchestration.
+
+```text
+pm strategy list [--json]
+pm strategy show --name <name> [--json]
+pm strategy validate --name <name> [--json]
+pm strategy evaluate --name <name> [--limit <n>] [--json]
+pm strategy intents [--limit <n>] [--json]
+pm strategy review --intent-id <id> [--json]
+pm strategy approve --intent-id <id> [--json]
+pm strategy reject --intent-id <id> --reason <text> [--json]
+```
+
+Rules:
+
+- strategy definitions are seeded locally and deterministic
+- evaluation produces candidate intents only
+- `APPROVE` is manual only and recorded locally
+- `approve` and `reject` do not call execution code
+- strategy state is file-backed, append-only where appropriate, and gitignored
+
 ## Local Gitignored State
 
 Current file-backed state under `.pm/state/`:
@@ -205,6 +228,9 @@ Current file-backed state under `.pm/state/`:
 - `market-watchlist.json`
 - `market-snapshots.json`
 - `stream-events.jsonl`
+- `strategies.json`
+- `strategy-intents.json`
+- `strategy-decisions.json`
 
 Rules:
 
@@ -230,6 +256,8 @@ Current partial-result flows include:
 - `pm wallet shadow simulate`
 - `pm wallet shadow report`
 - `pm stream recurring`
+- `pm strategy evaluate`
+- `pm strategy review`
 
 Structured partial errors should look like:
 

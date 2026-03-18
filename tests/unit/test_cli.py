@@ -32,6 +32,7 @@ def test_root_help_lists_namespaces_and_output_contract() -> None:
     assert "data" in result.stdout
     assert "wallet" in result.stdout
     assert "stream" in result.stdout
+    assert "strategy" in result.stdout
     assert "--output" in result.stdout
     assert "--json" in result.stdout
 
