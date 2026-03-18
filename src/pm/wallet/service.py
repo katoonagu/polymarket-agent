@@ -22,6 +22,7 @@ from pm.wallet.models import (
     WalletHoldersDiscoveryResponse,
     WalletLeaderboardDiscoveryResponse,
     WalletListResponse,
+    WalletMonitorRunResponse,
     WalletMutationResponse,
     WalletPositionsResponse,
     WalletRankItem,
@@ -31,13 +32,18 @@ from pm.wallet.models import (
     WalletScoreComponent,
     WalletScoreResponse,
     WalletSectionError,
+    WalletShadowReportResponse,
+    WalletShadowSimulationResponse,
+    WalletSignalsResponse,
     WalletSnapshotItem,
     WalletSnapshotResponse,
     WalletSummaryMetrics,
     WalletSummaryResponse,
     WalletTradesResponse,
 )
+from pm.wallet.pipeline import WalletShadowPipelineService
 from pm.wallet.registry import WalletRegistryService, normalize_wallet_address
+from pm.wallet.state import WalletPipelineStateService
 
 T = TypeVar("T")
 
@@ -62,8 +68,13 @@ COMPONENT_ORDER = (
 class WalletShadowService:
     """High-level tracked-wallet reads, discovery, and scoring."""
 
-    def __init__(self, registry: WalletRegistryService | None = None) -> None:
+    def __init__(
+        self,
+        registry: WalletRegistryService | None = None,
+        state: WalletPipelineStateService | None = None,
+    ) -> None:
         self._registry = registry or WalletRegistryService()
+        self._pipeline = WalletShadowPipelineService(state=state)
 
     def add_wallet(
         self,
@@ -219,6 +230,42 @@ class WalletShadowService:
                 items.append(WalletSnapshotItem(wallet=wallet, metrics=metrics, errors=errors))
 
         return WalletSnapshotResponse(items=items, total=len(items))
+
+    def run_monitor(self, address: str, *, limit: int) -> WalletMonitorRunResponse:
+        """Run a manual read-only monitor pass for a tracked wallet."""
+        wallet = self._registry.get_wallet(address)
+        return self._pipeline.run_monitor(wallet, limit=limit)
+
+    def get_signals(self, address: str, *, limit: int) -> WalletSignalsResponse:
+        """Return persisted signals for a tracked wallet."""
+        wallet = self._registry.get_wallet(address)
+        return self._pipeline.get_signals(wallet, limit=limit)
+
+    def simulate_shadow(
+        self,
+        address: str,
+        *,
+        fixed_size_usdc: str,
+        max_drift_pct: str,
+        max_spread_pct: str,
+        entry_only: bool,
+        limit: int,
+    ) -> WalletShadowSimulationResponse:
+        """Run a read-only shadow simulation for a tracked wallet."""
+        wallet = self._registry.get_wallet(address)
+        return self._pipeline.simulate_shadow(
+            wallet,
+            fixed_size_usdc=fixed_size_usdc,
+            max_drift_pct=max_drift_pct,
+            max_spread_pct=max_spread_pct,
+            entry_only=entry_only,
+            limit=limit,
+        )
+
+    def get_shadow_report(self, address: str) -> WalletShadowReportResponse:
+        """Return stored shadow simulation runs for a tracked wallet."""
+        wallet = self._registry.get_wallet(address)
+        return self._pipeline.get_shadow_report(wallet)
 
     def discover_leaderboard(self, *, limit: int) -> WalletLeaderboardDiscoveryResponse:
         """Return wallet candidates from the public trader leaderboard."""

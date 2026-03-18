@@ -105,6 +105,10 @@ py -3.11 -m venv .venv
 .venv\Scripts\pm wallet rank tracked --json
 .venv\Scripts\pm wallet compare --address <0x...> --address <0x...> --json
 .venv\Scripts\pm wallet snapshot --limit 20 --json
+.venv\Scripts\pm wallet monitor run --address <0x...> --limit 20 --json
+.venv\Scripts\pm wallet signals --address <0x...> --limit 20 --json
+.venv\Scripts\pm wallet shadow simulate --address <0x...> --fixed-size 25 --max-drift 5 --max-spread 5 --entry-only --json
+.venv\Scripts\pm wallet shadow report --address <0x...> --json
 ```
 
 The current CLI is intentionally small. It is read-only, uses only public Gamma, public CLOB, and public Data API endpoints, and does not include wallet auth, order placement, websocket, database, or execution logic.
@@ -125,6 +129,10 @@ The current CLI is intentionally small. It is read-only, uses only public Gamma,
 - `footprint_component` = `0.20`
 
 Legitimate no-data cases score as available zeroes. Real request or parsing failures are returned as structured partial errors and are excluded from the available-weight denominator.
+
+`pm wallet monitor run` persists deduped public wallet events to `.pm/state/wallet-events.json`, derived signals to `.pm/state/wallet-signals.json`, and `pm wallet shadow simulate` stores shadow-copy runs in `.pm/state/wallet-shadow-runs.json`. Those files are local-only, gitignored, append-only JSON state.
+
+`pm wallet shadow simulate` never calls execution code. It only produces candidate intents with deterministic `WOULD_COPY` or `SKIP` decisions based on market activity, duplicate detection, entry-only mode, drift thresholds, and spread thresholds. `pm wallet shadow report` summarizes those stored runs and their latest partial upstream errors.
 
 ## Related Docs
 

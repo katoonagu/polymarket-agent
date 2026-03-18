@@ -138,6 +138,10 @@ pm wallet summary --address <0x...> [--limit <n>] [--json]
 pm wallet trades --address <0x...> [--limit <n>] [--json]
 pm wallet activity --address <0x...> [--limit <n>] [--json]
 pm wallet positions --address <0x...> [--json]
+pm wallet monitor run --address <0x...> [--limit <n>] [--json]
+pm wallet signals --address <0x...> [--limit <n>] [--json]
+pm wallet shadow simulate --address <0x...> --fixed-size <usdc> --max-drift <pct> --max-spread <pct> [--entry-only] [--limit <n>] [--json]
+pm wallet shadow report --address <0x...> [--json]
 pm wallet score --address <0x...> [--json]
 pm wallet rank tracked [--json]
 pm wallet compare --address <0x...> --address <0x...> [--json]
@@ -150,10 +154,40 @@ Rules:
 - Registry state is local-only and must be gitignored.
 - Address-based `pm wallet` reads are tracked-wallet operations only; untracked addresses return a deterministic `not_tracked` error.
 - `pm wallet discover` is non-mutating. It may read the public trader leaderboard and public holder data, but it must not auto-add discovered wallets to the local registry.
+- `pm wallet monitor run`, `pm wallet signals`, `pm wallet shadow simulate`, and `pm wallet shadow report` are tracked-wallet operations only.
+- The wallet shadow pipeline stores local gitignored append-only state under `.pm/state/`:
+  - `wallet-events.json`
+  - `wallet-signals.json`
+  - `wallet-shadow-runs.json`
+- `monitor run` merges recent public trades and activity rows, dedupes by `transaction_hash + token_id + side + timestamp`, and persists only new events plus their derived signals.
+- `signals` reads persisted derived signals in deterministic reverse-chronological order.
+- `shadow simulate` runs the same in-process monitor pass first, then produces candidate intents only. It must not call the execution module, create signed orders, or open any private session.
+- `shadow report` summarizes stored shadow runs with cumulative `would_copy` / `skip` counts and the latest run details.
 - `pm wallet score` and `pm wallet compare` accept any valid public address; `pm wallet rank tracked` is registry-only.
 - `summary` aggregates tracked metadata plus holdings value, traded count, open-position count, closed-position count, recent trades, and recent activity from the existing public Data API client.
 - `snapshot` is compact and deterministic: registry order, wallet metadata, holdings value, traded count, open-position count, closed-position count, and structured partial errors only.
 - Discovery, scoring, compare, `summary`, and `snapshot` use partial-result mode for public sub-call failures; only registry and validation failures should make the whole command exit non-zero.
+- `monitor run` and `shadow simulate` also use partial-result mode. Upstream Gamma, CLOB, and Data failures must be captured as structured errors instead of failing the whole command when other rows remain processable.
+- Candidate intents from `shadow simulate` must include:
+  - source wallet
+  - market slug
+  - condition ID
+  - token ID
+  - side and outcome
+  - source price
+  - current price
+  - drift
+  - spread
+  - simulated size in USDC
+  - `WOULD_COPY` or `SKIP`
+  - deterministic skip reason when skipped
+- Skip rules in the current phase are fixed and explainable:
+  - duplicate event
+  - inactive or closed market
+  - entry-only filtering
+  - drift above threshold
+  - spread above threshold
+  - partial upstream failures such as missing market context, price, spread, or book data
 - The deterministic wallet score uses these explicit component weights:
   - `leaderboard_component = 0.25`
   - `realized_performance_component = 0.35`

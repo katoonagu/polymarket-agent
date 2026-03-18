@@ -318,3 +318,53 @@ This branch only implements the read-only foundation for the wallet module. The 
 Legitimate no-data cases score as available zeroes. Real request or payload failures are returned as structured partial errors and are excluded from the available-weight denominator.
 
 `pm wallet rank tracked` scores and ranks all tracked wallets with deterministic tie-breaks. `pm wallet compare` preserves left/right input order and returns the winner, score delta, and per-component deltas without mutating the local registry.
+
+### Manual monitor and shadow-copy pipeline
+
+This branch now also includes a manual read-only wallet monitor and shadow-copy pipeline:
+
+- `pm wallet monitor run --address <0x...>`
+- `pm wallet signals --address <0x...>`
+- `pm wallet shadow simulate --address <0x...> --fixed-size <usdc> --max-drift <pct> --max-spread <pct> [--entry-only]`
+- `pm wallet shadow report --address <0x...>`
+
+The current phase stores three additional gitignored local state files under `.pm/state/`:
+
+- `wallet-events.json`
+- `wallet-signals.json`
+- `wallet-shadow-runs.json`
+
+The pipeline is still fully read-only:
+
+- it ingests recent public `trades` and `activity` rows from the existing Data API client;
+- it dedupes events by `transaction_hash + token_id + side + timestamp`;
+- it classifies events deterministically as `new_entry`, `add`, `reduce`, `close`, `hedge_candidate`, or `noise`;
+- it resolves market context only through the existing public Gamma adapter;
+- it checks public copyability only through the existing public CLOB reads;
+- it produces candidate intents only and never creates execution intents or submits orders.
+
+Each stored candidate intent includes:
+
+- source wallet
+- market slug
+- condition ID
+- token ID
+- side and outcome
+- source price
+- current price
+- drift
+- spread
+- simulated size in USDC
+- `WOULD_COPY` or `SKIP`
+- deterministic skip reason when skipped
+
+Current skip rules are intentionally simple and explainable:
+
+- duplicate event
+- inactive or closed market
+- entry-only mode filtering
+- drift above threshold
+- spread above threshold
+- partial upstream failures such as missing market context, price, spread, or book data
+
+`pm wallet shadow report` is a local audit surface. It returns cumulative `would_copy` vs `skip` counts plus the latest stored run and its structured partial errors. No daemon, websocket user channel, signing flow, or live copy-trading is introduced in this phase.

@@ -16,15 +16,23 @@ from pm.wallet import (
     WalletHoldersDiscoveryResponse,
     WalletLeaderboardDiscoveryResponse,
     WalletListResponse,
+    WalletMonitorRunResponse,
     WalletMutationResponse,
     WalletNotTrackedError,
+    WalletPipelineValidationError,
     WalletPositionsResponse,
     WalletRankTrackedResponse,
     WalletRegistryError,
     WalletScoreComponent,
     WalletScoreResponse,
     WalletSectionError,
+    WalletShadowCandidateIntent,
+    WalletShadowReportResponse,
+    WalletShadowRun,
     WalletShadowService,
+    WalletShadowSimulationResponse,
+    WalletSignal,
+    WalletSignalsResponse,
     WalletSnapshotItem,
     WalletSnapshotResponse,
     WalletSummaryResponse,
@@ -41,13 +49,25 @@ discover_app = typer.Typer(
     help="Non-mutating wallet discovery from public holder and leaderboard data.",
     no_args_is_help=True,
 )
+monitor_app = typer.Typer(
+    add_completion=False,
+    help="Manual read-only wallet monitoring commands backed by public APIs.",
+    no_args_is_help=True,
+)
 rank_app = typer.Typer(
     add_completion=False,
     help="Deterministic tracked-wallet ranking commands.",
     no_args_is_help=True,
 )
+shadow_app = typer.Typer(
+    add_completion=False,
+    help="Read-only shadow-copy simulation commands that never execute trades.",
+    no_args_is_help=True,
+)
 app.add_typer(discover_app, name="discover")
+app.add_typer(monitor_app, name="monitor")
 app.add_typer(rank_app, name="rank")
+app.add_typer(shadow_app, name="shadow")
 
 ADDRESS_OPTION = typer.Option(
     ...,
@@ -95,6 +115,26 @@ REPORT_LIMIT_OPTION = typer.Option(
     "--limit",
     min=1,
     help="Maximum number of rows to return.",
+)
+FIXED_SIZE_OPTION = typer.Option(
+    ...,
+    "--fixed-size",
+    help="Fixed simulated size in USDC for every shadow candidate.",
+)
+MAX_DRIFT_OPTION = typer.Option(
+    ...,
+    "--max-drift",
+    help="Maximum allowed drift percentage, for example 5 for 5%.",
+)
+MAX_SPREAD_OPTION = typer.Option(
+    ...,
+    "--max-spread",
+    help="Maximum allowed spread percentage, for example 5 for 5%.",
+)
+ENTRY_ONLY_OPTION = typer.Option(
+    False,
+    "--entry-only",
+    help="Only evaluate new_entry and add classifications for copyability.",
 )
 
 
@@ -285,6 +325,50 @@ def wallet_snapshot(
     )
 
 
+@monitor_app.command("run")
+def wallet_monitor_run(
+    ctx: typer.Context,
+    address: str = ADDRESS_OPTION,
+    limit: int = REPORT_LIMIT_OPTION,
+    json_output: bool = JSON_OPTION,
+) -> None:
+    """Fetch recent public trades and activity, then persist new signals locally."""
+    try:
+        result = WalletShadowService().run_monitor(address, limit=limit)
+    except (WalletNotTrackedError, WalletRegistryError, DataValidationError) as exc:
+        _emit_wallet_error(ctx, exc=exc, address=address, json_output=json_output)
+        raise typer.Exit(1) from exc
+
+    emit_command_output(
+        ctx,
+        result.model_dump(mode="json"),
+        text=_format_wallet_monitor_run(result),
+        local_json_output=json_output,
+    )
+
+
+@app.command("signals")
+def wallet_signals(
+    ctx: typer.Context,
+    address: str = ADDRESS_OPTION,
+    limit: int = REPORT_LIMIT_OPTION,
+    json_output: bool = JSON_OPTION,
+) -> None:
+    """Read persisted signals for a tracked wallet."""
+    try:
+        result = WalletShadowService().get_signals(address, limit=limit)
+    except (WalletNotTrackedError, WalletRegistryError, DataValidationError) as exc:
+        _emit_wallet_error(ctx, exc=exc, address=address, json_output=json_output)
+        raise typer.Exit(1) from exc
+
+    emit_command_output(
+        ctx,
+        result.model_dump(mode="json"),
+        text=_format_wallet_signals(result),
+        local_json_output=json_output,
+    )
+
+
 @discover_app.command("leaderboard")
 def discover_leaderboard(
     ctx: typer.Context,
@@ -327,6 +411,65 @@ def discover_holders(
         ctx,
         result.model_dump(mode="json"),
         text=_format_holders_discovery(result),
+        local_json_output=json_output,
+    )
+
+
+@shadow_app.command("simulate")
+def shadow_simulate(
+    ctx: typer.Context,
+    address: str = ADDRESS_OPTION,
+    fixed_size: str = FIXED_SIZE_OPTION,
+    max_drift: str = MAX_DRIFT_OPTION,
+    max_spread: str = MAX_SPREAD_OPTION,
+    entry_only: bool = ENTRY_ONLY_OPTION,
+    limit: int = REPORT_LIMIT_OPTION,
+    json_output: bool = JSON_OPTION,
+) -> None:
+    """Run a read-only shadow-copy simulation without placing orders."""
+    try:
+        result = WalletShadowService().simulate_shadow(
+            address,
+            fixed_size_usdc=fixed_size,
+            max_drift_pct=max_drift,
+            max_spread_pct=max_spread,
+            entry_only=entry_only,
+            limit=limit,
+        )
+    except (
+        WalletNotTrackedError,
+        WalletRegistryError,
+        WalletPipelineValidationError,
+        DataValidationError,
+    ) as exc:
+        _emit_wallet_error(ctx, exc=exc, address=address, json_output=json_output)
+        raise typer.Exit(1) from exc
+
+    emit_command_output(
+        ctx,
+        result.model_dump(mode="json"),
+        text=_format_shadow_simulation(result),
+        local_json_output=json_output,
+    )
+
+
+@shadow_app.command("report")
+def shadow_report(
+    ctx: typer.Context,
+    address: str = ADDRESS_OPTION,
+    json_output: bool = JSON_OPTION,
+) -> None:
+    """Read stored shadow-copy runs for a tracked wallet."""
+    try:
+        result = WalletShadowService().get_shadow_report(address)
+    except (WalletNotTrackedError, WalletRegistryError, DataValidationError) as exc:
+        _emit_wallet_error(ctx, exc=exc, address=address, json_output=json_output)
+        raise typer.Exit(1) from exc
+
+    emit_command_output(
+        ctx,
+        result.model_dump(mode="json"),
+        text=_format_shadow_report(result),
         local_json_output=json_output,
     )
 
@@ -443,6 +586,8 @@ def _wallet_error_code(exc: Exception) -> str:
         return "already_tracked"
     if isinstance(exc, WalletNotTrackedError):
         return "not_tracked"
+    if isinstance(exc, WalletPipelineValidationError):
+        return "invalid_argument"
     if isinstance(exc, WalletRegistryError):
         return "registry_error"
     if isinstance(exc, DataValidationError):
@@ -529,6 +674,34 @@ def _format_wallet_snapshot(response: WalletSnapshotResponse) -> str:
     return "\n\n".join(_format_snapshot_item(item) for item in response.items)
 
 
+def _format_wallet_monitor_run(response: WalletMonitorRunResponse) -> str:
+    lines = [
+        _format_tracked_wallet(response.wallet),
+        f"Fetched trades: {response.fetched_trades_count}",
+        f"Fetched activity rows: {response.fetched_activity_count}",
+        f"New events: {response.new_events_count}",
+        f"Duplicate events: {response.duplicate_events_count}",
+        "New signals:",
+        "\n\n".join(_format_signal(item) for item in response.new_signals)
+        if response.new_signals
+        else "-",
+    ]
+    if response.errors:
+        lines.append("Warnings:")
+        lines.extend(_format_section_error(error) for error in response.errors)
+    return "\n".join(lines)
+
+
+def _format_wallet_signals(response: WalletSignalsResponse) -> str:
+    lines = [
+        _format_tracked_wallet(response.wallet),
+        f"Signals: {response.total}",
+        "Items:",
+        "\n\n".join(_format_signal(item) for item in response.items) if response.items else "-",
+    ]
+    return "\n".join(lines)
+
+
 def _format_snapshot_item(snapshot_item: WalletSnapshotItem) -> str:
     lines = [
         _format_tracked_wallet(snapshot_item.wallet),
@@ -595,6 +768,29 @@ def _format_wallet_score(response: WalletScoreResponse) -> str:
     return "\n".join(lines)
 
 
+def _format_shadow_simulation(response: WalletShadowSimulationResponse) -> str:
+    lines = [
+        _format_tracked_wallet(response.wallet),
+        _format_shadow_run(response.run),
+    ]
+    return "\n".join(lines)
+
+
+def _format_shadow_report(response: WalletShadowReportResponse) -> str:
+    lines = [
+        _format_tracked_wallet(response.wallet),
+        f"Run count: {response.run_count}",
+        f"Would copy count: {response.would_copy_count}",
+        f"Skip count: {response.skip_count}",
+    ]
+    if response.latest_run is None:
+        lines.append("Latest run: -")
+        return "\n".join(lines)
+
+    lines.extend(["Latest run:", _indent(_format_shadow_run(response.latest_run))])
+    return "\n".join(lines)
+
+
 def _format_wallet_rank(response: WalletRankTrackedResponse) -> str:
     if not response.items:
         return "No tracked wallets."
@@ -613,6 +809,29 @@ def _format_wallet_compare(response: WalletCompareResponse) -> str:
     ]
     for component_name, delta in response.component_deltas.items():
         lines.append(f"  {_component_label(component_name)}: {_format_float(delta)}")
+    return "\n".join(lines)
+
+
+def _format_shadow_run(run: WalletShadowRun) -> str:
+    lines = [
+        f"Run at: {run.run_at}",
+        f"Fixed size USDC: {run.parameters.fixed_size_usdc}",
+        f"Max drift pct: {run.parameters.max_drift_pct}",
+        f"Max spread pct: {run.parameters.max_spread_pct}",
+        f"Entry only: {'yes' if run.parameters.entry_only else 'no'}",
+        f"Limit: {run.parameters.limit}",
+        f"New signal count: {run.new_signal_count}",
+        f"Duplicate event count: {run.duplicate_event_count}",
+        f"Would copy count: {run.would_copy_count}",
+        f"Skip count: {run.skip_count}",
+        "Candidate intents:",
+        "\n\n".join(_format_candidate_intent(item) for item in run.candidate_intents)
+        if run.candidate_intents
+        else "-",
+    ]
+    if run.errors:
+        lines.append("Warnings:")
+        lines.extend(_format_section_error(error) for error in run.errors)
     return "\n".join(lines)
 
 
@@ -654,6 +873,58 @@ def _format_discovery_item(item: WalletDiscoveryItem) -> str:
         )
     else:
         lines.append("  -")
+    return "\n".join(lines)
+
+
+def _format_signal(item: WalletSignal) -> str:
+    return "\n".join(
+        [
+            f"Market slug: {item.market_slug or '-'}",
+            f"Condition ID: {item.condition_id or '-'}",
+            f"Token ID: {item.token_id or '-'}",
+            f"Classification: {item.classification}",
+            f"Source kind: {item.source_kind}",
+            f"Activity type: {item.source_activity_type or '-'}",
+            f"Side: {item.side or '-'}",
+            f"Outcome: {item.outcome or '-'}",
+            f"Source price: {item.source_price or '-'}",
+            f"Source size: {item.source_size or '-'}",
+            f"Timestamp: {item.timestamp if item.timestamp is not None else '-'}",
+            f"Transaction hash: {item.transaction_hash or '-'}",
+            f"Dedupe key: {item.dedupe_key}",
+        ]
+    )
+
+
+def _format_candidate_intent(item: WalletShadowCandidateIntent) -> str:
+    lines = [
+        f"Market slug: {item.market_slug or '-'}",
+        f"Condition ID: {item.condition_id or '-'}",
+        f"Token ID: {item.token_id or '-'}",
+        f"Classification: {item.classification}",
+        f"Side: {item.side or '-'}",
+        f"Outcome: {item.outcome or '-'}",
+        f"Source price: {item.source_price or '-'}",
+        f"Current price: {item.current_price or '-'}",
+        f"Drift: {item.drift or '-'}",
+        f"Spread: {item.spread or '-'}",
+        f"Spread pct: {item.spread_pct or '-'}",
+        f"Simulated size USDC: {item.simulated_size_usdc}",
+        f"Decision: {item.decision}",
+        f"Skip reason: {item.skip_reason or '-'}",
+        f"Timestamp: {item.timestamp if item.timestamp is not None else '-'}",
+        f"Transaction hash: {item.transaction_hash or '-'}",
+        f"Dedupe key: {item.dedupe_key}",
+    ]
+    if item.book is not None:
+        lines.extend(
+            [
+                f"Book tick size: {item.book.tick_size or '-'}",
+                f"Book min order size: {item.book.min_order_size or '-'}",
+            ]
+        )
+    else:
+        lines.extend(["Book tick size: -", "Book min order size: -"])
     return "\n".join(lines)
 
 

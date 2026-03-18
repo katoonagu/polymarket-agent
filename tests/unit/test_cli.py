@@ -75,10 +75,13 @@ def test_wallet_help() -> None:
     assert "add" in result.stdout
     assert "discover" in result.stdout
     assert "list" in result.stdout
+    assert "monitor" in result.stdout
     assert "remove" in result.stdout
     assert "score" in result.stdout
     assert "rank" in result.stdout
     assert "compare" in result.stdout
+    assert "shadow" in result.stdout
+    assert "signals" in result.stdout
     assert "summary" in result.stdout
     assert "trades" in result.stdout
     assert "activity" in result.stdout
