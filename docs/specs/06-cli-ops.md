@@ -243,6 +243,37 @@ Structured partial errors should look like:
 
 Full-command failures should remain limited to validation errors, missing tracked or watched objects, local state corruption, or unrecoverable CLI usage errors.
 
+## Future CLI/TUI Parity Surface
+
+The current branch remains read-only. The following commands are future parity targets inspired by the official Polymarket CLI and are not implemented yet:
+
+- `pm setup`
+- `pm wallet create`
+- `pm wallet import`
+- `pm wallet show`
+- `pm approve check`
+- `pm approve set`
+- `pm shell`
+- `pm status`
+
+Intended direction:
+
+- `pm setup`: guided onboarding over future local config, wallet readiness, and approval checks
+- `pm wallet create`, `pm wallet import`, `pm wallet show`: future execution-adjacent wallet configuration UX
+- `pm approve check`, `pm approve set`: future approval inspection and mutation flow
+- `pm shell`: future interactive operator shell over existing and later command surfaces
+- `pm status`: future high-level operator health and readiness summary
+
+Guardrails:
+
+- these are documentation targets only on the current branch
+- they must not imply current auth, signing, approval-write, or execution behavior
+- existing read-only commands must remain usable without any wallet setup
+- intelligence modules remain separate from execution modules
+- execution remains the only module allowed to place or cancel orders
+
+Richer human-readable tables are also a future parity direction across the CLI, while JSON remains normalized and machine-friendly.
+
 ## Operational Direction
 
 Later phases may add:

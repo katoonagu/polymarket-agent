@@ -190,6 +190,34 @@ Make system behavior reconstructable for debugging, incident response, and regre
 - Replay scenarios cover dry-run and paper execution paths
 - Regression testing can use replay fixtures as a stable contract
 
+## Parallel Track: CLI/TUI Parity
+
+**Objective**
+
+Document and later deliver a more operator-friendly CLI and TUI surface inspired by the official Polymarket CLI without collapsing this repo's intelligence and execution boundaries.
+
+**Scope / Deliverables**
+
+- Upstream UX parity research note in `docs/research/polymarket-cli-ux-parity.md`
+- Future command placeholders for setup, wallet, approve, shell, and status surfaces
+- Clear direction toward stronger table-first human-readable output
+- Explicit architectural boundaries for future execution-adjacent UX
+- Guardrails that keep read-only intelligence phases separate from auth and live operator flows
+
+**Non-goals**
+
+- Implementing auth or approval behavior in this step
+- Adding execution behavior in this step
+- Adopting plaintext private-key storage as the default operator strategy
+- Replacing the current normalized JSON contract with upstream raw payloads
+
+**Exit Criteria**
+
+- The parity research note exists and is linked from repo docs
+- The roadmap explicitly names the CLI/TUI parity track
+- The CLI spec documents future parity-only command targets and marks them deferred
+- Repo docs clearly separate future UX parity from current runtime behavior
+
 ## Phase 7: Live Readiness
 
 **Objective**
