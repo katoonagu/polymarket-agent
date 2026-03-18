@@ -1,6 +1,6 @@
 # polymarket-agent
 
-`polymarket-agent` is a docs-first, execution-first workspace for building a modular Polymarket system. The current branch is intentionally read-only: it uses public Gamma, public CLOB, and public Data API reads plus local gitignored state for watchlists and wallet intelligence.
+`polymarket-agent` is a docs-first, execution-first workspace for building a modular Polymarket system. The current branch combines a strong public intelligence stack with the first authenticated non-live dry-run foundation. It uses public Gamma, public CLOB, public Data API, public streams, local gitignored operator state, and authenticated setup and local order-signing paths that never submit real orders.
 
 ## Principles
 
@@ -10,7 +10,7 @@
 - Secrets and real credentials must never be committed.
 - Every module should keep a matching spec under `docs/specs/`.
 
-## Current Read-Only Surface
+## Current Intelligence Surface
 
 ### Market discovery and watchlists
 
@@ -93,6 +93,27 @@ These sessions are always bounded, persist normalized captured events locally, a
 
 This namespace is still fully read-only. `evaluate` persists candidate intents and derived decisions only. `approve` and `reject` are local review actions that append decision history; they do not create orders or call execution code.
 
+## Authenticated Dry-Run Foundation
+
+The first authenticated layer is now available for non-live setup and planning only.
+
+```powershell
+.venv\Scripts\pm setup doctor --json
+.venv\Scripts\pm auth show --json
+.venv\Scripts\pm auth derive-api-key --json
+.venv\Scripts\pm auth balances --json
+.venv\Scripts\pm auth allowances --json
+.venv\Scripts\pm exec dry-run --market <market-slug-or-condition-id> --outcome yes --side buy --price 0.55 --size 10 --json
+```
+
+Rules:
+
+- private auth material comes from environment only
+- raw private keys are never printed
+- derived L2 API credentials are ephemeral and never persisted locally
+- `pm exec dry-run` may build and sign an order locally, but it never posts it
+- no cancel, replace, approve-write, or user websocket flow exists yet
+
 ## Output Contract
 
 The root CLI supports:
@@ -131,7 +152,7 @@ This branch uses local file-backed state under `.pm/state/`. These files are rep
 - `strategy-intents.json`
 - `strategy-decisions.json`
 
-They are append-only or registry-style JSON documents used for deterministic operator workflows. They are not a database and they do not enable background daemons or live execution.
+They are append-only or registry-style JSON documents used for deterministic operator workflows. They are not a database and they do not enable background daemons or live execution. This phase does not add any local auth cache, API-key cache, or private-key state file.
 
 ## Development
 
@@ -146,10 +167,10 @@ py -3.11 -m venv .venv
 
 ## Current Non-Goals
 
-- no wallet auth
-- no signing
-- no order placement
-- no execution engine calls
+- no live order placement
+- no cancel or replace flow
+- no on-chain approval writes
+- no execution submit calls
 - no user websocket
 - no public stream daemon
 - no background daemon

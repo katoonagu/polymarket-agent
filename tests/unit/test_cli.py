@@ -27,12 +27,15 @@ def test_root_help_lists_namespaces_and_output_contract() -> None:
     result = runner.invoke(app, ["--help"])
 
     assert result.exit_code == 0
+    assert "setup" in result.stdout
+    assert "auth" in result.stdout
     assert "market" in result.stdout
     assert "clob" in result.stdout
     assert "data" in result.stdout
     assert "wallet" in result.stdout
     assert "stream" in result.stdout
     assert "strategy" in result.stdout
+    assert "exec" in result.stdout
     assert "--output" in result.stdout
     assert "--json" in result.stdout
 

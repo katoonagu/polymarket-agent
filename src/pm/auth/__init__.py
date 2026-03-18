@@ -1,0 +1,48 @@
+"""Authenticated non-live setup and account inspection helpers."""
+
+from pm.auth.exceptions import AuthClientError, AuthError, AuthGeoblockedError, AuthValidationError
+from pm.auth.models import (
+    AuthAllowancesResponse,
+    AuthBalancesResponse,
+    AuthContext,
+    AuthDeriveApiKeyResponse,
+    AuthSectionCheck,
+    AuthSectionError,
+    AuthShowResponse,
+    BalanceAllowanceView,
+    DerivedApiCredentials,
+    GeoblockStatus,
+    SetupDoctorResponse,
+)
+from pm.auth.service import (
+    CHAIN_ID_ENV,
+    CLOB_HOST_ENV,
+    FUNDER_ENV,
+    PRIVATE_KEY_ENV,
+    SIGNATURE_TYPE_ENV,
+    AuthService,
+)
+
+__all__ = [
+    "AuthAllowancesResponse",
+    "AuthBalancesResponse",
+    "AuthClientError",
+    "AuthContext",
+    "AuthDeriveApiKeyResponse",
+    "AuthError",
+    "AuthGeoblockedError",
+    "AuthSectionCheck",
+    "AuthSectionError",
+    "AuthService",
+    "AuthShowResponse",
+    "AuthValidationError",
+    "BalanceAllowanceView",
+    "CHAIN_ID_ENV",
+    "CLOB_HOST_ENV",
+    "DerivedApiCredentials",
+    "FUNDER_ENV",
+    "GeoblockStatus",
+    "PRIVATE_KEY_ENV",
+    "SIGNATURE_TYPE_ENV",
+    "SetupDoctorResponse",
+]

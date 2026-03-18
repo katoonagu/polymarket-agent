@@ -2,9 +2,9 @@
 
 ## Purpose
 
-The CLI is the primary operator surface for this repository. It exists to expose deterministic, auditable workflows while keeping read-only intelligence clearly separate from any later execution module.
+The CLI is the primary operator surface for this repository. It exists to expose deterministic, auditable workflows while keeping intelligence clearly separate from execution submission.
 
-In the current phase, the CLI is read-only. It may:
+In the current phase, the CLI supports public intelligence plus authenticated non-live dry-run planning. It may:
 
 - read public Gamma data
 - read public CLOB data
@@ -12,12 +12,15 @@ In the current phase, the CLI is read-only. It may:
 - read bounded public RTDS crypto price data
 - read public Data API data
 - manage local gitignored watchlists and wallet state
+- inspect authenticated balances and allowances
+- derive ephemeral API credentials
+- build and sign dry-run orders locally without submission
 
 It must not:
 
-- authenticate wallets
-- sign transactions
-- place or cancel orders
+- submit live orders
+- cancel or replace orders
+- write on-chain approvals
 - open private websocket sessions
 - start background daemons
 - depend on a database
@@ -78,6 +81,54 @@ Canonical error codes in the current phase:
 - `not_tracked`
 
 ## Canonical Namespaces
+
+### `pm setup`
+
+Authenticated non-mutating readiness checks.
+
+```text
+pm setup doctor [--json]
+```
+
+Rules:
+
+- `pm setup doctor` is the only implemented setup command in the current phase
+- it must remain non-mutating
+- it must not derive API credentials, post orders, or write approvals
+- broader guided setup UX remains a future parity target
+
+### `pm auth`
+
+Authenticated setup and account inspection commands.
+
+```text
+pm auth show [--json]
+pm auth derive-api-key [--json]
+pm auth balances [--json]
+pm auth allowances [--json]
+```
+
+Rules:
+
+- private key material comes from environment only
+- raw private keys must never be printed
+- derived API credentials are ephemeral and are never persisted locally
+- balances and allowances are read-only inspection commands
+
+### `pm exec`
+
+Authenticated non-live execution planning commands.
+
+```text
+pm exec dry-run --market <market-slug-or-condition-id> --outcome <yes|no> --side <buy|sell> --price <p> --size <n> [--json]
+```
+
+Rules:
+
+- `dry-run` may build and sign an order locally
+- `dry-run` must never post the signed order
+- `dry-run` returns `WOULD_POST` or `SKIP` plus reason blocks
+- live submit, cancel, and replace remain out of scope
 
 ### `pm market`
 
@@ -238,6 +289,7 @@ Rules:
 - atomic writes
 - deterministic append order where applicable
 - validation failures must surface as explicit state errors
+- the current authenticated dry-run phase adds no local auth cache or API-key cache
 
 ## Partial Error Handling
 
@@ -273,7 +325,7 @@ Full-command failures should remain limited to validation errors, missing tracke
 
 ## Future CLI/TUI Parity Surface
 
-The current branch remains read-only. The following commands are future parity targets inspired by the official Polymarket CLI and are not implemented yet:
+The current branch now includes `pm setup doctor` only. The following broader parity targets remain future and are not implemented yet:
 
 - `pm setup`
 - `pm wallet create`
@@ -295,7 +347,7 @@ Intended direction:
 Guardrails:
 
 - these are documentation targets only on the current branch
-- they must not imply current auth, signing, approval-write, or execution behavior
+- they must not imply current wallet-create, approval-write, or live execution behavior
 - existing read-only commands must remain usable without any wallet setup
 - intelligence modules remain separate from execution modules
 - execution remains the only module allowed to place or cancel orders

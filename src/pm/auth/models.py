@@ -1,0 +1,100 @@
+"""Models for authenticated setup, balances, allowances, and dry-run context."""
+
+from __future__ import annotations
+
+from pydantic import BaseModel, Field
+
+
+class AuthSectionCheck(BaseModel):
+    """Deterministic setup-doctor or auth status check."""
+
+    section: str
+    status: str
+    message: str
+
+
+class AuthSectionError(BaseModel):
+    """Partial auth/setup failure detail."""
+
+    section: str
+    code: str
+    message: str
+
+
+class AuthContext(BaseModel):
+    """Normalized authenticated context derived from environment configuration."""
+
+    signer_address: str | None = None
+    funder_address: str | None = None
+    signature_type: int | None = None
+    signature_type_name: str | None = None
+    clob_host: str
+    chain_id: int | None = None
+    private_key_present: bool
+    api_key_derivation_possible: bool
+
+
+class GeoblockStatus(BaseModel):
+    """Normalized geoblock result from the official endpoint."""
+
+    checked: bool = False
+    blocked: bool | None = None
+    country: str | None = None
+    region: str | None = None
+    message: str | None = None
+
+
+class SetupDoctorResponse(BaseModel):
+    """Readiness report for authenticated dry-run execution."""
+
+    ready: bool
+    auth: AuthContext
+    geoblock: GeoblockStatus
+    checks: list[AuthSectionCheck] = Field(default_factory=list)
+    errors: list[AuthSectionError] = Field(default_factory=list)
+
+
+class AuthShowResponse(BaseModel):
+    """Current authenticated environment context."""
+
+    auth: AuthContext
+    errors: list[AuthSectionError] = Field(default_factory=list)
+
+
+class DerivedApiCredentials(BaseModel):
+    """Ephemeral L2 API credentials derived through the official client."""
+
+    api_key: str
+    api_secret: str
+    api_passphrase: str
+
+
+class AuthDeriveApiKeyResponse(BaseModel):
+    """Derived API credential response."""
+
+    auth: AuthContext
+    api_credentials: DerivedApiCredentials
+
+
+class BalanceAllowanceView(BaseModel):
+    """Normalized balance and allowance view for the authenticated account."""
+
+    asset_type: str
+    token_id: str | None = None
+    signature_type: int
+    balance: str | None = None
+    allowance: str | None = None
+
+
+class AuthBalancesResponse(BaseModel):
+    """Authenticated balance response."""
+
+    auth: AuthContext
+    balance_view: BalanceAllowanceView
+
+
+class AuthAllowancesResponse(BaseModel):
+    """Authenticated allowance response."""
+
+    auth: AuthContext
+    allowance_view: BalanceAllowanceView
