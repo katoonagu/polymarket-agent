@@ -29,6 +29,7 @@ def test_root_help_lists_namespaces_and_output_contract() -> None:
     assert result.exit_code == 0
     assert "setup" in result.stdout
     assert "auth" in result.stdout
+    assert "approve" in result.stdout
     assert "market" in result.stdout
     assert "clob" in result.stdout
     assert "data" in result.stdout

@@ -235,9 +235,7 @@ class AuthService:
             checks.append(
                 AuthSectionCheck(
                     section="api_key_derivation",
-                    status="pass"
-                    if auth.api_key_derivation_possible
-                    else "fail",
+                    status="pass" if auth.api_key_derivation_possible else "fail",
                     message=(
                         "Configuration is sufficient for ephemeral API-key derivation."
                         if auth.api_key_derivation_possible
@@ -308,9 +306,7 @@ class AuthService:
         """Require a complete valid authenticated environment configuration."""
         private_key = os.getenv(PRIVATE_KEY_ENV, "").strip()
         if not private_key:
-            raise AuthValidationError(
-                f"{PRIVATE_KEY_ENV} is required for authenticated commands."
-            )
+            raise AuthValidationError(f"{PRIVATE_KEY_ENV} is required for authenticated commands.")
 
         signature_raw = os.getenv(SIGNATURE_TYPE_ENV, "").strip()
         if not signature_raw:
@@ -328,9 +324,7 @@ class AuthService:
                 f"{FUNDER_ENV} is required when signature type is {signature_type_name}."
             )
         if funder_address is not None and not _looks_like_address(funder_address):
-            raise AuthValidationError(
-                f"{FUNDER_ENV} must use 0x followed by 40 hex characters."
-            )
+            raise AuthValidationError(f"{FUNDER_ENV} must use 0x followed by 40 hex characters.")
 
         clob_host = (
             os.getenv(CLOB_HOST_ENV, "").strip()
@@ -348,9 +342,7 @@ class AuthService:
             try:
                 chain_id = int(chain_id_raw)
             except ValueError as exc:
-                raise AuthValidationError(
-                    f"{CHAIN_ID_ENV} must be an integer."
-                ) from exc
+                raise AuthValidationError(f"{CHAIN_ID_ENV} must be an integer.") from exc
 
         try:
             Account.from_key(private_key)
@@ -429,6 +421,21 @@ class AuthService:
         except Exception as exc:
             raise AuthClientError("Could not initialize authenticated CLOB client.") from exc
 
+    def build_level_2_client(self, settings: AuthSettings | None = None) -> SDKClobClient:
+        """Build an authenticated Level 2 SDK client with ephemeral credentials."""
+        resolved = settings or self.require_valid_config()
+        try:
+            client = self.build_level_1_client(resolved)
+            creds = self._derive_api_credentials(resolved)
+            client.set_api_creds(creds)
+            return client
+        except AuthClientError:
+            raise
+        except Exception as exc:
+            raise AuthClientError(
+                "Could not initialize authenticated Level 2 CLOB client."
+            ) from exc
+
     def _derive_api_credentials(self, settings: AuthSettings) -> ApiCreds:
         try:
             client = self.build_level_1_client(settings)
@@ -438,9 +445,7 @@ class AuthService:
 
     def _fetch_balance_allowance(self, settings: AuthSettings) -> dict[str, Any]:
         try:
-            client = self.build_level_1_client(settings)
-            creds = self._derive_api_credentials(settings)
-            client.set_api_creds(creds)
+            client = self.build_level_2_client(settings)
             payload = client.get_balance_allowance(
                 BalanceAllowanceParams(
                     asset_type=AssetType.COLLATERAL,

@@ -21,6 +21,7 @@ from pm.auth.service import (
     PRIVATE_KEY_ENV,
     SIGNATURE_TYPE_ENV,
     AuthService,
+    AuthSettings,
 )
 
 __all__ = [
@@ -35,6 +36,7 @@ __all__ = [
     "AuthSectionError",
     "AuthService",
     "AuthShowResponse",
+    "AuthSettings",
     "AuthValidationError",
     "BalanceAllowanceView",
     "CHAIN_ID_ENV",

@@ -15,6 +15,7 @@ from pm.auth import AuthService, AuthValidationError
 from pm.execution.exceptions import ExecutionValidationError
 from pm.execution.models import (
     DryRunBookContext,
+    DryRunPostContext,
     DryRunRequest,
     DryRunResolvedMarket,
     DryRunResponse,
@@ -49,8 +50,30 @@ class DryRunService:
         size: str,
     ) -> DryRunResponse:
         """Build a deterministic non-live dry-run order plan."""
-        normalized_outcome = _normalize_outcome(outcome)
-        normalized_side = _normalize_side(side)
+        return self.plan_order(
+            market_ref=market_ref,
+            outcome=outcome,
+            side=side,
+            price=price,
+            size=size,
+        )
+
+    def plan_order(
+        self,
+        *,
+        market_ref: str,
+        outcome: str,
+        side: str,
+        price: str,
+        size: str,
+        order_type: str = "GTC",
+        post_only: bool = False,
+        expires_at: str | None = None,
+        expiration: int = 0,
+    ) -> DryRunResponse:
+        """Build a deterministic non-live dry-run order plan with post metadata."""
+        normalized_outcome = normalize_outcome(outcome)
+        normalized_side = normalize_side(side)
         request = DryRunRequest(
             market_ref=market_ref.strip(),
             outcome=normalized_outcome,
@@ -84,6 +107,12 @@ class DryRunService:
             return DryRunResponse(
                 request=request,
                 auth=auth_context,
+                post_context=DryRunPostContext(
+                    order_type=order_type.upper(),
+                    post_only=post_only,
+                    submit_mode="dry_run_only",
+                    expires_at=expires_at,
+                ),
                 decision="SKIP",
                 reasons=reasons,
             )
@@ -100,6 +129,12 @@ class DryRunService:
             return DryRunResponse(
                 request=request,
                 auth=auth_context,
+                post_context=DryRunPostContext(
+                    order_type=order_type.upper(),
+                    post_only=post_only,
+                    submit_mode="dry_run_only",
+                    expires_at=expires_at,
+                ),
                 decision="SKIP",
                 reasons=reasons,
             )
@@ -117,6 +152,12 @@ class DryRunService:
             return DryRunResponse(
                 request=request,
                 auth=auth_context,
+                post_context=DryRunPostContext(
+                    order_type=order_type.upper(),
+                    post_only=post_only,
+                    submit_mode="dry_run_only",
+                    expires_at=expires_at,
+                ),
                 decision="SKIP",
                 reasons=reasons,
             )
@@ -128,7 +169,7 @@ class DryRunService:
             )
         )
 
-        market = self._resolve_market(request.market_ref)
+        market = self.resolve_market(request.market_ref)
         if market is None:
             reasons.append(
                 ExecutionReasonBlock(
@@ -140,11 +181,17 @@ class DryRunService:
             return DryRunResponse(
                 request=request,
                 auth=auth_context,
+                post_context=DryRunPostContext(
+                    order_type=order_type.upper(),
+                    post_only=post_only,
+                    submit_mode="dry_run_only",
+                    expires_at=expires_at,
+                ),
                 decision="SKIP",
                 reasons=reasons,
             )
 
-        token_id = _resolve_token_id(market, normalized_outcome)
+        token_id = resolve_token_id(market, normalized_outcome)
         market_view = DryRunResolvedMarket(
             market_slug=market.market_slug,
             condition_id=market.condition_id,
@@ -166,6 +213,12 @@ class DryRunService:
                 request=request,
                 auth=auth_context,
                 market=market_view,
+                post_context=DryRunPostContext(
+                    order_type=order_type.upper(),
+                    post_only=post_only,
+                    submit_mode="dry_run_only",
+                    expires_at=expires_at,
+                ),
                 decision="SKIP",
                 reasons=reasons,
             )
@@ -182,6 +235,12 @@ class DryRunService:
                 request=request,
                 auth=auth_context,
                 market=market_view,
+                post_context=DryRunPostContext(
+                    order_type=order_type.upper(),
+                    post_only=post_only,
+                    submit_mode="dry_run_only",
+                    expires_at=expires_at,
+                ),
                 decision="SKIP",
                 reasons=reasons,
             )
@@ -200,6 +259,12 @@ class DryRunService:
                 request=request,
                 auth=auth_context,
                 market=market_view,
+                post_context=DryRunPostContext(
+                    order_type=order_type.upper(),
+                    post_only=post_only,
+                    submit_mode="dry_run_only",
+                    expires_at=expires_at,
+                ),
                 decision="SKIP",
                 reasons=reasons,
             )
@@ -248,6 +313,12 @@ class DryRunService:
                 auth=auth_context,
                 market=market_view,
                 book_context=book_context,
+                post_context=DryRunPostContext(
+                    order_type=order_type.upper(),
+                    post_only=post_only,
+                    submit_mode="dry_run_only",
+                    expires_at=expires_at,
+                ),
                 decision="SKIP",
                 reasons=reasons,
             )
@@ -273,6 +344,12 @@ class DryRunService:
                 auth=auth_context,
                 market=market_view,
                 book_context=book_context,
+                post_context=DryRunPostContext(
+                    order_type=order_type.upper(),
+                    post_only=post_only,
+                    submit_mode="dry_run_only",
+                    expires_at=expires_at,
+                ),
                 decision="SKIP",
                 reasons=reasons,
             )
@@ -291,11 +368,17 @@ class DryRunService:
                 auth=auth_context,
                 market=market_view,
                 book_context=book_context,
+                post_context=DryRunPostContext(
+                    order_type=order_type.upper(),
+                    post_only=post_only,
+                    submit_mode="dry_run_only",
+                    expires_at=expires_at,
+                ),
                 decision="SKIP",
                 reasons=reasons,
             )
 
-        min_order_size = _decimal_or_none(market_view.min_order_size)
+        min_order_size = decimal_or_none(market_view.min_order_size)
         if min_order_size is not None and size_decimal < min_order_size:
             reasons.append(
                 ExecutionReasonBlock(
@@ -311,6 +394,12 @@ class DryRunService:
                 auth=auth_context,
                 market=market_view,
                 book_context=book_context,
+                post_context=DryRunPostContext(
+                    order_type=order_type.upper(),
+                    post_only=post_only,
+                    submit_mode="dry_run_only",
+                    expires_at=expires_at,
+                ),
                 decision="SKIP",
                 reasons=reasons,
             )
@@ -339,7 +428,7 @@ class DryRunService:
                     side=BUY if normalized_side == "buy" else SELL,
                     fee_rate_bps=fee_rate_bps,
                     nonce=0,
-                    expiration=0,
+                    expiration=expiration,
                 ),
                 PartialCreateOrderOptions(
                     tick_size=tick_size,
@@ -359,6 +448,12 @@ class DryRunService:
                 auth=auth_context,
                 market=market_view,
                 book_context=book_context,
+                post_context=DryRunPostContext(
+                    order_type=order_type.upper(),
+                    post_only=post_only,
+                    submit_mode="dry_run_only",
+                    expires_at=expires_at,
+                ),
                 decision="SKIP",
                 reasons=reasons,
             )
@@ -375,12 +470,19 @@ class DryRunService:
             auth=auth_context,
             market=market_view,
             book_context=book_context,
-            signed_order=_normalize_signed_order(signed_order.dict()),
+            post_context=DryRunPostContext(
+                order_type=order_type.upper(),
+                post_only=post_only,
+                submit_mode="dry_run_only",
+                expires_at=expires_at,
+            ),
+            signed_order=normalize_signed_order(signed_order.dict()),
             decision="WOULD_POST",
             reasons=reasons,
         )
 
-    def _resolve_market(self, market_ref: str) -> NormalizedMarket | None:
+    def resolve_market(self, market_ref: str) -> NormalizedMarket | None:
+        """Resolve one market from a slug or condition id."""
         normalized = market_ref.strip()
         if not normalized:
             raise ExecutionValidationError("Market reference is required.")
@@ -389,7 +491,7 @@ class DryRunService:
         client = self._gamma_client or GammaClient()
         try:
             try:
-                if _looks_like_condition_id(normalized):
+                if looks_like_condition_id(normalized):
                     return client.get_market_by_condition_id(normalized)
                 return client.get_market_by_slug(normalized)
             except GammaNotFoundError:
@@ -399,6 +501,13 @@ class DryRunService:
         finally:
             if owns_client:
                 client.close()
+
+    def load_public_book_context(
+        self,
+        token_id: str,
+    ) -> tuple[NormalizedBook, str | None, str | None]:
+        """Load public book, midpoint, and spread for one token."""
+        return self._load_public_book_context(token_id)
 
     def _load_public_book_context(
         self,
@@ -416,21 +525,24 @@ class DryRunService:
                 client.close()
 
 
-def _normalize_outcome(value: str) -> str:
+def normalize_outcome(value: str) -> str:
+    """Normalize a yes/no outcome token."""
     normalized = value.strip().lower()
     if normalized not in {"yes", "no"}:
         raise ExecutionValidationError("Outcome must be one of: yes, no.")
     return normalized
 
 
-def _normalize_side(value: str) -> str:
+def normalize_side(value: str) -> str:
+    """Normalize a buy/sell order side."""
     normalized = value.strip().lower()
     if normalized not in {"buy", "sell"}:
         raise ExecutionValidationError("Side must be one of: buy, sell.")
     return normalized
 
 
-def _resolve_token_id(market: NormalizedMarket, outcome: str) -> str | None:
+def resolve_token_id(market: NormalizedMarket, outcome: str) -> str | None:
+    """Map a normalized yes/no outcome to a market token id."""
     normalized_outcome = outcome.lower()
     for index, market_outcome in enumerate(market.outcomes):
         if market_outcome.strip().lower() == normalized_outcome and index < len(market.token_ids):
@@ -438,13 +550,15 @@ def _resolve_token_id(market: NormalizedMarket, outcome: str) -> str | None:
     return None
 
 
-def _looks_like_condition_id(value: str) -> bool:
+def looks_like_condition_id(value: str) -> bool:
+    """Return whether a value looks like a 32-byte hex condition id."""
     return len(value) == 66 and value.startswith("0x") and all(
         char in "0123456789abcdefABCDEF" for char in value[2:]
     )
 
 
-def _decimal_or_none(value: str | None) -> Decimal | None:
+def decimal_or_none(value: str | None) -> Decimal | None:
+    """Best-effort decimal parsing for optional numeric strings."""
     if value is None:
         return None
     try:
@@ -453,8 +567,9 @@ def _decimal_or_none(value: str | None) -> Decimal | None:
         return None
 
 
-def _normalize_signed_order(payload: dict[str, Any]) -> dict[str, str | int | float | bool | None]:
-    normalized: dict[str, str | int | float | bool | None] = {}
+def normalize_signed_order(payload: dict[str, Any]) -> dict[str, Any]:
+    """Normalize a signed order payload into JSON-safe primitives."""
+    normalized: dict[str, Any] = {}
     for key, value in payload.items():
         if value is None:
             normalized[key] = None

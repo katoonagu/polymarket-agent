@@ -1,17 +1,43 @@
 """Authenticated dry-run execution planning package."""
 
 from pm.execution.exceptions import ExecutionError, ExecutionValidationError
+from pm.execution.lifecycle import OrderLifecycleService
 from pm.execution.models import (
+    ApprovalAssetStatus,
+    ApprovalCheckResponse,
+    ApprovalPlanRecord,
+    ApprovalPlansFile,
+    ApprovalResultRecord,
+    ApprovalResultsFile,
+    ApprovalSetRequest,
+    ApprovalSetResponse,
     DryRunBookContext,
     DryRunPostContext,
     DryRunRequest,
     DryRunResolvedMarket,
     DryRunResponse,
+    ExecutionMutationResponse,
+    ExecutionOrderPlanRecord,
+    ExecutionOrderPlansFile,
+    ExecutionOrderResultRecord,
+    ExecutionOrderResultsFile,
     ExecutionReasonBlock,
+    NormalizedOrder,
+    OpenOrdersResponse,
+    OrderGetResponse,
+    PostOrderRequest,
+    PostOrderResponse,
 )
 from pm.execution.service import DryRunService
+from pm.execution.state import ExecutionStateError, ExecutionStateService
 
 __all__ = [
+    "ApprovalAssetStatus",
+    "ApprovalCheckResponse",
+    "ApprovalPlanRecord",
+    "ApprovalPlansFile",
+    "ApprovalResultRecord",
+    "ApprovalResultsFile",
     "DryRunBookContext",
     "DryRunPostContext",
     "DryRunRequest",
@@ -19,6 +45,21 @@ __all__ = [
     "DryRunResponse",
     "DryRunService",
     "ExecutionError",
+    "ExecutionMutationResponse",
+    "ExecutionOrderPlanRecord",
+    "ExecutionOrderPlansFile",
+    "ExecutionOrderResultRecord",
+    "ExecutionOrderResultsFile",
     "ExecutionReasonBlock",
+    "ExecutionStateError",
+    "ExecutionStateService",
     "ExecutionValidationError",
+    "NormalizedOrder",
+    "OpenOrdersResponse",
+    "OrderGetResponse",
+    "OrderLifecycleService",
+    "PostOrderRequest",
+    "PostOrderResponse",
+    "ApprovalSetRequest",
+    "ApprovalSetResponse",
 ]

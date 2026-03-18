@@ -4,7 +4,7 @@
 
 The CLI is the primary operator surface for this repository. It exists to expose deterministic, auditable workflows while keeping intelligence clearly separate from execution submission.
 
-In the current phase, the CLI supports public intelligence plus authenticated non-live dry-run planning. It may:
+In the current phase, the CLI supports public intelligence plus authenticated paper-default execution and guarded live writes. It may:
 
 - read public Gamma data
 - read public CLOB data
@@ -14,15 +14,17 @@ In the current phase, the CLI supports public intelligence plus authenticated no
 - manage local gitignored watchlists and wallet state
 - inspect authenticated balances and allowances
 - derive ephemeral API credentials
+- inspect and preview approval writes
 - build and sign dry-run orders locally without submission
+- preview paper-mode order posting and cancellation
+- submit or cancel live orders only behind explicit operator gates
 
 It must not:
 
-- submit live orders
-- cancel or replace orders
-- write on-chain approvals
 - open private websocket sessions
 - start background daemons
+- replace orders yet
+- auto-submit from strategy or orchestration
 - depend on a database
 
 ## Global Output Contract
@@ -115,12 +117,36 @@ Rules:
 - derived API credentials are ephemeral and are never persisted locally
 - balances and allowances are read-only inspection commands
 
+### `pm approve`
+
+Guarded approval inspection and mutation commands.
+
+```text
+pm approve check [--json]
+pm approve set --asset <usdc|ctf> [--live] [--confirm] [--json]
+```
+
+Rules:
+
+- `check` is an authenticated live read
+- `set` is preview-only by default
+- real approval writes require both `--live` and `--confirm`
+- geoblock must be checked before live approval writes
+- raw private keys must never be printed
+- approval plans and live approval results are persisted locally for audit
+
 ### `pm exec`
 
-Authenticated non-live execution planning commands.
+Authenticated execution planning and order lifecycle commands.
 
 ```text
 pm exec dry-run --market <market-slug-or-condition-id> --outcome <yes|no> --side <buy|sell> --price <p> --size <n> [--json]
+pm exec post --market <market-slug-or-condition-id> --outcome <yes|no> --side <buy|sell> --price <p> --size <n> [--order-type <gtc|gtd|fok>] [--expires-at <iso8601>] [--post-only] [--paper] [--live] [--confirm] [--json]
+pm exec orders open [--market <condition_id>] [--token-id <asset_id>] [--json]
+pm exec order get --order-id <id> [--json]
+pm exec cancel --order-id <id> [--paper] [--live] [--confirm] [--json]
+pm exec cancel-all [--paper] [--live] [--confirm] [--json]
+pm exec cancel-market --market <condition_id> [--token-id <asset_id>] [--paper] [--live] [--confirm] [--json]
 ```
 
 Rules:
@@ -128,7 +154,12 @@ Rules:
 - `dry-run` may build and sign an order locally
 - `dry-run` must never post the signed order
 - `dry-run` returns `WOULD_POST` or `SKIP` plus reason blocks
-- live submit, cancel, and replace remain out of scope
+- `post`, `cancel`, `cancel-all`, and `cancel-market` are paper-by-default
+- live order submission and live cancellations require both `--live` and `--confirm`
+- `orders open` and `order get` are authenticated live reads
+- `gtd` requires `--expires-at`
+- `--post-only` is valid only for `gtc` and `gtd`
+- local execution audit records are persisted for preview, paper, and live lifecycle actions
 
 ### `pm market`
 
@@ -282,6 +313,10 @@ Current file-backed state under `.pm/state/`:
 - `strategies.json`
 - `strategy-intents.json`
 - `strategy-decisions.json`
+- `approval-plans.json`
+- `approval-results.json`
+- `execution-order-plans.json`
+- `execution-order-results.json`
 
 Rules:
 
@@ -289,7 +324,7 @@ Rules:
 - atomic writes
 - deterministic append order where applicable
 - validation failures must surface as explicit state errors
-- the current authenticated dry-run phase adds no local auth cache or API-key cache
+- the current execution phase adds no local auth cache or API-key cache
 
 ## Partial Error Handling
 
@@ -325,14 +360,12 @@ Full-command failures should remain limited to validation errors, missing tracke
 
 ## Future CLI/TUI Parity Surface
 
-The current branch now includes `pm setup doctor` only. The following broader parity targets remain future and are not implemented yet:
+The current branch already includes `pm setup doctor`, `pm approve check`, and `pm approve set`. The following broader parity targets remain future and are not implemented yet:
 
 - `pm setup`
 - `pm wallet create`
 - `pm wallet import`
 - `pm wallet show`
-- `pm approve check`
-- `pm approve set`
 - `pm shell`
 - `pm status`
 
@@ -340,14 +373,13 @@ Intended direction:
 
 - `pm setup`: guided onboarding over future local config, wallet readiness, and approval checks
 - `pm wallet create`, `pm wallet import`, `pm wallet show`: future execution-adjacent wallet configuration UX
-- `pm approve check`, `pm approve set`: future approval inspection and mutation flow
 - `pm shell`: future interactive operator shell over existing and later command surfaces
 - `pm status`: future high-level operator health and readiness summary
 
 Guardrails:
 
 - these are documentation targets only on the current branch
-- they must not imply current wallet-create, approval-write, or live execution behavior
+- they must not imply current wallet-create behavior or broader live execution behavior beyond the explicitly implemented guarded commands
 - existing read-only commands must remain usable without any wallet setup
 - intelligence modules remain separate from execution modules
 - execution remains the only module allowed to place or cancel orders

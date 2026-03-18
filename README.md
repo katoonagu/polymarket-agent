@@ -1,6 +1,6 @@
 # polymarket-agent
 
-`polymarket-agent` is a docs-first, execution-first workspace for building a modular Polymarket system. The current branch combines a strong public intelligence stack with the first authenticated non-live dry-run foundation. It uses public Gamma, public CLOB, public Data API, public streams, local gitignored operator state, and authenticated setup and local order-signing paths that never submit real orders.
+`polymarket-agent` is a docs-first, execution-first workspace for building a modular Polymarket system. The current branch combines a strong public intelligence stack with the first authenticated execution foundation. It uses public Gamma, public CLOB, public Data API, public streams, local gitignored operator state, authenticated setup and local order-signing, and the first guarded approval and order lifecycle paths. Live behavior exists only behind explicit operator flags and is never the default.
 
 ## Principles
 
@@ -93,9 +93,9 @@ These sessions are always bounded, persist normalized captured events locally, a
 
 This namespace is still fully read-only. `evaluate` persists candidate intents and derived decisions only. `approve` and `reject` are local review actions that append decision history; they do not create orders or call execution code.
 
-## Authenticated Dry-Run Foundation
+## Authenticated Execution Foundation
 
-The first authenticated layer is now available for non-live setup and planning only.
+The first authenticated layer now covers non-mutating setup, approval inspection, paper-default order lifecycle planning, and explicitly gated live writes.
 
 ```powershell
 .venv\Scripts\pm setup doctor --json
@@ -103,7 +103,17 @@ The first authenticated layer is now available for non-live setup and planning o
 .venv\Scripts\pm auth derive-api-key --json
 .venv\Scripts\pm auth balances --json
 .venv\Scripts\pm auth allowances --json
+.venv\Scripts\pm approve check --json
+.venv\Scripts\pm approve set --asset usdc --json
+.venv\Scripts\pm approve set --asset usdc --live --confirm --json
 .venv\Scripts\pm exec dry-run --market <market-slug-or-condition-id> --outcome yes --side buy --price 0.55 --size 10 --json
+.venv\Scripts\pm exec post --market <market-slug-or-condition-id> --outcome yes --side buy --price 0.55 --size 10 --json
+.venv\Scripts\pm exec post --market <market-slug-or-condition-id> --outcome yes --side buy --price 0.55 --size 10 --live --confirm --json
+.venv\Scripts\pm exec orders open --json
+.venv\Scripts\pm exec order get --order-id <id> --json
+.venv\Scripts\pm exec cancel --order-id <id> --json
+.venv\Scripts\pm exec cancel-all --json
+.venv\Scripts\pm exec cancel-market --market <condition-id> [--token-id <asset-id>] --json
 ```
 
 Rules:
@@ -111,8 +121,12 @@ Rules:
 - private auth material comes from environment only
 - raw private keys are never printed
 - derived L2 API credentials are ephemeral and never persisted locally
-- `pm exec dry-run` may build and sign an order locally, but it never posts it
-- no cancel, replace, approve-write, or user websocket flow exists yet
+- `pm approve set` is preview-only unless `--live --confirm` is present
+- `pm exec post`, `pm exec cancel`, `pm exec cancel-all`, and `pm exec cancel-market` are paper-by-default
+- real approval writes and real exchange mutations require explicit `--live --confirm`
+- geoblock checks run before live approval writes and live order writes
+- `pm exec dry-run` still builds and signs locally without posting
+- strategy and orchestrator flows still do not auto-submit anything
 
 ## Output Contract
 
@@ -151,6 +165,10 @@ This branch uses local file-backed state under `.pm/state/`. These files are rep
 - `strategies.json`
 - `strategy-intents.json`
 - `strategy-decisions.json`
+- `approval-plans.json`
+- `approval-results.json`
+- `execution-order-plans.json`
+- `execution-order-results.json`
 
 They are append-only or registry-style JSON documents used for deterministic operator workflows. They are not a database and they do not enable background daemons or live execution. This phase does not add any local auth cache, API-key cache, or private-key state file.
 
@@ -167,13 +185,12 @@ py -3.11 -m venv .venv
 
 ## Current Non-Goals
 
-- no live order placement
-- no cancel or replace flow
-- no on-chain approval writes
-- no execution submit calls
+- no replace flow yet
 - no user websocket
 - no public stream daemon
 - no background daemon
+- no automatic retry loop
+- no strategy auto-submit
 - no database
 
 ## Related Specs
