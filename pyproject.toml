@@ -1,11 +1,19 @@
 [build-system]
+<<<<<<< HEAD
 requires = ["setuptools>=69", "wheel"]
+=======
+requires = ["setuptools>=65"]
+>>>>>>> feat/02a-python-scaffold
 build-backend = "setuptools.build_meta"
 
 [project]
 name = "polymarket-agent"
 version = "0.1.0"
+<<<<<<< HEAD
 description = "Docs-first scaffold for a modular Polymarket market discovery CLI."
+=======
+description = "Docs-first scaffold for a read-only Polymarket market discovery CLI."
+>>>>>>> feat/02a-python-scaffold
 readme = "README.md"
 requires-python = ">=3.11"
 dependencies = [

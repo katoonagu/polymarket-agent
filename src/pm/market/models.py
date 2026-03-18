@@ -1,3 +1,4 @@
+<<<<<<< HEAD
 """Pydantic models for Gamma market discovery and normalized CLI output."""
 
 from __future__ import annotations
@@ -86,6 +87,17 @@ class GammaSearchResponseWire(BaseModel):
 
 class NormalizedMarket(BaseModel):
     """Normalized market payload exposed by the CLI and adapter."""
+=======
+"""Pydantic models for read-only Gamma market discovery."""
+
+from __future__ import annotations
+
+from pydantic import BaseModel, Field
+
+
+class NormalizedMarket(BaseModel):
+    """Normalized market fields exposed by the CLI."""
+>>>>>>> feat/02a-python-scaffold
 
     market_slug: str
     event_slug: str | None = None
@@ -97,6 +109,7 @@ class NormalizedMarket(BaseModel):
     condition_id: str | None = None
     token_ids: list[str] = Field(default_factory=list)
     outcomes: list[str] = Field(default_factory=list)
+<<<<<<< HEAD
     min_tick: Number | None = None
     min_order_size: Number | None = None
 
@@ -189,10 +202,17 @@ class ClobBookWire(BaseModel):
 
 class NormalizedBookLevel(BaseModel):
     """Normalized book level exposed by the CLI and CLOB adapter."""
+=======
+
+
+class NormalizedBookLevel(BaseModel):
+    """Normalized book level for public CLOB reads."""
+>>>>>>> feat/02a-python-scaffold
 
     price: str
     size: str
 
+<<<<<<< HEAD
     @classmethod
     def from_wire(cls, level: ClobBookLevelWire) -> Self:
         """Normalize a raw CLOB price level."""
@@ -201,6 +221,11 @@ class NormalizedBookLevel(BaseModel):
 
 class NormalizedBook(BaseModel):
     """Normalized book payload exposed by the CLI and CLOB adapter."""
+=======
+
+class NormalizedBook(BaseModel):
+    """Normalized order book payload exposed by the CLI."""
+>>>>>>> feat/02a-python-scaffold
 
     token_id: str
     bids: list[NormalizedBookLevel] = Field(default_factory=list)
@@ -208,6 +233,7 @@ class NormalizedBook(BaseModel):
     tick_size: str | None = None
     min_order_size: str | None = None
 
+<<<<<<< HEAD
     @classmethod
     def from_wire(cls, book: ClobBookWire) -> Self:
         """Normalize a raw CLOB book payload."""
@@ -222,6 +248,11 @@ class NormalizedBook(BaseModel):
 
 class NormalizedPriceQuote(BaseModel):
     """Normalized BUY and SELL quote summary for a token."""
+=======
+
+class NormalizedPriceQuote(BaseModel):
+    """Normalized buy and sell price quote for a token."""
+>>>>>>> feat/02a-python-scaffold
 
     token_id: str
     buy_price: str | None = None
@@ -240,3 +271,25 @@ class NormalizedSpreadQuote(BaseModel):
 
     token_id: str
     spread: str
+<<<<<<< HEAD
+=======
+
+
+class NormalizedEvent(BaseModel):
+    """Normalized event fields exposed by the CLI."""
+
+    event_slug: str
+    title: str
+    active: bool
+    closed: bool
+    enable_order_book: bool
+    markets: list[NormalizedMarket] = Field(default_factory=list)
+
+
+class MarketSearchResponse(BaseModel):
+    """Deterministic response returned by Gamma-backed market search."""
+
+    query: str
+    results: list[NormalizedMarket] = Field(default_factory=list)
+    total: int = 0
+>>>>>>> feat/02a-python-scaffold

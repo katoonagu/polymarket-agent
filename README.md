@@ -19,7 +19,7 @@
   - Purpose: market discovery, watchlists, snapshots, recurring market support, and market context.
   - Spec: `docs/specs/02-market-intel.md`
 - `wallet`
-  - Purpose: wallet intelligence and copy-trading signal generation with strict policy gating.
+  - Purpose: tracked-wallet registry, read-only shadow intelligence, and later copy-trading signal generation with strict policy gating.
   - Spec: `docs/specs/03-copytrading-wallet-intel.md`
 - `arkham`
   - Purpose: on-chain enrichment, clustering, dossiers, and watchlist-grade intelligence.
@@ -27,6 +27,9 @@
 - `strategy`
   - Purpose: strategy definitions, signal evaluation, orchestration, approvals, and conflict resolution.
   - Spec: `docs/specs/05-strategy-orchestrator.md`
+- `data`
+  - Purpose: normalized read-only Data API access for public user and market analytics.
+  - Spec: `docs/specs/06-cli-ops.md`
 - `cli` and `ops`
   - Purpose: operator workflows, replay, audit visibility, and operational controls.
   - Spec: `docs/specs/06-cli-ops.md`
@@ -38,6 +41,7 @@ docs/specs/                      Source-of-truth module and workflow specs
 src/pm/
   execution/                     Execution-only order handling boundary
   market/                        Read-only market discovery and monitoring
+  data/                          Read-only Data API clients and normalized models
   wallet/                        Wallet intelligence and copy-trade signals
   arkham/                        Arkham intelligence and enrichment
   strategy/                      Strategy and orchestration logic
@@ -79,12 +83,17 @@ scripts/                         Development and repo automation scripts
 
 ## Python Bootstrap
 
+<<<<<<< HEAD
 This repo now includes a minimal Python 3.11+ package scaffold for read-only market discovery wiring.
+=======
+This repo now includes a minimal Python 3.11+ scaffold for read-only market discovery over the public Gamma API.
+>>>>>>> feat/02a-python-scaffold
 
 ```powershell
 py -3.11 -m venv .venv
 .venv\Scripts\python -m pip install -e ".[dev]"
 .venv\Scripts\pm --help
+<<<<<<< HEAD
 .venv\Scripts\pm --output json market search --query btc --limit 2
 .venv\Scripts\pm market show --slug bitboy-convicted --json
 .venv\Scripts\pm market event --slug bitcoin-above-on-march-16 --json
@@ -97,6 +106,52 @@ The market CLI now uses Gamma public REST for discovery and public CLOB REST for
 Commands support a root-level `--output table|json`, and command-local `--json` remains a compatibility alias during the transition.
 
 The canonical public read surface is `pm market ...` for discovery and `pm clob ...` for public CLOB reads. `pm market book` and `pm market price` should be treated as temporary compatibility aliases only until the namespace split is fully settled in code. Series support is deferred until a normalized Gamma series adapter exists.
+=======
+.venv\Scripts\pm market search --query btc --limit 2 --json
+.venv\Scripts\pm market show --slug <market-slug> --json
+.venv\Scripts\pm market event --slug <event-slug> --json
+.venv\Scripts\pm clob book --token-id <token-id> --json
+.venv\Scripts\pm clob price --token-id <token-id> --json
+.venv\Scripts\pm data trades --user <0x...> --limit 20 --json
+.venv\Scripts\pm data closed-positions --user <0x...> --json
+.venv\Scripts\pm data holders --market <market-slug-or-condition-id> --limit 20 --json
+.venv\Scripts\pm wallet add --address <0x...> --label "desk-1"
+.venv\Scripts\pm wallet discover leaderboard --limit 20 --json
+.venv\Scripts\pm wallet discover holders --market <market-slug-or-condition-id> --limit 20 --json
+.venv\Scripts\pm wallet summary --address <0x...> --json
+.venv\Scripts\pm wallet score --address <0x...> --json
+.venv\Scripts\pm wallet rank tracked --json
+.venv\Scripts\pm wallet compare --address <0x...> --address <0x...> --json
+.venv\Scripts\pm wallet snapshot --limit 20 --json
+.venv\Scripts\pm wallet monitor run --address <0x...> --limit 20 --json
+.venv\Scripts\pm wallet signals --address <0x...> --limit 20 --json
+.venv\Scripts\pm wallet shadow simulate --address <0x...> --fixed-size 25 --max-drift 5 --max-spread 5 --entry-only --json
+.venv\Scripts\pm wallet shadow report --address <0x...> --json
+```
+
+The current CLI is intentionally small. It is read-only, uses only public Gamma, public CLOB, and public Data API endpoints, and does not include wallet auth, order placement, websocket, database, or execution logic.
+
+`pm market book` and `pm market price` remain temporary compatibility aliases for `pm clob book` and `pm clob price`.
+
+`pm data` currently supports `trades`, `activity`, `positions`, `closed-positions`, `holders`, `open-interest`, `value`, and `traded`. For market-scoped reads, `--market` accepts either a market slug or a condition ID and resolves it through the public Gamma adapter before calling the Data API.
+
+`pm wallet` manages a local tracked-wallet registry at `.pm/state/wallets.json`. That file is gitignored, repo-local, and used only for read-only shadow intelligence in this phase. Tracked-wallet summaries and snapshots are built from the existing public Data API client; there is still no auth, signing, polling daemon, or live copy-trading.
+
+`pm wallet discover` is non-mutating. It surfaces candidate wallets from the public trader leaderboard and from public holder data without auto-adding them to the local registry.
+
+`pm wallet score`, `pm wallet rank tracked`, and `pm wallet compare` use a transparent deterministic score built from four weighted components:
+
+- `leaderboard_component` = `0.25`
+- `realized_performance_component` = `0.35`
+- `activity_component` = `0.20`
+- `footprint_component` = `0.20`
+
+Legitimate no-data cases score as available zeroes. Real request or parsing failures are returned as structured partial errors and are excluded from the available-weight denominator.
+
+`pm wallet monitor run` persists deduped public wallet events to `.pm/state/wallet-events.json`, derived signals to `.pm/state/wallet-signals.json`, and `pm wallet shadow simulate` stores shadow-copy runs in `.pm/state/wallet-shadow-runs.json`. Those files are local-only, gitignored, append-only JSON state.
+
+`pm wallet shadow simulate` never calls execution code. It only produces candidate intents with deterministic `WOULD_COPY` or `SKIP` decisions based on market activity, duplicate detection, entry-only mode, drift thresholds, and spread thresholds. `pm wallet shadow report` summarizes those stored runs and their latest partial upstream errors.
+>>>>>>> feat/02a-python-scaffold
 
 ## Related Docs
 

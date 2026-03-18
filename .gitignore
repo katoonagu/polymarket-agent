@@ -22,4 +22,9 @@ Thumbs.db
 
 # Project
 .codex-log/
+.pm/
 *.log
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+*.egg-info/
