@@ -11,6 +11,7 @@ from typing import Any
 
 import click
 import typer
+from rich.console import RenderableType
 from typer.core import TyperGroup
 
 from pm.common.output import emit_error, emit_output
@@ -80,7 +81,8 @@ def emit_command_output(
     ctx: typer.Context,
     payload: dict[str, Any],
     *,
-    text: str,
+    text: str = "",
+    renderable: RenderableType | None = None,
     local_json_output: bool = False,
 ) -> None:
     """Render a successful command response."""
@@ -89,6 +91,7 @@ def emit_command_output(
         json_output=resolve_output_mode(ctx, local_json_output=local_json_output)
         is OutputMode.JSON,
         text=text,
+        renderable=renderable,
     )
 
 

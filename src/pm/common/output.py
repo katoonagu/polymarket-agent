@@ -7,16 +7,36 @@ from collections.abc import Mapping
 from typing import Any
 
 import typer
-from rich.console import Console
+from rich.console import Console, RenderableType
 
 
-def emit_output(payload: Mapping[str, Any], *, json_output: bool, text: str) -> None:
+def _console(*, stderr: bool = False) -> Console:
+    """Return a deterministic Rich console for CLI rendering and tests."""
+    return Console(
+        stderr=stderr,
+        color_system=None,
+        force_terminal=False,
+        width=120,
+    )
+
+
+def emit_output(
+    payload: Mapping[str, Any],
+    *,
+    json_output: bool,
+    text: str = "",
+    renderable: RenderableType | None = None,
+) -> None:
     """Render deterministic JSON or a small human-readable message."""
     if json_output:
         typer.echo(json.dumps(payload, indent=2, sort_keys=True))
         return
 
-    Console().print(text)
+    if renderable is not None:
+        _console().print(renderable)
+        return
+
+    _console().print(text)
 
 
 def emit_error(
@@ -46,4 +66,4 @@ def emit_error(
         typer.echo(json.dumps(payload, indent=2, sort_keys=True))
         return
 
-    Console(stderr=True).print(message)
+    _console(stderr=True).print(message)

@@ -14,6 +14,7 @@ from pm.cli.ops import app as ops_app
 from pm.cli.ops import status as status_command
 from pm.cli.risk import app as risk_app
 from pm.cli.setup import app as setup_app
+from pm.cli.shell import shell as shell_command
 from pm.cli.strategy import app as strategy_app
 from pm.cli.stream import app as stream_app
 from pm.cli.support import (
@@ -58,6 +59,7 @@ app.add_typer(strategy_app, name="strategy")
 app.add_typer(ops_app, name="ops")
 app.add_typer(execution_app, name="exec")
 app.command("status")(status_command)
+app.command("shell")(shell_command)
 
 
 def main() -> None:

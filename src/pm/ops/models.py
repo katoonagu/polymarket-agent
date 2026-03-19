@@ -109,6 +109,16 @@ class OpsStatusResponse(BaseModel):
     latest_activity: OpsLatestActivity = Field(default_factory=OpsLatestActivity)
 
 
+class OpsVerboseStatusResponse(OpsStatusResponse):
+    """Expanded operator status summary with queue and recents."""
+
+    queue: OpsQueueResponse = Field(default_factory=OpsQueueResponse)
+    recent_strategy_executions: list[StrategyDispatchResultRecord] = Field(
+        default_factory=list
+    )
+    recent_execution_events: list[CapturedExecutionEvent] = Field(default_factory=list)
+
+
 class OpsReviewNextResponse(BaseModel):
     """Next reviewable intent payload."""
 

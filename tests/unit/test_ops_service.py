@@ -305,6 +305,36 @@ def test_status_summary_local_first(tmp_path) -> None:
     assert result.latest_activity.latest_session_activity_at == "2026-03-19T00:07:00Z"
 
 
+def test_verbose_status_includes_queue_and_recents(tmp_path) -> None:
+    fixture = _fixture(tmp_path)
+    _append_intent(
+        fixture,
+        intent_id="intent-wait",
+        created_at="2026-03-19T00:01:00Z",
+        decision="WAIT",
+    )
+    _append_intent(
+        fixture,
+        intent_id="intent-approved",
+        created_at="2026-03-19T00:02:00Z",
+        decision="WAIT",
+        manual_decision="APPROVE",
+    )
+    _append_dispatch_result(
+        fixture,
+        execution_id="strategy_exec_done",
+        intent_id="intent-approved",
+        created_at="2026-03-19T00:03:00Z",
+    )
+    _append_execution_event(fixture, captured_at="2026-03-19T00:04:00Z")
+
+    result = fixture.service.verbose_status()
+
+    assert result.queue.counts.total == 1
+    assert len(result.recent_strategy_executions) == 1
+    assert len(result.recent_execution_events) == 1
+
+
 def test_queue_and_review_next_ordering(tmp_path) -> None:
     fixture = _fixture(tmp_path)
     _append_intent(

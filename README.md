@@ -1,6 +1,6 @@
 # polymarket-agent
 
-`polymarket-agent` is a docs-first, execution-first workspace for building a modular Polymarket system. The current branch combines a strong public intelligence stack with the first authenticated execution foundation, a guarded strategy-dispatch bridge, and a local-first operator control plane. It uses public Gamma, public CLOB, public Data API, public streams, local gitignored operator state, authenticated setup and local order-signing, guarded approval and order lifecycle paths, explicit risk-gated dispatch from approved strategy intents into execution, and workflow-session tooling for operator review. Live behavior exists only behind explicit operator flags and is never the default.
+`polymarket-agent` is a docs-first, execution-first workspace for building a modular Polymarket system. The current branch combines a strong public intelligence stack with guarded authenticated execution, a risk-gated strategy-dispatch bridge, a local-first operator control plane, and the first CLI/TUI parity slice. It uses public Gamma, public CLOB, public Data API, public streams, local gitignored operator state, authenticated setup and local order-signing, guarded approval and order lifecycle paths, explicit manual dispatch from approved strategy intents into execution, workflow-session tooling for operator review, a bounded interactive shell, and richer Rich-based terminal tables for the main operator workflows. Live behavior exists only behind explicit operator flags and is never the default.
 
 ## Principles
 
@@ -104,15 +104,32 @@ Strategy evaluation is still read-only and persists candidate intents plus revie
 
 ```powershell
 .venv\Scripts\pm status --json
+.venv\Scripts\pm status --verbose
 .venv\Scripts\pm ops queue --limit 20 --json
 .venv\Scripts\pm ops session start --label "morning desk" --json
 .venv\Scripts\pm ops session end --json
 .venv\Scripts\pm ops review next --json
 .venv\Scripts\pm ops dispatch approved --limit 5 --json
 .venv\Scripts\pm ops report --json
+.venv\Scripts\pm shell
 ```
 
 This layer stays local-first and operator-driven. It aggregates pending review work, approved dispatch-ready intents, recent dispatch results, and recent execution events into a compact workflow surface. Sessions are optional, append-only, and limited to one active session at a time.
+
+### First CLI/TUI parity slice
+
+```powershell
+.venv\Scripts\pm setup guide --json
+.venv\Scripts\pm status --verbose
+.venv\Scripts\pm shell
+```
+
+This first parity slice stays intentionally narrow:
+
+- `pm setup guide` is env-only and non-mutating
+- `pm status --verbose` adds richer queue and recent-activity previews without live reads
+- `pm shell` is a bounded REPL over existing commands, not a daemon or full-screen TUI
+- selected commands now use richer human-readable tables while JSON stays normalized
 
 ## Authenticated Execution Foundation
 
@@ -155,6 +172,8 @@ Rules:
 - `pm exec reconcile` compares recent persisted websocket events against authenticated REST order views
 - approved strategy intents may hand off only through explicit `pm strategy dispatch` plus risk policy
 - `pm status` and `pm ops` aggregate local strategy, risk, and execution state without adding a daemon or auto-submit loop
+- `pm setup guide` summarizes env requirements, signature/funder expectations, geoblock, balances, and allowances without writing config
+- `pm shell` is a bounded operator shell over existing command workflows only
 - strategy and orchestrator flows still do not auto-submit anything
 
 ## Output Contract
@@ -224,10 +243,19 @@ py -3.11 -m venv .venv
 - no public stream daemon
 - no background daemon
 - no background user-websocket daemon
+- no full-screen daemon UI
 - no automatic retry loop
 - no strategy auto-submit
 - no auto-dispatch loop
 - no database
+
+## Intentional Differences From Official CLI
+
+- Secrets stay env-only by default; this branch does not create or import plaintext wallet config.
+- JSON responses use normalized contracts instead of mirroring raw upstream payloads.
+- Paper/default mode and explicit `--live --confirm` gates remain the only path to live writes.
+- `pm shell` is a bounded REPL, not a daemonized or full-screen terminal UI.
+- Intelligence, strategy, ops, and execution remain separate surfaces; only execution may place or cancel orders.
 
 ## Related Specs
 

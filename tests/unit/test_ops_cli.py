@@ -7,6 +7,7 @@ import json
 from typer.testing import CliRunner
 
 from pm.cli.app import app
+from pm.execution.models import CapturedExecutionEvent
 from pm.ops import (
     OpsDispatchApprovedResponse,
     OpsLatestActivity,
@@ -19,6 +20,7 @@ from pm.ops import (
     OpsSessionSummarySnapshot,
     OpsSessionView,
     OpsStatusResponse,
+    OpsVerboseStatusResponse,
 )
 from pm.strategy.models import (
     StrategyCandidateIntent,
@@ -85,6 +87,41 @@ class FakeOpsService:
                 latest_execution_event_at="2026-03-19T00:04:00Z",
                 latest_session_activity_at="2026-03-19T00:05:00Z",
             ),
+        )
+
+    def verbose_status(self) -> OpsVerboseStatusResponse:
+        return OpsVerboseStatusResponse(
+            **self.status().model_dump(mode="json"),
+            queue=self.queue(limit=10),
+            recent_strategy_executions=[
+                StrategyDispatchResultRecord(
+                    execution_id="strategy_exec_123",
+                    intent_id="intent-dispatch",
+                    strategy_name="wallet_shadow_copy",
+                    strategy_type="wallet_shadow_copy",
+                    mode="paper",
+                    decision="WOULD_POST",
+                    created_at="2026-03-19T00:01:00Z",
+                    market_slug="btc-15m",
+                )
+            ],
+            recent_execution_events=[
+                CapturedExecutionEvent(
+                    session_id="session-1",
+                    source="polymarket_user_ws",
+                    captured_at="2026-03-19T00:02:00Z",
+                    condition_id="0x" + ("a" * 64),
+                    order_id="order-1",
+                    asset_id="100",
+                    event_type="UPDATE",
+                    trade_status="MATCHED",
+                    side="BUY",
+                    price="0.55",
+                    size="10",
+                    status="OPEN",
+                    timestamp=1710806400,
+                )
+            ],
         )
 
     def queue(self, *, limit: int = 20) -> OpsQueueResponse:
@@ -271,6 +308,33 @@ def test_status_and_ops_json_commands(monkeypatch) -> None:
 
     assert report_result.exit_code == 0
     assert json.loads(report_result.stdout)["summary"]["manual_review_count"] == 2
+
+
+def test_status_verbose_json(monkeypatch) -> None:
+    monkeypatch.setattr("pm.cli.ops.OpsService", FakeOpsService)
+
+    result = runner.invoke(app, ["status", "--verbose", "--json"])
+
+    assert result.exit_code == 0
+    payload = json.loads(result.stdout)
+    assert payload["queue"]["counts"]["total"] == 2
+    assert payload["recent_strategy_executions"][0]["execution_id"] == "strategy_exec_123"
+
+
+def test_status_queue_human_tables(monkeypatch) -> None:
+    monkeypatch.setattr("pm.cli.ops.OpsService", FakeOpsService)
+
+    status_result = runner.invoke(app, ["status", "--verbose"])
+    queue_result = runner.invoke(app, ["ops", "queue"])
+
+    assert status_result.exit_code == 0
+    assert "Operator Status" in status_result.stdout
+    assert "Recent Strategy Executions" in status_result.stdout
+    assert "Recent Execution Events" in status_result.stdout
+
+    assert queue_result.exit_code == 0
+    assert "Operator Queue" in queue_result.stdout
+    assert "Intent ID" in queue_result.stdout
 
 
 def test_root_output_json_works_for_status(monkeypatch) -> None:

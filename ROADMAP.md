@@ -194,29 +194,34 @@ Make system behavior reconstructable for debugging, incident response, and regre
 
 **Objective**
 
-Document and later deliver a more operator-friendly CLI and TUI surface inspired by the official Polymarket CLI without collapsing this repo's intelligence and execution boundaries.
+Deliver a more operator-friendly CLI and TUI surface inspired by the official Polymarket CLI without collapsing this repo's intelligence and execution boundaries.
 
 **Scope / Deliverables**
 
 - Upstream UX parity research note in `docs/research/polymarket-cli-ux-parity.md`
-- Future command placeholders for setup, wallet, approve, shell, and status surfaces
-- Clear direction toward stronger table-first human-readable output
+- First implemented parity slice:
+  - `pm status` and `pm status --verbose`
+  - stronger table-first human-readable output for key operator commands
+  - `pm setup guide`
+  - `pm shell`
+- Future command placeholders for broader wallet and setup surfaces
 - Explicit architectural boundaries for future execution-adjacent UX
 - Guardrails that keep read-only intelligence phases separate from auth and live operator flows
 
 **Non-goals**
 
-- Implementing auth or approval behavior in this step
-- Adding execution behavior in this step
 - Adopting plaintext private-key storage as the default operator strategy
 - Replacing the current normalized JSON contract with upstream raw payloads
+- Adding a full-screen daemon UI in this slice
+- Adding auto-trading, auto-submit loops, or new protocol integrations in this slice
 
 **Exit Criteria**
 
 - The parity research note exists and is linked from repo docs
 - The roadmap explicitly names the CLI/TUI parity track
-- The CLI spec documents future parity-only command targets and marks them deferred
-- Repo docs clearly separate future UX parity from current runtime behavior
+- `pm setup guide`, `pm shell`, and `pm status --verbose` are documented as implemented
+- The CLI spec distinguishes the delivered parity slice from still-deferred parity targets
+- Repo docs clearly separate current UX parity work from future live/operator expansions
 
 ## Phase 7: Live Readiness
 

@@ -28,6 +28,9 @@ from pm.auth.models import (
     DerivedApiCredentials,
     GeoblockStatus,
     SetupDoctorResponse,
+    SetupGuideCheckpoint,
+    SetupGuideEnvironmentItem,
+    SetupGuideResponse,
 )
 
 DEFAULT_CLOB_HOST = "https://clob.polymarket.com"
@@ -258,6 +261,22 @@ class AuthService:
             geoblock=geoblock,
             checks=checks,
             errors=errors,
+        )
+
+    def guide(self) -> SetupGuideResponse:
+        """Return a non-mutating guided setup checklist."""
+        auth_result = self.show()
+        doctor = self.doctor()
+        auth = auth_result.auth
+        environment_items = self._build_environment_items(auth)
+        checkpoints = self._build_guide_checkpoints(auth=auth, doctor=doctor)
+        next_steps = self._build_next_steps(doctor=doctor)
+        return SetupGuideResponse(
+            auth=auth,
+            doctor=doctor,
+            environment_items=environment_items,
+            checkpoints=checkpoints,
+            next_steps=next_steps,
         )
 
     def derive_api_key(self) -> AuthDeriveApiKeyResponse:
@@ -587,6 +606,204 @@ class AuthService:
             private_key_present=True,
             api_key_derivation_possible=True,
         )
+
+    def _build_environment_items(
+        self,
+        auth: AuthContext,
+    ) -> list[SetupGuideEnvironmentItem]:
+        signature_raw = os.getenv(SIGNATURE_TYPE_ENV, "").strip()
+        funder_raw = os.getenv(FUNDER_ENV, "").strip()
+        custom_host = bool(
+            os.getenv(CLOB_HOST_ENV, "").strip()
+            or os.getenv(LEGACY_CLOB_HOST_ENV, "").strip()
+        )
+        chain_raw = os.getenv(CHAIN_ID_ENV, "").strip()
+        funder_required = auth.signature_type not in (None, 0)
+        chain_required = custom_host
+        return [
+            SetupGuideEnvironmentItem(
+                name=PRIVATE_KEY_ENV,
+                required=True,
+                present=auth.private_key_present,
+                safe_value="present" if auth.private_key_present else "missing",
+                message="Required for authenticated setup, dry-run signing, and guarded execution.",
+            ),
+            SetupGuideEnvironmentItem(
+                name=SIGNATURE_TYPE_ENV,
+                required=True,
+                present=bool(signature_raw),
+                safe_value=auth.signature_type_name or None,
+                message="Required. Supported values: 0, 1, 2, EOA, POLY_PROXY, POLY_GNOSIS_SAFE.",
+            ),
+            SetupGuideEnvironmentItem(
+                name=FUNDER_ENV,
+                required=funder_required,
+                present=bool(funder_raw),
+                safe_value=funder_raw or None,
+                message=(
+                    "Required for non-EOA signature types."
+                    if funder_required
+                    else "Optional for EOA signature type."
+                ),
+            ),
+            SetupGuideEnvironmentItem(
+                name=CLOB_HOST_ENV,
+                required=False,
+                present=True,
+                safe_value=auth.clob_host,
+                message="Optional. Defaults to the official Polymarket CLOB host.",
+            ),
+            SetupGuideEnvironmentItem(
+                name=CHAIN_ID_ENV,
+                required=chain_required,
+                present=bool(chain_raw) or auth.chain_id is not None,
+                safe_value=str(auth.chain_id) if auth.chain_id is not None else None,
+                message=(
+                    "Required when overriding the default CLOB host."
+                    if chain_required
+                    else "Optional. Defaults to 137 for the default host."
+                ),
+            ),
+        ]
+
+    def _build_guide_checkpoints(
+        self,
+        *,
+        auth: AuthContext,
+        doctor: SetupDoctorResponse,
+    ) -> list[SetupGuideCheckpoint]:
+        checkpoints = [
+            SetupGuideCheckpoint(
+                section="signature_type",
+                status="ready" if auth.signature_type_name is not None else "blocked",
+                message=(
+                    f"Using signature type {auth.signature_type_name}."
+                    if auth.signature_type_name is not None
+                    else f"Set {SIGNATURE_TYPE_ENV} before authenticated commands."
+                ),
+                details={
+                    "signature_type": auth.signature_type_name,
+                    "signature_type_code": auth.signature_type,
+                },
+            ),
+            SetupGuideCheckpoint(
+                section="funder",
+                status=(
+                    "ready"
+                    if auth.signature_type in (None, 0) or auth.funder_address is not None
+                    else "blocked"
+                ),
+                message=(
+                    "EOA signature type does not require a separate funder."
+                    if auth.signature_type in (None, 0)
+                    else (
+                        f"Funder address resolved to {auth.funder_address}."
+                        if auth.funder_address is not None
+                        else f"Set {FUNDER_ENV} for non-EOA signature types."
+                    )
+                ),
+                details={"funder_address": auth.funder_address},
+            ),
+            SetupGuideCheckpoint(
+                section="geoblock",
+                status=(
+                    "ready"
+                    if doctor.geoblock.checked and doctor.geoblock.blocked is False
+                    else "blocked"
+                    if doctor.geoblock.blocked is True
+                    else "pending"
+                ),
+                message=(
+                    doctor.geoblock.message
+                    or "Run the official geoblock check before live actions."
+                ),
+                details={
+                    "checked": doctor.geoblock.checked,
+                    "blocked": doctor.geoblock.blocked,
+                    "country": doctor.geoblock.country,
+                    "region": doctor.geoblock.region,
+                },
+            ),
+        ]
+        checkpoints.append(self._balances_checkpoint(auth))
+        checkpoints.append(self._allowances_checkpoint(auth))
+        return checkpoints
+
+    def _balances_checkpoint(self, auth: AuthContext) -> SetupGuideCheckpoint:
+        if not auth.api_key_derivation_possible:
+            return SetupGuideCheckpoint(
+                section="balances",
+                status="blocked",
+                message="Complete auth configuration before checking balances.",
+            )
+        try:
+            response = self.balances()
+        except (AuthClientError, AuthValidationError) as exc:
+            return SetupGuideCheckpoint(
+                section="balances",
+                status="pending",
+                message=str(exc),
+            )
+        return SetupGuideCheckpoint(
+            section="balances",
+            status="ready",
+            message="Authenticated balance lookup completed.",
+            details={
+                "asset_type": response.balance_view.asset_type,
+                "balance": response.balance_view.balance,
+                "allowance": response.balance_view.allowance,
+                "signature_type": response.balance_view.signature_type,
+            },
+        )
+
+    def _allowances_checkpoint(self, auth: AuthContext) -> SetupGuideCheckpoint:
+        if not auth.api_key_derivation_possible:
+            return SetupGuideCheckpoint(
+                section="allowances",
+                status="blocked",
+                message="Complete auth configuration before checking allowances.",
+            )
+        try:
+            response = self.allowances()
+        except (AuthClientError, AuthValidationError) as exc:
+            return SetupGuideCheckpoint(
+                section="allowances",
+                status="pending",
+                message=str(exc),
+            )
+        return SetupGuideCheckpoint(
+            section="allowances",
+            status="ready",
+            message="Authenticated allowance lookup completed.",
+            details={
+                "asset_type": response.allowance_view.asset_type,
+                "balance": response.allowance_view.balance,
+                "allowance": response.allowance_view.allowance,
+                "signature_type": response.allowance_view.signature_type,
+            },
+        )
+
+    def _build_next_steps(self, *, doctor: SetupDoctorResponse) -> list[str]:
+        steps = [
+            "pm auth show --json",
+            "pm setup doctor --json",
+        ]
+        if doctor.ready:
+            steps.extend(
+                [
+                    "pm approve check --json",
+                    (
+                        "pm exec dry-run --market <market-slug-or-condition-id> "
+                        "--outcome yes --side buy --price <p> --size <n> --json"
+                    ),
+                ]
+            )
+            return steps
+
+        steps.append(
+            "Set the required environment variables, then re-run pm setup doctor --json."
+        )
+        return steps
 
 
 def _parse_signature_type(value: str) -> tuple[int, str]:

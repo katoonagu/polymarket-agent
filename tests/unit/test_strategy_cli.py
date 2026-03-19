@@ -269,3 +269,14 @@ def test_strategy_show_not_found_json(monkeypatch) -> None:
         },
         "ok": False,
     }
+
+
+def test_strategy_intents_human_table(monkeypatch) -> None:
+    monkeypatch.setattr("pm.cli.strategy.StrategyService", FakeStrategyService)
+
+    result = runner.invoke(app, ["strategy", "intents", "--limit", "5"])
+
+    assert result.exit_code == 0
+    assert "Strategy Intents" in result.stdout
+    assert "Intent ID" in result.stdout
+    assert "wallet_shadow_copy" in result.stdout

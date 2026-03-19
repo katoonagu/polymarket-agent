@@ -263,3 +263,14 @@ def test_root_output_json_works_for_risk(monkeypatch) -> None:
 
     assert result.exit_code == 0
     assert json.loads(result.stdout)["strategies"][0]["strategy_name"] == "wallet_shadow_copy"
+
+
+def test_strategy_executions_human_table(monkeypatch) -> None:
+    monkeypatch.setattr("pm.cli.strategy.StrategyDispatchService", FakeStrategyDispatchService)
+
+    result = runner.invoke(app, ["strategy", "executions", "--limit", "5"])
+
+    assert result.exit_code == 0
+    assert "Strategy Executions" in result.stdout
+    assert "Execution ID" in result.stdout
+    assert "WOULD_POST" in result.stdout

@@ -14,6 +14,7 @@ from pm.ops.models import (
     OpsSessionSummarySnapshot,
     OpsSessionView,
     OpsStatusResponse,
+    OpsVerboseStatusResponse,
 )
 from pm.ops.service import OpsService, OpsValidationError
 from pm.ops.state import OpsSessionNotFoundError, OpsStateError, OpsStateService
@@ -37,4 +38,5 @@ __all__ = [
     "OpsStateService",
     "OpsStatusResponse",
     "OpsValidationError",
+    "OpsVerboseStatusResponse",
 ]

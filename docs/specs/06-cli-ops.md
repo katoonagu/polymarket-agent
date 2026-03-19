@@ -94,13 +94,14 @@ Canonical error codes in the current phase:
 Local-first operator summary command.
 
 ```text
-pm status [--json]
+pm status [--verbose] [--json]
 ```
 
 Rules:
 
 - `status` is local-first and does not perform authenticated live reads in this phase
 - it summarizes active session state, pending review work, dispatch-ready work, recent dispatches, recent execution events, and risk-policy persistence
+- `--verbose` adds a queue preview plus recent strategy-execution and execution-event previews
 - it remains an operator workflow surface, not a daemon or live control loop
 
 ### `pm setup`
@@ -109,14 +110,34 @@ Authenticated non-mutating readiness checks.
 
 ```text
 pm setup doctor [--json]
+pm setup guide [--json]
 ```
 
 Rules:
 
-- `pm setup doctor` is the only implemented setup command in the current phase
+- `pm setup doctor` and `pm setup guide` are the implemented setup commands in the current phase
 - it must remain non-mutating
 - it must not derive API credentials, post orders, or write approvals
-- broader guided setup UX remains a future parity target
+- `pm setup guide` is also non-mutating and env-only
+- `pm setup guide` summarizes required env vars, signature and funder expectations, geoblock status, and balance or allowance checkpoints
+- neither setup command may print raw private keys or create plaintext wallet config
+- broader setup-wizard behavior remains a future parity target
+
+### `pm shell`
+
+Bounded interactive operator shell.
+
+```text
+pm shell
+```
+
+Rules:
+
+- `pm shell` is a bounded REPL over existing commands, not a daemon or full-screen TUI
+- it executes one command at a time and returns to the prompt
+- it supports a small alias set for common workflows plus direct passthrough commands without the `pm` prefix
+- it exits on `exit`, `quit`, EOF, or interrupt
+- it does not add background jobs, polling, saved history, or hidden execution behavior
 
 ### `pm auth`
 
@@ -376,6 +397,22 @@ Rules:
 - `report` prefers the active session scope, then the latest completed session, then a global local snapshot
 - `ops` is an operator UX layer only; it does not add a new execution path
 
+## Human Output Direction
+
+The current branch now uses stronger Rich-based human-readable tables for key operator commands:
+
+- `pm status`
+- `pm ops queue`
+- `pm strategy intents`
+- `pm strategy executions`
+- `pm exec events`
+
+Rules:
+
+- JSON remains the canonical machine-facing contract
+- richer human output must not change JSON shapes
+- table output may shorten long ids for readability, but JSON must continue to return full values
+
 ## Local Gitignored State
 
 Current file-backed state under `.pm/state/`:
@@ -448,19 +485,19 @@ Full-command failures should remain limited to validation errors, missing tracke
 
 ## Future CLI/TUI Parity Surface
 
-The current branch already includes `pm setup doctor`, `pm approve check`, `pm approve set`, and `pm status`. The following broader parity targets remain future and are not implemented yet:
+The current branch already includes `pm setup doctor`, `pm setup guide`, `pm approve check`, `pm approve set`, `pm status`, and `pm shell`. The following broader parity targets remain future and are not implemented yet:
 
-- `pm setup`
+- broader setup-wizard behavior beyond `doctor` and `guide`
 - `pm wallet create`
 - `pm wallet import`
 - `pm wallet show`
-- `pm shell`
+- fuller TUI-style operator workflows beyond the bounded shell
 
 Intended direction:
 
-- `pm setup`: guided onboarding over future local config, wallet readiness, and approval checks
+- broader `pm setup`: guided onboarding over future local config, wallet readiness, and approval checks
 - `pm wallet create`, `pm wallet import`, `pm wallet show`: future execution-adjacent wallet configuration UX
-- `pm shell`: future interactive operator shell over existing and later command surfaces
+- broader shell and TUI work: future interactive operator experience over existing and later command surfaces
 
 Guardrails:
 
@@ -470,7 +507,15 @@ Guardrails:
 - intelligence modules remain separate from execution modules
 - execution remains the only module allowed to place or cancel orders
 
-Richer human-readable tables are also a future parity direction across the CLI, while JSON remains normalized and machine-friendly.
+Richer human-readable tables are now implemented for selected operator commands and remain a broader parity direction across the rest of the CLI while JSON stays normalized and machine-friendly.
+
+## Intentional Differences From Official CLI
+
+- secrets remain env-only by default instead of plaintext wallet or private-key config
+- JSON output stays normalized and stable instead of exposing raw upstream payloads as the public contract
+- live order and approval writes remain explicitly gated behind `--live --confirm`
+- `pm shell` is bounded and operator-invoked, not a daemonized or full-screen terminal process
+- intelligence, strategy, ops, and execution remain separate modules; execution alone may place or cancel orders
 
 ## Operational Direction
 

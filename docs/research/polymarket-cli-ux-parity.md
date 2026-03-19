@@ -10,7 +10,7 @@ This note treats the official Rust-based `Polymarket/polymarket-cli` as an upstr
 
 - Python-native
 - execution-isolated
-- read-only by default on the current branch
+- paper-first and guarded on the current branch
 - structured around normalized public-data contracts rather than raw upstream payloads
 - strict about keeping execution as the only module allowed to place or cancel orders
 
@@ -49,7 +49,7 @@ That broader UX lives alongside authenticated and trading-capable flows upstream
 
 These upstream UX patterns are desirable here:
 
-- a future setup wizard that makes local onboarding and operator readiness easier
+- a setup guide that makes local onboarding and operator readiness easier
 - clearer wallet verbs and wallet-surface discoverability
 - explicit approval verbs instead of implicit side effects
 - shell and status surfaces for operator navigation and quick situational awareness
@@ -62,9 +62,9 @@ The parity target is operator experience, not implementation symmetry.
 
 The following parity ideas fit this repo cleanly:
 
-- `pm shell` as a future operator surface over the existing read-only and later execution-safe commands
-- `pm status` as a future health and readiness summary for local state, stream capture, watchlists, replay fixtures, and later execution wiring
-- `pm setup` as orchestration over local config, environment checks, and future execution-module setup
+- `pm shell` as a bounded operator surface over the existing intelligence and execution-safe commands
+- `pm status` as a local-first health and workflow summary for local state and recent operator activity
+- `pm setup guide` as non-mutating orchestration over env checks, readiness, and execution-module setup checkpoints
 - richer human-readable tables layered on top of the existing normalized CLI contracts
 
 Two areas fit only as future execution-adjacent modules, not as current read-only intelligence features:
@@ -82,8 +82,8 @@ These parity items are intentionally deferred:
 - auth-backed wallet management
 - wallet creation and import behavior
 - approval transactions
-- execution-integrated status surfaces
-- a full interactive shell or TUI implementation
+- fuller execution-integrated status surfaces
+- a full interactive shell or TUI implementation beyond the bounded REPL
 - any setup flow that can enable execution behavior end to end
 
 They belong to future execution-adjacent work, not the current read-only branch contract.
@@ -101,12 +101,22 @@ This repo may borrow operator UX ideas from upstream, but not at the cost of its
 
 ## Parity Direction
 
-| Upstream surface | Future `polymarket-agent` direction |
+| Upstream surface | Current or future `polymarket-agent` direction |
 | --- | --- |
-| `setup` | `pm setup` |
+| `setup` | `pm setup doctor`, `pm setup guide`, broader setup flow later |
 | `wallet create`, `wallet import`, `wallet show` | `pm wallet create`, `pm wallet import`, `pm wallet show` |
 | `approve check`, `approve set` | `pm approve check`, `pm approve set` |
 | `shell` | `pm shell` |
-| `status` | `pm status` |
+| `status` | `pm status`, `pm status --verbose` |
 
-These are documentation targets only in this phase. They do not imply that auth, signing, approval writes, or execution behavior already exist on the current branch.
+## First Implemented Slice
+
+The current branch now includes the first operator-UX parity slice:
+
+- `pm status`
+- `pm status --verbose`
+- `pm setup guide`
+- `pm shell`
+- richer table-first output for key operator commands
+
+That slice intentionally improves workflow and human-readable output without changing the repo's execution boundaries, env-only secret policy, or live-write guardrails.

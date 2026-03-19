@@ -21,6 +21,7 @@ from pm.ops.models import (
     OpsSessionSummarySnapshot,
     OpsSessionView,
     OpsStatusResponse,
+    OpsVerboseStatusResponse,
 )
 from pm.ops.state import OpsSessionNotFoundError, OpsStateService
 from pm.risk import RiskPolicyService
@@ -34,6 +35,7 @@ from pm.strategy.state import StrategyStateService
 
 DEFAULT_LIMIT = 20
 RECENT_ITEMS_LIMIT = 20
+VERBOSE_PREVIEW_LIMIT = 10
 
 
 class OpsValidationError(RuntimeError):
@@ -83,6 +85,20 @@ class OpsService:
                 dispatch_count=len(dispatch_results),
                 execution_event_count=len(execution_events),
             ),
+        )
+
+    def verbose_status(self) -> OpsVerboseStatusResponse:
+        """Return an expanded local-first operator summary."""
+        base = self.status()
+        return OpsVerboseStatusResponse(
+            **base.model_dump(mode="json"),
+            queue=self.queue(limit=VERBOSE_PREVIEW_LIMIT),
+            recent_strategy_executions=list(
+                reversed(self._strategy_state.list_dispatch_results())
+            )[:VERBOSE_PREVIEW_LIMIT],
+            recent_execution_events=list(
+                reversed(self._execution_state.list_execution_events())
+            )[:VERBOSE_PREVIEW_LIMIT],
         )
 
     def queue(self, *, limit: int = DEFAULT_LIMIT) -> OpsQueueResponse:

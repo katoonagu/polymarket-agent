@@ -130,3 +130,50 @@ def test_auth_balances_and_allowances_use_authenticated_lookup(monkeypatch) -> N
     assert balances.balance_view.balance == "123.45"
     assert balances.balance_view.allowance == "456.78"
     assert allowances.allowance_view.allowance == "456.78"
+
+
+def test_auth_guide_marks_missing_config_as_blocked(monkeypatch) -> None:
+    monkeypatch.delenv(PRIVATE_KEY_ENV, raising=False)
+    monkeypatch.delenv(SIGNATURE_TYPE_ENV, raising=False)
+
+    with AuthService(sdk_client_cls=FakeSDKClient) as service:
+        service.check_geoblock = lambda: GeoblockStatus(  # type: ignore[method-assign]
+            checked=False,
+            blocked=None,
+            message="Geoblock could not be verified.",
+        )
+        result = service.guide()
+
+    assert result.environment_items[0].name == PRIVATE_KEY_ENV
+    assert result.environment_items[0].safe_value == "missing"
+    assert any(
+        item.section == "balances" and item.status == "blocked"
+        for item in result.checkpoints
+    )
+    assert any(
+        item.section == "allowances" and item.status == "blocked"
+        for item in result.checkpoints
+    )
+
+
+def test_auth_guide_uses_authenticated_checkpoints_when_ready(monkeypatch) -> None:
+    monkeypatch.setenv(PRIVATE_KEY_ENV, PRIVATE_KEY)
+    monkeypatch.setenv(SIGNATURE_TYPE_ENV, "EOA")
+
+    with AuthService(sdk_client_cls=FakeSDKClient) as service:
+        service.check_geoblock = lambda: GeoblockStatus(  # type: ignore[method-assign]
+            checked=True,
+            blocked=False,
+            message="Allowed",
+        )
+        result = service.guide()
+
+    assert any(
+        item.section == "balances" and item.status == "ready"
+        for item in result.checkpoints
+    )
+    assert any(
+        item.section == "allowances" and item.status == "ready"
+        for item in result.checkpoints
+    )
+    assert any(step.startswith("pm approve check") for step in result.next_steps)

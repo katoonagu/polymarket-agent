@@ -14,6 +14,9 @@ from pm.auth.models import (
     DerivedApiCredentials,
     GeoblockStatus,
     SetupDoctorResponse,
+    SetupGuideCheckpoint,
+    SetupGuideEnvironmentItem,
+    SetupGuideResponse,
 )
 from pm.cli.app import app
 from pm.execution.models import (
@@ -41,6 +44,36 @@ class FakeSetupAuthService:
             geoblock=GeoblockStatus(checked=True, blocked=False, message="Allowed"),
             checks=[],
             errors=[],
+        )
+
+    def guide(self) -> SetupGuideResponse:
+        return SetupGuideResponse(
+            auth=_auth_context(),
+            doctor=self.doctor(),
+            environment_items=[
+                SetupGuideEnvironmentItem(
+                    name="POLYMARKET_PRIVATE_KEY",
+                    required=True,
+                    present=True,
+                    safe_value="present",
+                    message="Required for authenticated commands.",
+                )
+            ],
+            checkpoints=[
+                SetupGuideCheckpoint(
+                    section="balances",
+                    status="ready",
+                    message="Authenticated balance lookup completed.",
+                    details={"balance": "123.45"},
+                ),
+                SetupGuideCheckpoint(
+                    section="allowances",
+                    status="ready",
+                    message="Authenticated allowance lookup completed.",
+                    details={"allowance": "456.78"},
+                ),
+            ],
+            next_steps=["pm approve check --json"],
         )
 
 
@@ -144,6 +177,30 @@ def test_setup_doctor_json(monkeypatch) -> None:
     payload = json.loads(result.stdout)
     assert payload["ready"] is True
     assert payload["auth"]["signer_address"].startswith("0x")
+
+
+def test_setup_guide_json(monkeypatch) -> None:
+    monkeypatch.setattr("pm.cli.setup.AuthService", FakeSetupAuthService)
+
+    result = runner.invoke(app, ["setup", "guide", "--json"])
+
+    assert result.exit_code == 0
+    payload = json.loads(result.stdout)
+    assert payload["environment_items"][0]["name"] == "POLYMARKET_PRIVATE_KEY"
+    assert payload["environment_items"][0]["safe_value"] == "present"
+    assert payload["checkpoints"][0]["section"] == "balances"
+    assert payload["next_steps"][0] == "pm approve check --json"
+
+
+def test_setup_guide_human_output(monkeypatch) -> None:
+    monkeypatch.setattr("pm.cli.setup.AuthService", FakeSetupAuthService)
+
+    result = runner.invoke(app, ["setup", "guide"])
+
+    assert result.exit_code == 0
+    assert "Environment Variables" in result.stdout
+    assert "Setup Checkpoints" in result.stdout
+    assert "Suggested Next Commands" in result.stdout
 
 
 def test_auth_show_and_derive_api_key_json(monkeypatch) -> None:

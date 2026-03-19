@@ -3,8 +3,10 @@
 from __future__ import annotations
 
 import typer
+from rich.console import RenderableType
 
 from pm.cli.support import LOCAL_JSON_OPTION, emit_command_error, emit_command_output
+from pm.common.tables import empty_message, row_table, shorten_identifier
 from pm.strategy import (
     StrategyCandidateIntent,
     StrategyDecisionMutationResponse,
@@ -190,6 +192,7 @@ def list_intents(
         ctx,
         result.model_dump(mode="json"),
         text=_format_strategy_intents(result),
+        renderable=_render_strategy_intents(result),
         local_json_output=json_output,
     )
 
@@ -379,6 +382,7 @@ def list_executions(
         ctx,
         result.model_dump(mode="json"),
         text=_format_strategy_executions(result),
+        renderable=_render_strategy_executions(result),
         local_json_output=json_output,
     )
 
@@ -521,6 +525,35 @@ def _format_strategy_intents(response: StrategyIntentsResponse) -> str:
     return "\n\n".join(_format_intent_view(item) for item in response.items)
 
 
+def _render_strategy_intents(response: StrategyIntentsResponse) -> RenderableType:
+    if not response.items:
+        return empty_message("No persisted strategy intents.")
+    return row_table(
+        title="Strategy Intents",
+        columns=[
+            "Intent ID",
+            "Strategy",
+            "Current",
+            "Derived",
+            "Market",
+            "Outcome",
+            "Created",
+        ],
+        rows=[
+            [
+                shorten_identifier(item.intent.intent_id),
+                item.intent.strategy_name,
+                item.current_decision,
+                item.intent.decision,
+                item.intent.market_slug or "-",
+                item.intent.outcome or "-",
+                item.intent.created_at,
+            ]
+            for item in response.items
+        ],
+    )
+
+
 def _format_strategy_review(response: StrategyReviewResponse) -> str:
     lines = [
         _format_intent_view(response.intent),
@@ -589,6 +622,35 @@ def _format_strategy_executions(response: StrategyExecutionsResponse) -> str:
     if not response.items:
         return "No persisted strategy executions."
     return "\n\n".join(_format_execution_record(item) for item in response.items)
+
+
+def _render_strategy_executions(response: StrategyExecutionsResponse) -> RenderableType:
+    if not response.items:
+        return empty_message("No persisted strategy executions.")
+    return row_table(
+        title="Strategy Executions",
+        columns=[
+            "Execution ID",
+            "Intent ID",
+            "Decision",
+            "Mode",
+            "Market",
+            "Order ID",
+            "Created",
+        ],
+        rows=[
+            [
+                shorten_identifier(item.execution_id),
+                shorten_identifier(item.intent_id),
+                item.decision,
+                item.mode,
+                item.market_slug or "-",
+                shorten_identifier(item.order_id),
+                item.created_at,
+            ]
+            for item in response.items
+        ],
+    )
 
 
 def _format_strategy_execution_detail(response: StrategyExecutionDetailResponse) -> str:

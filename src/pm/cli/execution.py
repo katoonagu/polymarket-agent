@@ -3,9 +3,11 @@
 from __future__ import annotations
 
 import typer
+from rich.console import RenderableType
 
 from pm.auth import AuthClientError, AuthValidationError
 from pm.cli.support import LOCAL_JSON_OPTION, emit_command_error, emit_command_output
+from pm.common.tables import empty_message, row_table, shorten_identifier
 from pm.execution import (
     DryRunResponse,
     DryRunService,
@@ -244,6 +246,7 @@ def events(
         ctx,
         result.model_dump(mode="json"),
         text=_format_events(result),
+        renderable=_render_events(result),
         local_json_output=json_output,
     )
 
@@ -539,6 +542,37 @@ def _format_events(response: ExecutionEventsResponse) -> str:
             ]
         )
     return "\n".join(lines)
+
+
+def _render_events(response: ExecutionEventsResponse) -> RenderableType:
+    if not response.items:
+        return empty_message("No persisted execution events.")
+    return row_table(
+        title="Execution Events",
+        columns=[
+            "Captured",
+            "Order ID",
+            "Condition",
+            "Event",
+            "Trade",
+            "Status",
+            "Price",
+            "Size",
+        ],
+        rows=[
+            [
+                item.captured_at,
+                shorten_identifier(item.order_id),
+                shorten_identifier(item.condition_id),
+                item.event_type,
+                item.trade_status or "-",
+                item.status or "-",
+                item.price or "-",
+                item.size or "-",
+            ]
+            for item in response.items
+        ],
+    )
 
 
 def _format_reconcile(response: ExecutionReconciliationResponse) -> str:

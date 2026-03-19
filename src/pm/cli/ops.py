@@ -3,8 +3,18 @@
 from __future__ import annotations
 
 import typer
+from rich.console import RenderableType
 
 from pm.cli.support import LOCAL_JSON_OPTION, emit_command_error, emit_command_output
+from pm.common.tables import (
+    empty_message,
+    format_bool,
+    render_group,
+    row_table,
+    shorten_identifier,
+    summary_table,
+)
+from pm.execution.models import CapturedExecutionEvent
 from pm.ops import (
     OpsDispatchApprovedResponse,
     OpsQueueItem,
@@ -18,7 +28,9 @@ from pm.ops import (
     OpsStateError,
     OpsStatusResponse,
     OpsValidationError,
+    OpsVerboseStatusResponse,
 )
+from pm.strategy.models import StrategyDispatchResultRecord
 
 app = typer.Typer(
     add_completion=False,
@@ -55,11 +67,17 @@ PAPER_OPTION = typer.Option(False, "--paper", help="Explicit paper mode. This is
 
 def status(
     ctx: typer.Context,
+    verbose: bool = typer.Option(
+        False,
+        "--verbose",
+        help="Include queue and recent activity previews.",
+    ),
     json_output: bool = JSON_OPTION,
 ) -> None:
     """Show a compact local operator summary."""
     try:
-        result = OpsService().status()
+        service = OpsService()
+        result = service.verbose_status() if verbose else service.status()
     except (OpsStateError, OpsValidationError) as exc:
         _emit_ops_error(ctx, exc=exc, resource="status", json_output=json_output)
         raise typer.Exit(1) from exc
@@ -67,6 +85,7 @@ def status(
         ctx,
         result.model_dump(mode="json"),
         text=_format_status(result),
+        renderable=_render_status(result),
         local_json_output=json_output,
     )
 
@@ -87,6 +106,7 @@ def queue(
         ctx,
         result.model_dump(mode="json"),
         text=_format_queue(result),
+        renderable=_render_queue(response=result),
         local_json_output=json_output,
     )
 
@@ -234,6 +254,14 @@ def _format_status(response: OpsStatusResponse) -> str:
         f"  Execution event: {response.latest_activity.latest_execution_event_at or '-'}",
         f"  Session activity: {response.latest_activity.latest_session_activity_at or '-'}",
     ]
+    if isinstance(response, OpsVerboseStatusResponse):
+        lines.extend(
+            [
+                f"Queue preview: {len(response.queue.items)}",
+                f"Recent strategy executions preview: {len(response.recent_strategy_executions)}",
+                f"Recent execution events preview: {len(response.recent_execution_events)}",
+            ]
+        )
     return "\n".join(lines)
 
 
@@ -246,6 +274,138 @@ def _format_queue(response: OpsQueueResponse) -> str:
     for item in response.items:
         lines.extend(["", _format_queue_item(item)])
     return "\n".join(lines)
+
+
+def _render_status(response: OpsStatusResponse) -> RenderableType:
+    summary = summary_table(
+        title="Operator Status",
+        rows=[
+            (
+                "Active session",
+                response.active_session.session_id if response.active_session else "-",
+            ),
+            ("Pending review", str(response.pending_review_count)),
+            ("Dispatch ready", str(response.approved_dispatch_ready_count)),
+            (
+                "Recent strategy executions",
+                str(response.recent_strategy_execution_count),
+            ),
+            ("Recent execution events", str(response.recent_execution_event_count)),
+            ("Risk policies persisted", format_bool(response.risk_policies_persisted)),
+            ("Latest intent", response.latest_activity.latest_intent_created_at or "-"),
+            (
+                "Latest manual decision",
+                response.latest_activity.latest_manual_decision_at or "-",
+            ),
+            ("Latest dispatch", response.latest_activity.latest_dispatch_at or "-"),
+            (
+                "Latest execution event",
+                response.latest_activity.latest_execution_event_at or "-",
+            ),
+        ],
+    )
+    if not isinstance(response, OpsVerboseStatusResponse):
+        return summary
+    return render_group(
+        summary,
+        _render_queue(response=response.queue),
+        _render_status_executions(response.recent_strategy_executions),
+        _render_status_events(response.recent_execution_events),
+    )
+
+
+def _render_queue(*, response: OpsQueueResponse) -> RenderableType:
+    summary = summary_table(
+        title="Queue Summary",
+        rows=[
+            ("Total", str(response.counts.total)),
+            ("Review", str(response.counts.review_total)),
+            ("Dispatch", str(response.counts.dispatch_total)),
+        ],
+    )
+    if not response.items:
+        return render_group(summary, empty_message("No queue items."))
+    table = row_table(
+        title="Operator Queue",
+        columns=[
+            "Kind",
+            "Intent ID",
+            "Strategy",
+            "Current",
+            "Market",
+            "Outcome",
+            "Created",
+        ],
+        rows=[
+            [
+                item.kind,
+                shorten_identifier(item.intent.intent.intent_id),
+                item.intent.intent.strategy_name,
+                item.intent.current_decision,
+                item.intent.intent.market_slug or "-",
+                item.intent.intent.outcome or "-",
+                item.intent.intent.created_at,
+            ]
+            for item in response.items
+        ],
+    )
+    return render_group(summary, table)
+
+
+def _render_status_executions(
+    items: list[StrategyDispatchResultRecord],
+) -> RenderableType:
+    if not items:
+        return empty_message("No recent strategy executions.")
+    return row_table(
+        title="Recent Strategy Executions",
+        columns=[
+            "Execution ID",
+            "Intent ID",
+            "Decision",
+            "Mode",
+            "Market",
+            "Created",
+        ],
+        rows=[
+            [
+                shorten_identifier(item.execution_id),
+                shorten_identifier(item.intent_id),
+                item.decision,
+                item.mode,
+                item.market_slug or "-",
+                item.created_at,
+            ]
+            for item in items
+        ],
+    )
+
+
+def _render_status_events(items: list[CapturedExecutionEvent]) -> RenderableType:
+    if not items:
+        return empty_message("No recent execution events.")
+    return row_table(
+        title="Recent Execution Events",
+        columns=[
+            "Captured",
+            "Order ID",
+            "Condition",
+            "Event",
+            "Trade",
+            "Status",
+        ],
+        rows=[
+            [
+                item.captured_at,
+                shorten_identifier(item.order_id),
+                shorten_identifier(item.condition_id),
+                item.event_type,
+                item.trade_status or "-",
+                item.status or "-",
+            ]
+            for item in items
+        ],
+    )
 
 
 def _format_review_next(response: OpsReviewNextResponse) -> str:

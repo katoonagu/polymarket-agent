@@ -54,6 +54,35 @@ class SetupDoctorResponse(BaseModel):
     errors: list[AuthSectionError] = Field(default_factory=list)
 
 
+class SetupGuideEnvironmentItem(BaseModel):
+    """One safe environment/configuration item for the setup guide."""
+
+    name: str
+    required: bool
+    present: bool
+    safe_value: str | None = None
+    message: str
+
+
+class SetupGuideCheckpoint(BaseModel):
+    """One guided setup checkpoint."""
+
+    section: str
+    status: str
+    message: str
+    details: dict[str, str | int | bool | None] = Field(default_factory=dict)
+
+
+class SetupGuideResponse(BaseModel):
+    """Guided env-only setup payload."""
+
+    auth: AuthContext
+    doctor: SetupDoctorResponse
+    environment_items: list[SetupGuideEnvironmentItem] = Field(default_factory=list)
+    checkpoints: list[SetupGuideCheckpoint] = Field(default_factory=list)
+    next_steps: list[str] = Field(default_factory=list)
+
+
 class AuthShowResponse(BaseModel):
     """Current authenticated environment context."""
 

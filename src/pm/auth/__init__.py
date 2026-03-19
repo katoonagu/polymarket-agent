@@ -13,6 +13,9 @@ from pm.auth.models import (
     DerivedApiCredentials,
     GeoblockStatus,
     SetupDoctorResponse,
+    SetupGuideCheckpoint,
+    SetupGuideEnvironmentItem,
+    SetupGuideResponse,
 )
 from pm.auth.service import (
     CHAIN_ID_ENV,
@@ -46,5 +49,8 @@ __all__ = [
     "GeoblockStatus",
     "PRIVATE_KEY_ENV",
     "SIGNATURE_TYPE_ENV",
+    "SetupGuideCheckpoint",
+    "SetupGuideEnvironmentItem",
+    "SetupGuideResponse",
     "SetupDoctorResponse",
 ]

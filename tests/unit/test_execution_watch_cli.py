@@ -198,6 +198,20 @@ def test_exec_watch_no_open_orders_returns_not_found(monkeypatch) -> None:
     assert payload["error"]["code"] == "not_found"
 
 
+def test_exec_events_human_table(monkeypatch) -> None:
+    monkeypatch.setattr(
+        "pm.cli.execution.ExecutionWatchService",
+        lambda: FakeExecutionWatchCLIService(),
+    )
+
+    result = runner.invoke(app, ["exec", "events", "--limit", "5"])
+
+    assert result.exit_code == 0
+    assert "Execution Events" in result.stdout
+    assert "Order ID" in result.stdout
+    assert "MATCHED" in result.stdout
+
+
 def _session() -> BoundedStreamSession:
     return BoundedStreamSession(
         session_id="session-1",
