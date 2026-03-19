@@ -153,7 +153,8 @@ This layer stays local-first and operator-driven. It aggregates pending review w
 
 Rules:
 
-- portfolio ownership resolves to `funder_address` first, then `signer_address`
+- portfolio account resolution now uses CLI override, then operator profile, then env-derived auth context
+- within each precedence tier, ownership resolves to `funder_address` first, then `signer_address`
 - fresh portfolio snapshots come from the public Data API for current positions, closed positions, and holdings value
 - gross and net exposure are deterministic; net exposure offsets `YES` vs `NO` within the same `condition_id`
 - per-strategy exposure and PnL are tool-local only and are reported only where explicit strategy dispatch or execution linkage exists
@@ -185,6 +186,11 @@ The first authenticated layer now covers non-mutating setup, approval inspection
 ```powershell
 .venv\Scripts\pm setup doctor --json
 .venv\Scripts\pm auth show --json
+.venv\Scripts\pm auth profile show --json
+.venv\Scripts\pm auth profile init --signature-type 1 --signer <0x...> --funder <0x...> --chain-id 137 --label "desk-a" --json
+.venv\Scripts\pm auth profile from-env --json
+.venv\Scripts\pm auth profile doctor --json
+.venv\Scripts\pm auth profile clear --json
 .venv\Scripts\pm auth derive-api-key --json
 .venv\Scripts\pm auth balances --json
 .venv\Scripts\pm auth allowances --json
@@ -208,8 +214,12 @@ The first authenticated layer now covers non-mutating setup, approval inspection
 Rules:
 
 - private auth material comes from environment only
+- the non-secret operator profile stores signer, funder, signature type, chain id, label, and source only
+- operator profile data never stores raw private keys or derived API credentials
 - raw private keys are never printed
 - derived L2 API credentials are ephemeral and never persisted locally
+- non-secret account resolution is deterministic: CLI override > operator profile > env-derived context
+- authenticated commands enforce strict signer consistency against the current private key
 - `pm approve set` is preview-only unless `--live --confirm` is present
 - `pm exec post`, `pm exec cancel`, `pm exec cancel-all`, and `pm exec cancel-market` are paper-by-default
 - real approval writes and real exchange mutations require explicit `--live --confirm`

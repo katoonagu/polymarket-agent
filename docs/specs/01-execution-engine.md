@@ -30,6 +30,11 @@ Implemented now:
 
 - `pm setup doctor`
 - `pm auth show`
+- `pm auth profile show`
+- `pm auth profile init`
+- `pm auth profile from-env`
+- `pm auth profile doctor`
+- `pm auth profile clear`
 - `pm auth derive-api-key`
 - `pm auth balances`
 - `pm auth allowances`
@@ -92,6 +97,27 @@ Rules:
 - the private key must never be written to `.pm/state/`
 - derived L2 API credentials must never be written to `.pm/state/`
 
+### Non-Secret Operator Profile
+
+Authenticated and portfolio-facing commands may also use a local non-secret operator profile at
+`.pm/state/operator-profile.json`.
+
+Stored fields:
+
+- `signer_address`
+- `funder_address`
+- `signature_type`
+- `chain_id`
+- `account_label`
+- `source`
+
+Rules:
+
+- the profile never stores raw private keys
+- the profile never stores derived API credentials
+- non-secret account resolution is per-field: CLI override, then operator profile, then env-derived context
+- authenticated commands still require env or session private-key access and must reject signer mismatches against the current private key
+
 ### Supported Signature Types
 
 The auth layer supports explicit signature-type configuration compatible with the official Polymarket client:
@@ -143,6 +169,24 @@ Shows normalized authenticated context:
 - whether ephemeral API-key derivation appears possible
 
 This command is informational and should still succeed when auth config is incomplete. Incomplete or invalid pieces are returned as structured warnings.
+
+### `pm auth profile`
+
+`pm auth profile` manages the local non-secret operator identity profile:
+
+- `pm auth profile show`
+- `pm auth profile init`
+- `pm auth profile from-env`
+- `pm auth profile doctor`
+- `pm auth profile clear`
+
+Rules:
+
+- `show` returns `present=false` and `profile=null` when the profile file is missing
+- `init` persists one explicit non-secret profile
+- `from-env` derives signer from the current private key plus env non-secret fields and persists only non-secret data
+- `doctor` is local-only and returns identity, readiness, mismatch warnings, and a geoblock reminder
+- `clear` removes the profile file without touching env or session secrets
 
 ### `pm auth derive-api-key`
 

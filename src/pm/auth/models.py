@@ -22,7 +22,7 @@ class AuthSectionError(BaseModel):
 
 
 class AuthContext(BaseModel):
-    """Normalized authenticated context derived from environment configuration."""
+    """Normalized authenticated context derived from env, profile, and overrides."""
 
     signer_address: str | None = None
     funder_address: str | None = None
@@ -138,3 +138,63 @@ class AuthAllowancesResponse(BaseModel):
 
     auth: AuthContext
     allowance_view: BalanceAllowanceView
+
+
+class OperatorProfile(BaseModel):
+    """Non-secret operator identity profile persisted locally."""
+
+    signer_address: str
+    funder_address: str | None = None
+    signature_type: int
+    chain_id: int
+    account_label: str | None = None
+    source: str
+
+
+class OperatorProfileFile(BaseModel):
+    """Versioned local operator-profile state document."""
+
+    version: int = 1
+    profile: OperatorProfile | None = None
+
+
+class AuthProfileShowResponse(BaseModel):
+    """Current persisted non-secret operator profile state."""
+
+    present: bool
+    profile: OperatorProfile | None = None
+
+
+class AuthProfileInitResponse(BaseModel):
+    """Response for explicit operator-profile initialization."""
+
+    initialized: bool = True
+    profile: OperatorProfile
+
+
+class AuthProfileFromEnvResponse(BaseModel):
+    """Response for env-derived operator-profile initialization."""
+
+    imported: bool = True
+    profile: OperatorProfile
+
+
+class AuthProfileClearResponse(BaseModel):
+    """Response for operator-profile clearing."""
+
+    cleared: bool
+    present: bool = False
+    profile: OperatorProfile | None = None
+
+
+class AuthProfileDoctorResponse(BaseModel):
+    """Local readiness and identity summary for operator-profile resolution."""
+
+    ready: bool
+    present: bool
+    profile: OperatorProfile | None = None
+    auth: AuthContext
+    auth_env_ready: bool
+    checks: list[AuthSectionCheck] = Field(default_factory=list)
+    errors: list[AuthSectionError] = Field(default_factory=list)
+    geoblock_reminder: str

@@ -17,3 +17,7 @@ class AuthClientError(AuthError):
 
 class AuthGeoblockedError(AuthError):
     """Raised when the official geoblock endpoint reports blocked access."""
+
+
+class AuthProfileStateError(AuthError):
+    """Raised when local non-secret operator profile state is invalid."""

@@ -5,9 +5,14 @@ from __future__ import annotations
 import typer
 from rich.console import RenderableType
 
-from pm.auth import AuthClientError, AuthValidationError
+from pm.auth import AuthClientError, AuthProfileStateError, AuthService, AuthValidationError
 from pm.cli.support import (
+    CHAIN_ID_OPTION,
+    FUNDER_OPTION,
     LOCAL_JSON_OPTION,
+    SIGNATURE_TYPE_OPTION,
+    SIGNER_OPTION,
+    build_account_overrides,
     emit_command_error,
     emit_command_output,
     resolve_live_confirmation,
@@ -46,6 +51,105 @@ PRICE_OPTION = typer.Option(..., "--price", help="Limit price.")
 SIZE_OPTION = typer.Option(..., "--size", help="Order size.")
 
 
+def _auth_service(
+    *,
+    signer: str | None,
+    funder: str | None,
+    signature_type: int | None,
+    chain_id: int | None,
+) -> AuthService:
+    return AuthService(
+        account_overrides=build_account_overrides(
+            signer=signer,
+            funder=funder,
+            signature_type=signature_type,
+            chain_id=chain_id,
+        )
+    )
+
+
+def _has_auth_overrides(
+    *,
+    signer: str | None,
+    funder: str | None,
+    signature_type: int | None,
+    chain_id: int | None,
+) -> bool:
+    return any(value is not None for value in (signer, funder, signature_type, chain_id))
+
+
+def _dry_run_service(
+    *,
+    signer: str | None,
+    funder: str | None,
+    signature_type: int | None,
+    chain_id: int | None,
+) -> DryRunService:
+    if not _has_auth_overrides(
+        signer=signer,
+        funder=funder,
+        signature_type=signature_type,
+        chain_id=chain_id,
+    ):
+        return DryRunService()
+    return DryRunService(
+        auth_service=_auth_service(
+            signer=signer,
+            funder=funder,
+            signature_type=signature_type,
+            chain_id=chain_id,
+        )
+    )
+
+
+def _lifecycle_service(
+    *,
+    signer: str | None,
+    funder: str | None,
+    signature_type: int | None,
+    chain_id: int | None,
+) -> OrderLifecycleService:
+    if not _has_auth_overrides(
+        signer=signer,
+        funder=funder,
+        signature_type=signature_type,
+        chain_id=chain_id,
+    ):
+        return OrderLifecycleService()
+    return OrderLifecycleService(
+        auth_service=_auth_service(
+            signer=signer,
+            funder=funder,
+            signature_type=signature_type,
+            chain_id=chain_id,
+        )
+    )
+
+
+def _watch_service(
+    *,
+    signer: str | None,
+    funder: str | None,
+    signature_type: int | None,
+    chain_id: int | None,
+) -> ExecutionWatchService:
+    if not _has_auth_overrides(
+        signer=signer,
+        funder=funder,
+        signature_type=signature_type,
+        chain_id=chain_id,
+    ):
+        return ExecutionWatchService()
+    return ExecutionWatchService(
+        auth_service=_auth_service(
+            signer=signer,
+            funder=funder,
+            signature_type=signature_type,
+            chain_id=chain_id,
+        )
+    )
+
+
 @app.command("dry-run")
 def dry_run(
     ctx: typer.Context,
@@ -54,21 +158,30 @@ def dry_run(
     side: str = SIDE_OPTION,
     price: str = PRICE_OPTION,
     size: str = SIZE_OPTION,
+    signer: str | None = SIGNER_OPTION,
+    funder: str | None = FUNDER_OPTION,
+    signature_type: int | None = SIGNATURE_TYPE_OPTION,
+    chain_id: int | None = CHAIN_ID_OPTION,
     json_output: bool = LOCAL_JSON_OPTION,
 ) -> None:
     """Build and sign a local order plan without submitting it."""
     try:
-        result = DryRunService().dry_run(
+        result = _dry_run_service(
+            signer=signer,
+            funder=funder,
+            signature_type=signature_type,
+            chain_id=chain_id,
+        ).dry_run(
             market_ref=market,
             outcome=outcome,
             side=side,
             price=price,
             size=size,
         )
-    except ExecutionValidationError as exc:
+    except (ExecutionValidationError, AuthProfileStateError) as exc:
         emit_command_error(
             ctx,
-            code="invalid_argument",
+            code="state_error" if isinstance(exc, AuthProfileStateError) else "invalid_argument",
             message=str(exc),
             resource="execution",
             local_json_output=json_output,
@@ -97,6 +210,10 @@ def post_order(
     paper: bool = typer.Option(False, "--paper", help="Explicit paper mode. This is the default."),
     live: bool = typer.Option(False, "--live", help="Allow a real order submission."),
     confirm: bool = typer.Option(False, "--confirm", help="Required together with --live."),
+    signer: str | None = SIGNER_OPTION,
+    funder: str | None = FUNDER_OPTION,
+    signature_type: int | None = SIGNATURE_TYPE_OPTION,
+    chain_id: int | None = CHAIN_ID_OPTION,
     json_output: bool = LOCAL_JSON_OPTION,
 ) -> None:
     """Preview or submit one order."""
@@ -120,7 +237,12 @@ def post_order(
         declined_message="Live order post cancelled.",
     )
     try:
-        result = OrderLifecycleService().post(
+        result = _lifecycle_service(
+            signer=signer,
+            funder=funder,
+            signature_type=signature_type,
+            chain_id=chain_id,
+        ).post(
             market_ref=market,
             outcome=outcome,
             side=side,
@@ -132,7 +254,12 @@ def post_order(
             live=live,
             confirm=confirm,
         )
-    except (AuthValidationError, AuthClientError, ExecutionValidationError) as exc:
+    except (
+        AuthValidationError,
+        AuthClientError,
+        AuthProfileStateError,
+        ExecutionValidationError,
+    ) as exc:
         _emit_exec_error(ctx, exc=exc, json_output=json_output)
         raise typer.Exit(1) from exc
 
@@ -150,11 +277,20 @@ def watch(
     market: str | None = typer.Option(None, "--market", help="Condition id filter."),
     seconds: int = typer.Option(10, "--seconds", help="Bounded watch duration in seconds."),
     max_events: int | None = typer.Option(None, "--max-events", help="Optional event cap."),
+    signer: str | None = SIGNER_OPTION,
+    funder: str | None = FUNDER_OPTION,
+    signature_type: int | None = SIGNATURE_TYPE_OPTION,
+    chain_id: int | None = CHAIN_ID_OPTION,
     json_output: bool = LOCAL_JSON_OPTION,
 ) -> None:
     """Run one bounded authenticated execution-watch session."""
     try:
-        result = ExecutionWatchService().watch(
+        result = _watch_service(
+            signer=signer,
+            funder=funder,
+            signature_type=signature_type,
+            chain_id=chain_id,
+        ).watch(
             market=market,
             seconds=seconds,
             max_events=max_events,
@@ -162,6 +298,7 @@ def watch(
     except (
         AuthValidationError,
         AuthClientError,
+        AuthProfileStateError,
         ExecutionNotFoundError,
         ExecutionStateError,
         ExecutionValidationError,
@@ -182,12 +319,26 @@ def open_orders(
     ctx: typer.Context,
     market: str | None = typer.Option(None, "--market", help="Condition id filter."),
     token_id: str | None = typer.Option(None, "--token-id", help="Asset id filter."),
+    signer: str | None = SIGNER_OPTION,
+    funder: str | None = FUNDER_OPTION,
+    signature_type: int | None = SIGNATURE_TYPE_OPTION,
+    chain_id: int | None = CHAIN_ID_OPTION,
     json_output: bool = LOCAL_JSON_OPTION,
 ) -> None:
     """List authenticated open orders."""
     try:
-        result = OrderLifecycleService().orders_open(market=market, token_id=token_id)
-    except (AuthValidationError, AuthClientError, ExecutionValidationError) as exc:
+        result = _lifecycle_service(
+            signer=signer,
+            funder=funder,
+            signature_type=signature_type,
+            chain_id=chain_id,
+        ).orders_open(market=market, token_id=token_id)
+    except (
+        AuthValidationError,
+        AuthClientError,
+        AuthProfileStateError,
+        ExecutionValidationError,
+    ) as exc:
         _emit_exec_error(ctx, exc=exc, json_output=json_output)
         raise typer.Exit(1) from exc
     emit_command_output(
@@ -202,12 +353,26 @@ def open_orders(
 def get_order(
     ctx: typer.Context,
     order_id: str = typer.Option(..., "--order-id", help="Exchange order id."),
+    signer: str | None = SIGNER_OPTION,
+    funder: str | None = FUNDER_OPTION,
+    signature_type: int | None = SIGNATURE_TYPE_OPTION,
+    chain_id: int | None = CHAIN_ID_OPTION,
     json_output: bool = LOCAL_JSON_OPTION,
 ) -> None:
     """Get one authenticated order by id."""
     try:
-        result = OrderLifecycleService().order_get(order_id=order_id)
-    except (AuthValidationError, AuthClientError, ExecutionValidationError) as exc:
+        result = _lifecycle_service(
+            signer=signer,
+            funder=funder,
+            signature_type=signature_type,
+            chain_id=chain_id,
+        ).order_get(order_id=order_id)
+    except (
+        AuthValidationError,
+        AuthClientError,
+        AuthProfileStateError,
+        ExecutionValidationError,
+    ) as exc:
         _emit_exec_error(ctx, exc=exc, json_output=json_output)
         raise typer.Exit(1) from exc
     emit_command_output(
@@ -223,14 +388,24 @@ def wait_for_order(
     ctx: typer.Context,
     order_id: str = typer.Option(..., "--order-id", help="Exchange order id."),
     seconds: int = typer.Option(..., "--seconds", help="Bounded wait duration in seconds."),
+    signer: str | None = SIGNER_OPTION,
+    funder: str | None = FUNDER_OPTION,
+    signature_type: int | None = SIGNATURE_TYPE_OPTION,
+    chain_id: int | None = CHAIN_ID_OPTION,
     json_output: bool = LOCAL_JSON_OPTION,
 ) -> None:
     """Observe one order until a terminal event or timeout."""
     try:
-        result = ExecutionWatchService().wait_for_order(order_id=order_id, seconds=seconds)
+        result = _watch_service(
+            signer=signer,
+            funder=funder,
+            signature_type=signature_type,
+            chain_id=chain_id,
+        ).wait_for_order(order_id=order_id, seconds=seconds)
     except (
         AuthValidationError,
         AuthClientError,
+        AuthProfileStateError,
         ExecutionNotFoundError,
         ExecutionStateError,
         ExecutionValidationError,
@@ -269,14 +444,24 @@ def events(
 @app.command("reconcile")
 def reconcile(
     ctx: typer.Context,
+    signer: str | None = SIGNER_OPTION,
+    funder: str | None = FUNDER_OPTION,
+    signature_type: int | None = SIGNATURE_TYPE_OPTION,
+    chain_id: int | None = CHAIN_ID_OPTION,
     json_output: bool = LOCAL_JSON_OPTION,
 ) -> None:
     """Compare recent websocket execution events against authenticated REST views."""
     try:
-        result = ExecutionWatchService().reconcile()
+        result = _watch_service(
+            signer=signer,
+            funder=funder,
+            signature_type=signature_type,
+            chain_id=chain_id,
+        ).reconcile()
     except (
         AuthValidationError,
         AuthClientError,
+        AuthProfileStateError,
         ExecutionNotFoundError,
         ExecutionStateError,
         ExecutionValidationError,
@@ -298,6 +483,10 @@ def cancel(
     paper: bool = typer.Option(False, "--paper", help="Explicit paper mode. This is the default."),
     live: bool = typer.Option(False, "--live", help="Allow a real exchange cancellation."),
     confirm: bool = typer.Option(False, "--confirm", help="Required together with --live."),
+    signer: str | None = SIGNER_OPTION,
+    funder: str | None = FUNDER_OPTION,
+    signature_type: int | None = SIGNATURE_TYPE_OPTION,
+    chain_id: int | None = CHAIN_ID_OPTION,
     json_output: bool = LOCAL_JSON_OPTION,
 ) -> None:
     """Preview or cancel one order."""
@@ -312,8 +501,18 @@ def cancel(
         declined_message="Live order cancellation cancelled.",
     )
     try:
-        result = OrderLifecycleService().cancel(order_id=order_id, live=live, confirm=confirm)
-    except (AuthValidationError, AuthClientError, ExecutionValidationError) as exc:
+        result = _lifecycle_service(
+            signer=signer,
+            funder=funder,
+            signature_type=signature_type,
+            chain_id=chain_id,
+        ).cancel(order_id=order_id, live=live, confirm=confirm)
+    except (
+        AuthValidationError,
+        AuthClientError,
+        AuthProfileStateError,
+        ExecutionValidationError,
+    ) as exc:
         _emit_exec_error(ctx, exc=exc, json_output=json_output)
         raise typer.Exit(1) from exc
     emit_command_output(
@@ -330,6 +529,10 @@ def cancel_all(
     paper: bool = typer.Option(False, "--paper", help="Explicit paper mode. This is the default."),
     live: bool = typer.Option(False, "--live", help="Allow real exchange cancellations."),
     confirm: bool = typer.Option(False, "--confirm", help="Required together with --live."),
+    signer: str | None = SIGNER_OPTION,
+    funder: str | None = FUNDER_OPTION,
+    signature_type: int | None = SIGNATURE_TYPE_OPTION,
+    chain_id: int | None = CHAIN_ID_OPTION,
     json_output: bool = LOCAL_JSON_OPTION,
 ) -> None:
     """Preview or cancel all open orders."""
@@ -344,8 +547,18 @@ def cancel_all(
         declined_message="Live order cancellation cancelled.",
     )
     try:
-        result = OrderLifecycleService().cancel_all(live=live, confirm=confirm)
-    except (AuthValidationError, AuthClientError, ExecutionValidationError) as exc:
+        result = _lifecycle_service(
+            signer=signer,
+            funder=funder,
+            signature_type=signature_type,
+            chain_id=chain_id,
+        ).cancel_all(live=live, confirm=confirm)
+    except (
+        AuthValidationError,
+        AuthClientError,
+        AuthProfileStateError,
+        ExecutionValidationError,
+    ) as exc:
         _emit_exec_error(ctx, exc=exc, json_output=json_output)
         raise typer.Exit(1) from exc
     emit_command_output(
@@ -364,6 +577,10 @@ def cancel_market(
     paper: bool = typer.Option(False, "--paper", help="Explicit paper mode. This is the default."),
     live: bool = typer.Option(False, "--live", help="Allow real exchange cancellations."),
     confirm: bool = typer.Option(False, "--confirm", help="Required together with --live."),
+    signer: str | None = SIGNER_OPTION,
+    funder: str | None = FUNDER_OPTION,
+    signature_type: int | None = SIGNATURE_TYPE_OPTION,
+    chain_id: int | None = CHAIN_ID_OPTION,
     json_output: bool = LOCAL_JSON_OPTION,
 ) -> None:
     """Preview or cancel market-scoped orders."""
@@ -378,13 +595,23 @@ def cancel_market(
         declined_message="Live order cancellation cancelled.",
     )
     try:
-        result = OrderLifecycleService().cancel_market(
+        result = _lifecycle_service(
+            signer=signer,
+            funder=funder,
+            signature_type=signature_type,
+            chain_id=chain_id,
+        ).cancel_market(
             market=market,
             token_id=token_id,
             live=live,
             confirm=confirm,
         )
-    except (AuthValidationError, AuthClientError, ExecutionValidationError) as exc:
+    except (
+        AuthValidationError,
+        AuthClientError,
+        AuthProfileStateError,
+        ExecutionValidationError,
+    ) as exc:
         _emit_exec_error(ctx, exc=exc, json_output=json_output)
         raise typer.Exit(1) from exc
     emit_command_output(
@@ -440,6 +667,9 @@ def _emit_exec_error(
     emit_command_error(
         ctx,
         code=(
+            "state_error"
+            if isinstance(exc, AuthProfileStateError)
+            else
             "not_found"
             if isinstance(exc, ExecutionNotFoundError)
             else "invalid_argument"

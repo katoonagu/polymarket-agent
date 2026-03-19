@@ -35,12 +35,20 @@ This phase still does not add:
 
 ## Account Resolution
 
-Portfolio ownership resolves through the existing authenticated context:
+Portfolio ownership resolves through the shared auth account-resolution layer:
+
+1. explicit CLI overrides
+2. local non-secret operator profile
+3. env-derived authenticated context
+
+Within each precedence tier:
 
 1. `funder_address` when present
 2. otherwise `signer_address`
 
-If neither address is available, portfolio commands return a structured CLI error with guidance to inspect auth context through `pm auth show` or `pm setup guide`.
+The operator profile is non-secret only and never stores raw private keys.
+
+If neither address is available, portfolio commands return a structured CLI error with guidance to inspect auth context through `pm auth show`, `pm auth profile doctor`, or `pm setup guide`.
 
 ## Snapshot Sources
 

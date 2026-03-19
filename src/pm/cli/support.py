@@ -54,6 +54,28 @@ LOCAL_JSON_OPTION = typer.Option(
     "--json",
     help="Emit deterministic JSON output. Compatibility alias for the global output mode.",
 )
+SIGNER_OPTION = typer.Option(
+    None,
+    "--signer",
+    help="Override the resolved signer address.",
+)
+FUNDER_OPTION = typer.Option(
+    None,
+    "--funder",
+    help="Override the resolved funder address.",
+)
+SIGNATURE_TYPE_OPTION = typer.Option(
+    None,
+    "--signature-type",
+    min=0,
+    max=2,
+    help="Override the resolved signature type: 0, 1, or 2.",
+)
+CHAIN_ID_OPTION = typer.Option(
+    None,
+    "--chain-id",
+    help="Override the resolved chain id.",
+)
 _UNKNOWN_COMMAND_PATTERN = re.compile(r"No such command ['\"](?P<command>[^'\"]+)['\"]")
 
 
@@ -166,6 +188,22 @@ def resolve_live_confirmation(
         local_json_output=local_json_output,
     )
     raise typer.Exit(1)
+
+
+def build_account_overrides(
+    *,
+    signer: str | None = None,
+    funder: str | None = None,
+    signature_type: int | None = None,
+    chain_id: int | None = None,
+) -> dict[str, str | int | None]:
+    """Build non-secret account overrides for auth-backed commands."""
+    return {
+        "signer_address": signer,
+        "funder_address": funder,
+        "signature_type": signature_type,
+        "chain_id": chain_id,
+    }
 
 
 def _wants_json(args: list[str]) -> bool:

@@ -7,6 +7,7 @@ from pathlib import Path
 
 import pytest
 
+from pm.auth import AuthService, OperatorProfile, OperatorProfileStateService
 from pm.auth.models import AuthContext
 from pm.data import DataClientError
 from pm.data.models import (
@@ -95,6 +96,14 @@ class FakeWatchService:
 
     def reconcile(self) -> ExecutionReconciliationResponse:
         return self._response
+
+
+class FakeProfileSDKClient:
+    def __init__(self, host: str, **kwargs: object) -> None:
+        self.host = host
+
+    def get_ok(self) -> dict[str, str]:
+        return {"status": "ok"}
 
 
 def make_data_client(
@@ -261,6 +270,33 @@ def test_summary_uses_signer_when_funder_missing(tmp_path: Path) -> None:
     result = fixture.service.summary()
 
     assert result.account_address == SIGNER
+
+
+def test_summary_uses_profile_backed_funder_and_cli_override(tmp_path: Path) -> None:
+    profile_state = OperatorProfileStateService(profile_path=tmp_path / "operator-profile.json")
+    profile_state.save_profile(
+        OperatorProfile(
+            signer_address=SIGNER,
+            funder_address=FUNDER,
+            signature_type=1,
+            chain_id=137,
+            account_label="desk-a",
+            source="manual",
+        )
+    )
+    auth_service = AuthService(
+        profile_state=profile_state,
+        sdk_client_cls=FakeProfileSDKClient,
+        account_overrides={"funder_address": ADDRESS},
+    )
+    fixture = _fixture(
+        tmp_path,
+        auth_service=auth_service,
+    )
+
+    result = fixture.service.summary()
+
+    assert result.account_address == ADDRESS
 
 
 def test_missing_account_context_raises_validation_error(tmp_path: Path) -> None:

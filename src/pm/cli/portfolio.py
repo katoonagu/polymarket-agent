@@ -7,7 +7,15 @@ from collections.abc import Sequence
 import typer
 from rich.console import RenderableType
 
-from pm.cli.support import LOCAL_JSON_OPTION, emit_command_error, emit_command_output
+from pm.auth import AuthProfileStateError, AuthService, AuthValidationError
+from pm.cli.support import (
+    FUNDER_OPTION,
+    LOCAL_JSON_OPTION,
+    SIGNER_OPTION,
+    build_account_overrides,
+    emit_command_error,
+    emit_command_output,
+)
 from pm.common.tables import (
     empty_message,
     render_group,
@@ -50,15 +58,37 @@ MARKET_OPTION = typer.Option(..., "--market", help="Condition id filter.")
 JSON_OPTION = LOCAL_JSON_OPTION
 
 
+def _auth_service(*, signer: str | None, funder: str | None) -> AuthService:
+    return AuthService(
+        account_overrides=build_account_overrides(
+            signer=signer,
+            funder=funder,
+        )
+    )
+
+
+def _portfolio_service(*, signer: str | None, funder: str | None) -> PortfolioService:
+    if signer is None and funder is None:
+        return PortfolioService()
+    return PortfolioService(auth_service=_auth_service(signer=signer, funder=funder))
+
+
 @app.command("summary")
 def summary(
     ctx: typer.Context,
+    signer: str | None = SIGNER_OPTION,
+    funder: str | None = FUNDER_OPTION,
     json_output: bool = JSON_OPTION,
 ) -> None:
     """Show a compact account-level portfolio summary."""
     try:
-        result = PortfolioService().summary()
-    except (PortfolioError, PortfolioStateError) as exc:
+        result = _portfolio_service(signer=signer, funder=funder).summary()
+    except (
+        PortfolioError,
+        PortfolioStateError,
+        AuthValidationError,
+        AuthProfileStateError,
+    ) as exc:
         _emit_portfolio_error(ctx, exc=exc, json_output=json_output)
         raise typer.Exit(1) from exc
     emit_command_output(
@@ -73,12 +103,19 @@ def summary(
 @app.command("positions")
 def positions(
     ctx: typer.Context,
+    signer: str | None = SIGNER_OPTION,
+    funder: str | None = FUNDER_OPTION,
     json_output: bool = JSON_OPTION,
 ) -> None:
     """Show current attributed positions."""
     try:
-        result = PortfolioService().positions()
-    except (PortfolioError, PortfolioStateError) as exc:
+        result = _portfolio_service(signer=signer, funder=funder).positions()
+    except (
+        PortfolioError,
+        PortfolioStateError,
+        AuthValidationError,
+        AuthProfileStateError,
+    ) as exc:
         _emit_portfolio_error(ctx, exc=exc, json_output=json_output)
         raise typer.Exit(1) from exc
     emit_command_output(
@@ -94,12 +131,19 @@ def positions(
 def closed(
     ctx: typer.Context,
     limit: int = LIMIT_OPTION,
+    signer: str | None = SIGNER_OPTION,
+    funder: str | None = FUNDER_OPTION,
     json_output: bool = JSON_OPTION,
 ) -> None:
     """Show closed positions newest-first."""
     try:
-        result = PortfolioService().closed(limit=limit)
-    except (PortfolioError, PortfolioStateError) as exc:
+        result = _portfolio_service(signer=signer, funder=funder).closed(limit=limit)
+    except (
+        PortfolioError,
+        PortfolioStateError,
+        AuthValidationError,
+        AuthProfileStateError,
+    ) as exc:
         _emit_portfolio_error(ctx, exc=exc, json_output=json_output)
         raise typer.Exit(1) from exc
     emit_command_output(
@@ -115,12 +159,19 @@ def closed(
 def market(
     ctx: typer.Context,
     market: str = MARKET_OPTION,
+    signer: str | None = SIGNER_OPTION,
+    funder: str | None = FUNDER_OPTION,
     json_output: bool = JSON_OPTION,
 ) -> None:
     """Show a market-scoped portfolio view."""
     try:
-        result = PortfolioService().market(market=market)
-    except (PortfolioError, PortfolioStateError) as exc:
+        result = _portfolio_service(signer=signer, funder=funder).market(market=market)
+    except (
+        PortfolioError,
+        PortfolioStateError,
+        AuthValidationError,
+        AuthProfileStateError,
+    ) as exc:
         _emit_portfolio_error(ctx, exc=exc, json_output=json_output)
         raise typer.Exit(1) from exc
     emit_command_output(
@@ -135,12 +186,19 @@ def market(
 @app.command("exposure")
 def exposure(
     ctx: typer.Context,
+    signer: str | None = SIGNER_OPTION,
+    funder: str | None = FUNDER_OPTION,
     json_output: bool = JSON_OPTION,
 ) -> None:
     """Show gross/net exposure with market and linked strategy slices."""
     try:
-        result = PortfolioService().exposure()
-    except (PortfolioError, PortfolioStateError) as exc:
+        result = _portfolio_service(signer=signer, funder=funder).exposure()
+    except (
+        PortfolioError,
+        PortfolioStateError,
+        AuthValidationError,
+        AuthProfileStateError,
+    ) as exc:
         _emit_portfolio_error(ctx, exc=exc, json_output=json_output)
         raise typer.Exit(1) from exc
     emit_command_output(
@@ -155,12 +213,19 @@ def exposure(
 @app.command("pnl")
 def pnl(
     ctx: typer.Context,
+    signer: str | None = SIGNER_OPTION,
+    funder: str | None = FUNDER_OPTION,
     json_output: bool = JSON_OPTION,
 ) -> None:
     """Show realized, unrealized, and total PnL."""
     try:
-        result = PortfolioService().pnl()
-    except (PortfolioError, PortfolioStateError) as exc:
+        result = _portfolio_service(signer=signer, funder=funder).pnl()
+    except (
+        PortfolioError,
+        PortfolioStateError,
+        AuthValidationError,
+        AuthProfileStateError,
+    ) as exc:
         _emit_portfolio_error(ctx, exc=exc, json_output=json_output)
         raise typer.Exit(1) from exc
     emit_command_output(
@@ -175,12 +240,19 @@ def pnl(
 @app.command("reconcile")
 def reconcile(
     ctx: typer.Context,
+    signer: str | None = SIGNER_OPTION,
+    funder: str | None = FUNDER_OPTION,
     json_output: bool = JSON_OPTION,
 ) -> None:
     """Compare fresh portfolio state against execution reconciliation state."""
     try:
-        result = PortfolioService().reconcile()
-    except (PortfolioError, PortfolioStateError) as exc:
+        result = _portfolio_service(signer=signer, funder=funder).reconcile()
+    except (
+        PortfolioError,
+        PortfolioStateError,
+        AuthValidationError,
+        AuthProfileStateError,
+    ) as exc:
         _emit_portfolio_error(ctx, exc=exc, json_output=json_output)
         raise typer.Exit(1) from exc
     emit_command_output(
@@ -199,20 +271,24 @@ def _emit_portfolio_error(
     json_output: bool,
 ) -> None:
     hint: dict[str, object] | None = None
-    if isinstance(exc, PortfolioValidationError) and "No operator account address" in str(exc):
+    if (
+        isinstance(exc, (PortfolioValidationError, AuthValidationError))
+        and "No operator account address" in str(exc)
+    ):
         hint = {
             "suggested_commands": [
                 "pm auth show --json",
+                "pm auth profile doctor --json",
                 "pm setup guide --json",
             ]
         }
 
-    if isinstance(exc, PortfolioValidationError):
+    if isinstance(exc, (PortfolioStateError, AuthProfileStateError)):
+        code = "state_error"
+    elif isinstance(exc, (PortfolioValidationError, AuthValidationError)):
         code = "invalid_argument"
     elif isinstance(exc, PortfolioNotFoundError):
         code = "not_found"
-    elif isinstance(exc, PortfolioStateError):
-        code = "state_error"
     else:
         code = "request_failed"
     emit_command_error(

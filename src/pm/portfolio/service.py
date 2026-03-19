@@ -5,12 +5,17 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from decimal import Decimal, InvalidOperation
-from typing import Any
 from uuid import uuid4
 
-from pm.auth import AuthClientError, AuthService, AuthValidationError
+from pm.auth import (
+    AuthClientError,
+    AuthProfileStateError,
+    AuthService,
+    AuthValidationError,
+    resolve_operator_account_address,
+)
 from pm.data import DataClient, DataClientError, DataNotFoundError, DataValidationError
-from pm.data.client import validate_condition_id, validate_user_address
+from pm.data.client import validate_condition_id
 from pm.data.models import NormalizedClosedPosition, NormalizedCurrentPosition
 from pm.execution import (
     ExecutionNotFoundError,
@@ -239,7 +244,10 @@ class PortfolioService:
     def build_snapshot(self, *, persist: bool = True) -> PortfolioSnapshotRecord:
         """Build one fresh local portfolio snapshot from Data API and local linkage state."""
         auth = self._auth_service.show().auth
-        account_address = _resolve_account_address(auth)
+        try:
+            account_address = resolve_operator_account_address(auth)
+        except AuthValidationError as exc:
+            raise PortfolioValidationError(str(exc)) from exc
 
         errors: list[PortfolioSectionError] = []
         current_positions: list[NormalizedCurrentPosition] = []
@@ -354,6 +362,7 @@ class PortfolioService:
             execution_reconcile = self._watch_service.reconcile()
         except (
             AuthClientError,
+            AuthProfileStateError,
             AuthValidationError,
             ExecutionNotFoundError,
             ExecutionStateError,
@@ -509,31 +518,6 @@ class PortfolioService:
             bucket.execution_ids.add(result.execution_id)
 
         return pair_map
-
-
-def _resolve_account_address(auth: Any) -> str:
-    funder_address = _validated_address(getattr(auth, "funder_address", None))
-    if funder_address is not None:
-        return funder_address
-
-    signer_address = _validated_address(getattr(auth, "signer_address", None))
-    if signer_address is not None:
-        return signer_address
-
-    raise PortfolioValidationError(
-        "No operator account address could be resolved. Run `pm auth show --json` or "
-        "`pm setup guide --json` to inspect authenticated context."
-    )
-
-
-def _validated_address(value: str | None) -> str | None:
-    if value is None or not value.strip():
-        return None
-    try:
-        return validate_user_address(value)
-    except DataValidationError as exc:
-        raise PortfolioValidationError(str(exc)) from exc
-
 
 def _attribution_for_pair(
     pair_map: dict[tuple[str, str], PostedStrategyLink],

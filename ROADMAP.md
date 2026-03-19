@@ -245,6 +245,9 @@ Define the controls and evidence required before considering any live trading im
   - gross and net exposure summaries
   - realized and unrealized PnL summaries
   - local portfolio snapshots and reconciliation history
+- Non-secret operator identity readiness:
+  - local operator profile for signer, funder, signature type, and chain id
+  - deterministic account resolution for auth, execution, and portfolio commands
 - Manual approval paths
 - Kill switch and risk stop requirements
 - Secret management expectations
@@ -265,5 +268,6 @@ Define the controls and evidence required before considering any live trading im
 - Replay and integration coverage are strong enough to validate behavior changes
 - Secret handling and operator approval paths are explicit
 - Portfolio truth is available from public Data API reads plus local execution-link reconciliation without introducing automation
+- Authenticated, execution, and portfolio commands can resolve operator account context without persisting private keys
 - Operator workflow commands exist for one-cycle bootstrap, queueing, approved dispatch, and reporting without adding a daemon
 - Live mode remains gated behind deliberate future implementation work

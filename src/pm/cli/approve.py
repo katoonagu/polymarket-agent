@@ -4,9 +4,14 @@ from __future__ import annotations
 
 import typer
 
-from pm.auth import AuthClientError, AuthValidationError
+from pm.auth import AuthClientError, AuthProfileStateError, AuthService, AuthValidationError
 from pm.cli.support import (
+    CHAIN_ID_OPTION,
+    FUNDER_OPTION,
     LOCAL_JSON_OPTION,
+    SIGNATURE_TYPE_OPTION,
+    SIGNER_OPTION,
+    build_account_overrides,
     emit_command_error,
     emit_command_output,
     resolve_live_confirmation,
@@ -25,15 +30,45 @@ app = typer.Typer(
 )
 
 
+def _lifecycle_service(
+    *,
+    signer: str | None,
+    funder: str | None,
+    signature_type: int | None,
+    chain_id: int | None,
+) -> OrderLifecycleService:
+    if all(value is None for value in (signer, funder, signature_type, chain_id)):
+        return OrderLifecycleService()
+    return OrderLifecycleService(
+        auth_service=AuthService(
+            account_overrides=build_account_overrides(
+                signer=signer,
+                funder=funder,
+                signature_type=signature_type,
+                chain_id=chain_id,
+            )
+        )
+    )
+
+
 @app.command("check")
 def approve_check(
     ctx: typer.Context,
+    signer: str | None = SIGNER_OPTION,
+    funder: str | None = FUNDER_OPTION,
+    signature_type: int | None = SIGNATURE_TYPE_OPTION,
+    chain_id: int | None = CHAIN_ID_OPTION,
     json_output: bool = LOCAL_JSON_OPTION,
 ) -> None:
     """Show current approval readiness for collateral and conditional tokens."""
     try:
-        result = OrderLifecycleService().check_approvals()
-    except (AuthValidationError, AuthClientError) as exc:
+        result = _lifecycle_service(
+            signer=signer,
+            funder=funder,
+            signature_type=signature_type,
+            chain_id=chain_id,
+        ).check_approvals()
+    except (AuthValidationError, AuthClientError, AuthProfileStateError) as exc:
         _emit_approve_error(ctx, exc=exc, json_output=json_output)
         raise typer.Exit(1) from exc
 
@@ -51,6 +86,10 @@ def approve_set(
     asset: str = typer.Option(..., "--asset", help="Approval asset: usdc or ctf."),
     live: bool = typer.Option(False, "--live", help="Allow a real approval write."),
     confirm: bool = typer.Option(False, "--confirm", help="Required together with --live."),
+    signer: str | None = SIGNER_OPTION,
+    funder: str | None = FUNDER_OPTION,
+    signature_type: int | None = SIGNATURE_TYPE_OPTION,
+    chain_id: int | None = CHAIN_ID_OPTION,
     json_output: bool = LOCAL_JSON_OPTION,
 ) -> None:
     """Preview or perform an approval write."""
@@ -65,12 +104,22 @@ def approve_set(
         declined_message="Live approval update cancelled.",
     )
     try:
-        result = OrderLifecycleService().set_approval(
+        result = _lifecycle_service(
+            signer=signer,
+            funder=funder,
+            signature_type=signature_type,
+            chain_id=chain_id,
+        ).set_approval(
             asset=asset,
             live=live,
             confirm=confirm,
         )
-    except (AuthValidationError, AuthClientError, ExecutionValidationError) as exc:
+    except (
+        AuthValidationError,
+        AuthClientError,
+        AuthProfileStateError,
+        ExecutionValidationError,
+    ) as exc:
         _emit_approve_error(ctx, exc=exc, json_output=json_output)
         raise typer.Exit(1) from exc
 
@@ -90,9 +139,13 @@ def _emit_approve_error(
 ) -> None:
     emit_command_error(
         ctx,
-        code="invalid_argument"
-        if isinstance(exc, (AuthValidationError, ExecutionValidationError))
-        else "request_failed",
+        code=(
+            "state_error"
+            if isinstance(exc, AuthProfileStateError)
+            else "invalid_argument"
+            if isinstance(exc, (AuthValidationError, ExecutionValidationError))
+            else "request_failed"
+        ),
         message=str(exc),
         resource="approve",
         local_json_output=json_output,

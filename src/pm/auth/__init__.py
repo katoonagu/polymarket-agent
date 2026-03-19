@@ -1,17 +1,30 @@
-"""Authenticated non-live setup and account inspection helpers."""
+"""Authenticated setup, account inspection, and operator-profile helpers."""
 
-from pm.auth.exceptions import AuthClientError, AuthError, AuthGeoblockedError, AuthValidationError
+from pm.auth.exceptions import (
+    AuthClientError,
+    AuthError,
+    AuthGeoblockedError,
+    AuthProfileStateError,
+    AuthValidationError,
+)
 from pm.auth.models import (
     AuthAllowancesResponse,
     AuthBalancesResponse,
     AuthContext,
     AuthDeriveApiKeyResponse,
+    AuthProfileClearResponse,
+    AuthProfileDoctorResponse,
+    AuthProfileFromEnvResponse,
+    AuthProfileInitResponse,
+    AuthProfileShowResponse,
     AuthSectionCheck,
     AuthSectionError,
     AuthShowResponse,
     BalanceAllowanceView,
     DerivedApiCredentials,
     GeoblockStatus,
+    OperatorProfile,
+    OperatorProfileFile,
     SetupDoctorResponse,
     SetupGuideCheckpoint,
     SetupGuideEnvironmentItem,
@@ -26,7 +39,9 @@ from pm.auth.service import (
     SIGNATURE_TYPE_ENV,
     AuthService,
     AuthSettings,
+    resolve_operator_account_address,
 )
+from pm.auth.state import STATE_DIR_ENV_VAR, OperatorProfileStateService, get_auth_state_dir
 
 __all__ = [
     "AuthAllowancesResponse",
@@ -36,6 +51,12 @@ __all__ = [
     "AuthDeriveApiKeyResponse",
     "AuthError",
     "AuthGeoblockedError",
+    "AuthProfileClearResponse",
+    "AuthProfileDoctorResponse",
+    "AuthProfileFromEnvResponse",
+    "AuthProfileInitResponse",
+    "AuthProfileShowResponse",
+    "AuthProfileStateError",
     "AuthSectionCheck",
     "AuthSectionError",
     "AuthService",
@@ -48,11 +69,17 @@ __all__ = [
     "DerivedApiCredentials",
     "FUNDER_ENV",
     "GeoblockStatus",
+    "OperatorProfile",
+    "OperatorProfileFile",
+    "OperatorProfileStateService",
     "PRIVATE_KEY_ENV",
+    "STATE_DIR_ENV_VAR",
     "SIGNATURE_TYPE_ENV",
     "SetupGuideCheckpoint",
     "SetupGuideEnvironmentItem",
     "SetupGuideResponse",
     "SetupDoctorResponse",
     "SetupWizardResponse",
+    "get_auth_state_dir",
+    "resolve_operator_account_address",
 ]

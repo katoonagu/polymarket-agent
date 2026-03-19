@@ -149,6 +149,11 @@ Authenticated setup and account inspection commands.
 
 ```text
 pm auth show [--json]
+pm auth profile show [--json]
+pm auth profile init --signature-type <0|1|2> --signer <0x...> --funder <0x...> [--chain-id <n>] [--label <text>] [--json]
+pm auth profile from-env [--json]
+pm auth profile doctor [--json]
+pm auth profile clear [--json]
 pm auth derive-api-key [--json]
 pm auth balances [--json]
 pm auth allowances [--json]
@@ -157,6 +162,9 @@ pm auth allowances [--json]
 Rules:
 
 - private key material comes from environment only
+- the local operator profile stores non-secret identity fields only
+- non-secret resolution precedence is CLI override, then operator profile, then env-derived context
+- authenticated commands must reject signer mismatches against the current private key
 - raw private keys must never be printed
 - derived API credentials are ephemeral and are never persisted locally
 - balances and allowances are read-only inspection commands
@@ -241,6 +249,7 @@ Rules:
 - `dry-run` may build and sign an order locally
 - `dry-run` must never post the signed order
 - `dry-run` returns `WOULD_POST` or `SKIP` plus reason blocks
+- authenticated execution commands may also accept non-secret account overrides for signer, funder, signature type, and chain id
 - `post`, `cancel`, `cancel-all`, and `cancel-market` are paper-by-default
 - live order submission and live cancellations require both `--live` and `--confirm`
 - in interactive human mode, `--live` without `--confirm` may trigger a Y/N confirmation prompt; JSON and non-TTY flows still require explicit `--confirm`
@@ -268,7 +277,9 @@ pm portfolio reconcile [--json]
 
 Rules:
 
-- portfolio account ownership resolves to `funder_address` first, then `signer_address`
+- portfolio commands accept explicit non-secret account overrides through `--signer` and `--funder`
+- account resolution precedence is CLI override, then operator profile, then env-derived context
+- within each precedence tier, ownership resolves to `funder_address` first, then `signer_address`
 - fresh portfolio snapshots come from the public Data API for current positions, closed positions, and holdings value
 - `market` filters locally by `condition_id`
 - gross and net exposure stay deterministic; net exposure offsets `YES` vs `NO` within the same market
