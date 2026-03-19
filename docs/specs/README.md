@@ -237,3 +237,4 @@
 - `06-cli-ops.md`
 - `07-codex-workflow.md`
 - `08-portfolio-ledger.md`
+- `09-btc-15m-chainlink-ladder.md`

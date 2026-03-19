@@ -74,6 +74,26 @@ In v1, strategy names match strategy types exactly. Dispatch is intentionally wa
 - `market_watch_reversion` is reviewable but not dispatchable
 - `recurring_crypto_interval_observe` is reviewable but not dispatchable
 
+## Planned Market-Specific Strategy Tracks
+
+The current seeded registry is still intentionally small and generic. The first
+planned market-specific extension is documented separately in:
+
+- `09-btc-15m-chainlink-ladder.md`
+
+That planned strategy uses the future name `btc_15m_chainlink_ladder` and is
+intended as a paper-first specialization for recurring BTC 15-minute Up/Down
+markets whose resolution source is the Chainlink BTC/USD stream.
+
+Rules for that planned track:
+
+- it is not implemented on the current branch
+- it does not replace the current generic
+  `recurring_crypto_interval_observe` strategy
+- it is expected to begin with boundary recording, replay, and paper evaluation
+- any future guarded live mode remains deferred behind separate validation
+  criteria
+
 ## Strategy Inputs
 
 ### `wallet_shadow_copy`
@@ -285,5 +305,10 @@ Later phases may add:
 - stronger observability and audit trails
 - shell or TUI review surfaces
 - broader strategy-specific execution mappings beyond wallet-first dispatch
+- market-specific recurring strategies such as `btc_15m_chainlink_ladder`
+
+The BTC 15m ladder track is intentionally planned as a specialized follow-on to
+the generic `recurring_crypto_interval_observe` strategy, not as an immediate
+replacement for it.
 
 Those features are intentionally deferred until auth, signing, approval, execution, and operator UX boundaries are designed explicitly.

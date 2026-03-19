@@ -193,6 +193,39 @@ Make system behavior reconstructable for debugging, incident response, and regre
 - Replay scenarios cover dry-run and paper execution paths
 - Regression testing can use replay fixtures as a stable contract
 
+## Parallel Track: BTC 15m Chainlink Ladder
+
+**Objective**
+
+Define and validate the first market-specific recurring strategy track for BTC
+15-minute Up/Down markets before any guarded live automation is considered.
+
+**Scope / Deliverables**
+
+- Docs-first strategy spec in `docs/specs/09-btc-15m-chainlink-ladder.md`
+- Forward boundary recorder for Chainlink BTC/USD start and end observations
+- Canonical boundary selection artifacts
+- Replay harness for recorded BTC 15m windows
+- Paper evaluation through the existing strategy, risk, and execution stack
+- Later guarded-automation design only after replay and paper evidence exist
+
+**Non-goals**
+
+- Immediate live execution automation
+- A daemon or infinite recurring-market loop
+- Secret-handling changes
+- Direct dependence on unsupported recurring or oracle endpoints
+
+**Exit Criteria**
+
+- The BTC 15m ladder spec is published and internally consistent
+- Boundary recording requirements are explicit and testable
+- Replay artifacts can reconstruct ladder triggers for recorded windows
+- Paper evaluation is explainable enough to judge whether guarded live work is
+  justified
+- Any future live work remains explicitly deferred behind validation and policy
+  gates
+
 ## Parallel Track: CLI/TUI Parity
 
 **Objective**

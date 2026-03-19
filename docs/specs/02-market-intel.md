@@ -215,6 +215,25 @@ Rules:
 - reconnects are limited and deterministic
 - recurring streams reuse the recurring resolver and infer supported crypto symbols from resolved market text
 
+### Planned BTC 15m Chainlink ladder support
+
+The current market and stream layer already provides the core public inputs that
+the planned BTC 15m Chainlink ladder track will need:
+
+- recurring Gamma resolution for BTC 15m markets
+- public CLOB reads for bid, ask, midpoint, and spread
+- public RTDS crypto reads with `--source chainlink`
+
+However, the current branch does not yet provide the full future recorder
+contract for that strategy. In particular:
+
+- `pm stream recurring` is still a generic recurring-context stream surface
+- the ladder track will require explicit start and end boundary observation
+  recording
+- canonical boundary selection rules still need empirical validation
+- current generic stream capture must not be treated as settlement-equivalent
+  Chainlink boundary truth
+
 ## CLI Contract
 
 The current market namespace is:
