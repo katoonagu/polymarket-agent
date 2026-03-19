@@ -5,6 +5,7 @@ from __future__ import annotations
 import typer
 
 from pm.cli.approve import app as approve_app
+from pm.cli.arkham import app as arkham_app
 from pm.cli.auth import app as auth_app
 from pm.cli.clob import app as clob_app
 from pm.cli.data import app as data_app
@@ -52,6 +53,7 @@ app.add_typer(approve_app, name="approve")
 app.add_typer(market_app, name="market")
 app.add_typer(clob_app, name="clob")
 app.add_typer(data_app, name="data")
+app.add_typer(arkham_app, name="arkham")
 app.add_typer(wallet_app, name="wallet")
 app.add_typer(stream_app, name="stream")
 app.add_typer(risk_app, name="risk")

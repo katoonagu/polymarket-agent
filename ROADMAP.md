@@ -145,11 +145,15 @@ Add on-chain enrichment and investigation workflows as intelligence inputs only.
 
 **Scope / Deliverables**
 
-- Address enrichment and caching
-- Counterparty and funding-chain views
-- Suspicious cluster heuristics
-- Dossier generation
-- Watchlist-grade alerts for strategy and operator review
+- First delivered slice on the current branch:
+  - address enrichment and caching
+  - dossier generation
+  - tracked-wallet sync
+  - suspicious tracked-wallet heuristics
+- Later expansion:
+  - broader counterparty and funding-chain views
+  - richer suspicious cluster heuristics
+  - watchlist-grade alerts for strategy and operator review
 
 **Non-goals**
 
@@ -159,9 +163,8 @@ Add on-chain enrichment and investigation workflows as intelligence inputs only.
 
 **Exit Criteria**
 
-- Addresses can be enriched and revisited from cache
-- Clusters and dossiers include confidence and provenance
-- Arkham outputs are limited to alerts, analysis, and watchlist suggestions
+- The current branch can enrich addresses, sync tracked wallets, generate dossiers, and rank suspicious tracked wallets from cache
+- Arkham outputs remain limited to analysis, heuristics, and watchlist suggestions
 - No Arkham path can submit or cancel orders
 
 ## Phase 6: Replay

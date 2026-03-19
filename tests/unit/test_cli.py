@@ -34,6 +34,7 @@ def test_root_help_lists_namespaces_and_output_contract() -> None:
     assert "market" in result.stdout
     assert "clob" in result.stdout
     assert "data" in result.stdout
+    assert "arkham" in result.stdout
     assert "wallet" in result.stdout
     assert "stream" in result.stdout
     assert "risk" in result.stdout

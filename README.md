@@ -1,6 +1,6 @@
 # polymarket-agent
 
-`polymarket-agent` is a docs-first, execution-first workspace for building a modular Polymarket system. The current branch combines a strong public intelligence stack with guarded authenticated execution, a risk-gated strategy-dispatch bridge, a local-first operator control plane, a bounded one-cycle runbook layer, the first CLI/TUI parity slice, and the first interactive CLI UX polish pass. It uses public Gamma, public CLOB, public Data API, public streams, local gitignored operator state, authenticated setup and local order-signing, guarded approval and order lifecycle paths, explicit manual dispatch from approved strategy intents into execution, workflow-session tooling for operator review, bounded runbook commands for queueing and dispatch, a bounded interactive shell, an env-only setup wizard, and richer Rich-based framed terminal output for the main operator workflows. Live behavior exists only behind explicit operator flags and is never the default.
+`polymarket-agent` is a docs-first, execution-first workspace for building a modular Polymarket system. The current branch combines a strong public intelligence stack with guarded authenticated execution, a risk-gated strategy-dispatch bridge, a local-first operator control plane, a bounded one-cycle runbook layer, the first CLI/TUI parity slice, the first interactive CLI UX polish pass, and the first Arkham enrichment slice for external wallet intelligence. It uses public Gamma, public CLOB, public Data API, public streams, Arkham REST intelligence, local gitignored operator state, authenticated setup and local order-signing, guarded approval and order lifecycle paths, explicit manual dispatch from approved strategy intents into execution, workflow-session tooling for operator review, bounded runbook commands for queueing and dispatch, a bounded interactive shell, an env-only setup wizard, and richer Rich-based framed terminal output for the main operator workflows. Live behavior exists only behind explicit operator flags and is never the default.
 
 ## Principles
 
@@ -77,6 +77,24 @@ These sessions are always bounded, persist normalized captured events locally, a
 .venv\Scripts\pm wallet shadow simulate --address <0x...> --fixed-size 25 --max-drift 5 --max-spread 5 --entry-only --json
 .venv\Scripts\pm wallet shadow report --address <0x...> --json
 ```
+
+### Arkham enrichment overlay
+
+```powershell
+.venv\Scripts\pm arkham status --json
+.venv\Scripts\pm arkham enrich --address <0x...> --json
+.venv\Scripts\pm arkham dossier --address <0x...> --json
+.venv\Scripts\pm arkham sync tracked --limit 20 --json
+.venv\Scripts\pm arkham suspicious tracked --limit 20 --json
+```
+
+Rules:
+
+- Arkham API keys are env-only: `ARKHAM_API_KEY` is canonical and `PM_ARKHAM_API_KEY` is a supported compatibility alias
+- raw Arkham credentials are never printed or persisted locally
+- enrichment uses only documented Arkham REST endpoints for address intelligence, enriched address intelligence, entity intelligence, counterparties, and readiness checks
+- `pm arkham suspicious tracked` is cache-only and ranks watch candidates from local Arkham enrichments plus local wallet-pipeline context; it does not make implicit network calls
+- Arkham output is heuristic operator context only and never triggers execution behavior
 
 ### Strategy registry, review, and guarded dispatch
 
@@ -220,6 +238,7 @@ This branch uses local file-backed state under `.pm/state/`. These files are rep
 - `market-watchlist.json`
 - `market-snapshots.json`
 - `stream-events.jsonl`
+- `arkham-enrichments.json`
 - `strategies.json`
 - `strategy-intents.json`
 - `strategy-decisions.json`

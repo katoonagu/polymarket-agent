@@ -195,6 +195,28 @@ Rules:
 - `init-defaults` is idempotent and creates the versioned file only when missing
 - dispatch policies remain local, deterministic, and gitignored
 
+### `pm arkham`
+
+Arkham-backed external wallet intelligence enrichment.
+
+```text
+pm arkham status [--json]
+pm arkham enrich --address <0x...> [--json]
+pm arkham dossier --address <0x...> [--json]
+pm arkham sync tracked [--limit <n>] [--json]
+pm arkham suspicious tracked [--limit <n>] [--json]
+```
+
+Rules:
+
+- Arkham secrets are env-only
+- `ARKHAM_API_KEY` is canonical and `PM_ARKHAM_API_KEY` is a supported compatibility alias
+- missing Arkham credentials should return a readiness or help payload instead of crashing the command
+- enrichment uses documented Arkham REST endpoints only
+- local enrichment state is cache-style and gitignored
+- `suspicious tracked` is cache-only and must not make implicit Arkham network calls
+- Arkham outputs are heuristic watch flags and dossier context only; they must not auto-dispatch or auto-execute anything
+
 ### `pm exec`
 
 Authenticated execution planning and order lifecycle commands.
@@ -425,6 +447,9 @@ The current branch now uses stronger Rich-based framed panels and tables for key
 - `pm strategy intents`
 - `pm strategy executions`
 - `pm exec events`
+- `pm arkham status`
+- `pm arkham dossier`
+- `pm arkham suspicious tracked`
 - `pm setup guide`
 - `pm setup wizard`
 - `pm shell`
@@ -448,6 +473,7 @@ Current file-backed state under `.pm/state/`:
 - `market-watchlist.json`
 - `market-snapshots.json`
 - `stream-events.jsonl`
+- `arkham-enrichments.json`
 - `strategies.json`
 - `strategy-intents.json`
 - `strategy-decisions.json`
@@ -496,6 +522,9 @@ Current partial-result flows include:
 - `pm strategy dispatch`
 - `pm strategy dispatch pending`
 - `pm ops cycle queue`
+- `pm arkham enrich`
+- `pm arkham dossier`
+- `pm arkham sync tracked`
 
 Structured partial errors should look like:
 
