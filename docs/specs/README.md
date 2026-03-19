@@ -236,3 +236,4 @@
 - `05-strategy-orchestrator.md`
 - `06-cli-ops.md`
 - `07-codex-workflow.md`
+- `08-portfolio-ledger.md`

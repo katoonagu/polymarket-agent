@@ -13,6 +13,7 @@ from pm.cli.execution import app as execution_app
 from pm.cli.market import app as market_app
 from pm.cli.ops import app as ops_app
 from pm.cli.ops import status as status_command
+from pm.cli.portfolio import app as portfolio_app
 from pm.cli.risk import app as risk_app
 from pm.cli.setup import app as setup_app
 from pm.cli.shell import shell as shell_command
@@ -59,6 +60,7 @@ app.add_typer(stream_app, name="stream")
 app.add_typer(risk_app, name="risk")
 app.add_typer(strategy_app, name="strategy")
 app.add_typer(ops_app, name="ops")
+app.add_typer(portfolio_app, name="portfolio")
 app.add_typer(execution_app, name="exec")
 app.command("status")(status_command)
 app.command("shell")(shell_command)

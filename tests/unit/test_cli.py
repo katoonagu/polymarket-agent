@@ -40,6 +40,7 @@ def test_root_help_lists_namespaces_and_output_contract() -> None:
     assert "risk" in result.stdout
     assert "strategy" in result.stdout
     assert "ops" in result.stdout
+    assert "portfolio" in result.stdout
     assert "exec" in result.stdout
     assert "status" in result.stdout
     assert "shell" in result.stdout

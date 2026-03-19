@@ -1,6 +1,6 @@
 # polymarket-agent
 
-`polymarket-agent` is a docs-first, execution-first workspace for building a modular Polymarket system. The current branch combines a strong public intelligence stack with guarded authenticated execution, a risk-gated strategy-dispatch bridge, a local-first operator control plane, a bounded one-cycle runbook layer, the first CLI/TUI parity slice, the first interactive CLI UX polish pass, and the first Arkham enrichment slice for external wallet intelligence. It uses public Gamma, public CLOB, public Data API, public streams, Arkham REST intelligence, local gitignored operator state, authenticated setup and local order-signing, guarded approval and order lifecycle paths, explicit manual dispatch from approved strategy intents into execution, workflow-session tooling for operator review, bounded runbook commands for queueing and dispatch, a bounded interactive shell, an env-only setup wizard, and richer Rich-based framed terminal output for the main operator workflows. Live behavior exists only behind explicit operator flags and is never the default.
+`polymarket-agent` is a docs-first, execution-first workspace for building a modular Polymarket system. The current branch combines a strong public intelligence stack with guarded authenticated execution, a risk-gated strategy-dispatch bridge, a local-first operator control plane, a bounded one-cycle runbook layer, the first CLI/TUI parity slice, the first interactive CLI UX polish pass, the first Arkham enrichment slice for external wallet intelligence, and a portfolio truth plus reconciliation layer. It uses public Gamma, public CLOB, public Data API, public streams, Arkham REST intelligence, local gitignored operator state, authenticated setup and local order-signing, guarded approval and order lifecycle paths, explicit manual dispatch from approved strategy intents into execution, workflow-session tooling for operator review, bounded runbook commands for queueing and dispatch, a bounded interactive shell, an env-only setup wizard, richer Rich-based framed terminal output for the main operator workflows, and portfolio snapshots derived from public account state plus local execution linkage. Live behavior exists only behind explicit operator flags and is never the default.
 
 ## Principles
 
@@ -139,6 +139,27 @@ Strategy evaluation is still read-only and persists candidate intents plus revie
 
 This layer stays local-first and operator-driven. It aggregates pending review work, approved dispatch-ready intents, recent dispatch results, recent execution events, and the latest persisted reconciliation state into a compact workflow surface. Sessions are optional, append-only, and limited to one active session at a time. The bounded runbook commands remain explicit one-cycle actions only: `bootstrap` ensures local risk and session readiness, `cycle queue` evaluates all seeded strategies once, `cycle approved` dispatches only already-approved intents with paper as the default, and `cycle report` stays local-only.
 
+### Portfolio truth and reconciliation
+
+```powershell
+.venv\Scripts\pm portfolio summary --json
+.venv\Scripts\pm portfolio positions --json
+.venv\Scripts\pm portfolio closed --limit 20 --json
+.venv\Scripts\pm portfolio market --market <condition-id> --json
+.venv\Scripts\pm portfolio exposure --json
+.venv\Scripts\pm portfolio pnl --json
+.venv\Scripts\pm portfolio reconcile --json
+```
+
+Rules:
+
+- portfolio ownership resolves to `funder_address` first, then `signer_address`
+- fresh portfolio snapshots come from the public Data API for current positions, closed positions, and holdings value
+- gross and net exposure are deterministic; net exposure offsets `YES` vs `NO` within the same `condition_id`
+- per-strategy exposure and PnL are tool-local only and are reported only where explicit strategy dispatch or execution linkage exists
+- `pm portfolio reconcile` combines fresh portfolio state with a fresh authenticated execution reconciliation pass and writes append-only local records only
+- this layer adds no daemon, no scheduler, and no auto-trading behavior
+
 ### First CLI/TUI parity slice
 
 ```powershell
@@ -252,6 +273,8 @@ This branch uses local file-backed state under `.pm/state/`. These files are rep
 - `execution-order-results.json`
 - `execution-events.jsonl`
 - `execution-reconciliations.json`
+- `portfolio-snapshots.json`
+- `portfolio-reconciliations.json`
 
 They are append-only or registry-style JSON documents used for deterministic operator workflows. They are not a database and they do not enable background daemons or live execution. This phase does not add any local auth cache, API-key cache, or private-key state file.
 
@@ -298,3 +321,4 @@ py -3.11 -m venv .venv
 - `docs/specs/03-copytrading-wallet-intel.md`
 - `docs/specs/05-strategy-orchestrator.md`
 - `docs/specs/06-cli-ops.md`
+- `docs/specs/08-portfolio-ledger.md`

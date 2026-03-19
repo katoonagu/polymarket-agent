@@ -21,6 +21,7 @@ In the current phase, the CLI supports public intelligence plus authenticated pa
 - reconcile recent execution websocket events against authenticated REST order views
 - bridge approved strategy intents into execution through explicit risk-gated dispatch
 - aggregate local strategy, risk, and execution state into a compact operator control plane
+- expose portfolio truth, exposure, PnL, and reconciliation views from public account data plus local execution linkage
 - submit or cancel live orders only behind explicit operator gates
 
 It must not:
@@ -250,6 +251,30 @@ Rules:
 - `gtd` requires `--expires-at`
 - `--post-only` is valid only for `gtc` and `gtd`
 - local execution audit records are persisted for preview, paper, and live lifecycle actions
+
+### `pm portfolio`
+
+Portfolio truth and reconciliation commands.
+
+```text
+pm portfolio summary [--json]
+pm portfolio positions [--json]
+pm portfolio closed [--limit <n>] [--json]
+pm portfolio market --market <condition_id> [--json]
+pm portfolio exposure [--json]
+pm portfolio pnl [--json]
+pm portfolio reconcile [--json]
+```
+
+Rules:
+
+- portfolio account ownership resolves to `funder_address` first, then `signer_address`
+- fresh portfolio snapshots come from the public Data API for current positions, closed positions, and holdings value
+- `market` filters locally by `condition_id`
+- gross and net exposure stay deterministic; net exposure offsets `YES` vs `NO` within the same market
+- per-strategy exposure and PnL are tool-local only and require explicit strategy-dispatch or execution linkage
+- `reconcile` runs a fresh authenticated execution reconciliation pass, compares it with current portfolio state, and writes local append-only reconciliation records only
+- portfolio commands remain operator-driven and add no daemon, scheduler, or auto-trading loop
 
 ### `pm market`
 
@@ -487,6 +512,8 @@ Current file-backed state under `.pm/state/`:
 - `execution-order-results.json`
 - `execution-events.jsonl`
 - `execution-reconciliations.json`
+- `portfolio-snapshots.json`
+- `portfolio-reconciliations.json`
 
 Rules:
 

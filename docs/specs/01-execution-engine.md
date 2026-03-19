@@ -14,6 +14,7 @@ The current phase includes:
 - explicitly gated live order submission and cancellation
 - bounded authenticated user-channel watch and reconciliation
 - guarded manual strategy-to-execution dispatch
+- portfolio truth and reconciliation views built on top of execution audit state
 
 The current phase still does not include:
 
@@ -59,6 +60,7 @@ Still out of scope:
 - live order polling loops
 - unbounded private websocket monitoring
 - automatic execution orchestration from strategy
+- portfolio-driven order mutation or auto-rebalancing
 
 ## Design Principles
 
@@ -477,6 +479,10 @@ The current execution phase persists append-only local audit state under `.pm/st
 - `execution-order-results.json`
 - `execution-events.jsonl`
 - `execution-reconciliations.json`
+- `portfolio-snapshots.json`
+- `portfolio-reconciliations.json`
+
+The portfolio layer depends on execution audit and reconciliation records for attribution and discrepancy reporting, but it does not take order ownership away from execution. Execution remains the only module that can place or cancel orders.
 
 Rules:
 

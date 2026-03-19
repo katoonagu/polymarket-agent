@@ -240,6 +240,11 @@ Define the controls and evidence required before considering any live trading im
 
 **Scope / Deliverables**
 
+- Portfolio truth and reconciliation slice delivered on the current branch:
+  - account-level current and closed position views
+  - gross and net exposure summaries
+  - realized and unrealized PnL summaries
+  - local portfolio snapshots and reconciliation history
 - Manual approval paths
 - Kill switch and risk stop requirements
 - Secret management expectations
@@ -252,11 +257,13 @@ Define the controls and evidence required before considering any live trading im
 - Turning on live trading by default
 - Shipping production trading code in bootstrap tasks
 - Enabling live wallet automation
+- Adding a portfolio daemon, scheduler, or auto-rebalance loop
 
 **Exit Criteria**
 
 - Readiness requirements are documented and testable
 - Replay and integration coverage are strong enough to validate behavior changes
 - Secret handling and operator approval paths are explicit
+- Portfolio truth is available from public Data API reads plus local execution-link reconciliation without introducing automation
 - Operator workflow commands exist for one-cycle bootstrap, queueing, approved dispatch, and reporting without adding a daemon
 - Live mode remains gated behind deliberate future implementation work
