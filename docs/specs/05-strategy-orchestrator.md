@@ -33,6 +33,11 @@ pm strategy dispatch --intent-id <id> [--paper] [--live --confirm]
 pm strategy dispatch pending [--limit <n>] [--paper]
 pm strategy executions [--limit <n>]
 pm strategy execution get --execution-id <id>
+pm strategy btc15m record start [--seconds <n>]
+pm strategy btc15m record window --slug <market_slug>
+pm strategy btc15m replay --from <iso> --to <iso>
+pm strategy btc15m paper-run [--limit <n>]
+pm strategy btc15m report
 ```
 
 These commands operate on local gitignored state, existing public intelligence outputs, and the existing execution module. Strategy still does not post or cancel orders by itself; it may only hand off through explicit manual dispatch.
@@ -47,6 +52,11 @@ Strategy and risk state live under `.pm/state/`:
 - `risk-policies.json`
 - `strategy-execution-links.json`
 - `strategy-dispatch-results.json`
+- `btc-15m-chainlink-boundary-observations.jsonl`
+- `btc-15m-chainlink-boundary-decisions.json`
+- `btc-15m-chainlink-windows.jsonl`
+- `btc-15m-chainlink-replays.json`
+- `btc-15m-chainlink-paper-runs.json`
 
 Rules:
 
@@ -81,16 +91,18 @@ planned market-specific extension is documented separately in:
 
 - `09-btc-15m-chainlink-ladder.md`
 
-That planned strategy uses the future name `btc_15m_chainlink_ladder` and is
-intended as a paper-first specialization for recurring BTC 15-minute Up/Down
-markets whose resolution source is the Chainlink BTC/USD stream.
+That strategy track uses the broader spec name `btc_15m_chainlink_ladder` and
+the first runtime implementation name `btc_15m_chainlink_directional_ladder_v1`.
+It is a paper-first specialization for recurring BTC 15-minute Up/Down markets
+whose resolution source is the Chainlink BTC/USD stream.
 
 Rules for that planned track:
 
-- it is not implemented on the current branch
+- a separate research surface now exists under `pm strategy btc15m`
+- it does not participate in the seeded generic strategy registry yet
 - it does not replace the current generic
   `recurring_crypto_interval_observe` strategy
-- it is expected to begin with boundary recording, replay, and paper evaluation
+- it begins with boundary recording, replay, and paper evaluation
 - it is designed around a one-time minute-5 direction lock
 - it uses a fixed minute 5 to minute 10 three-rung ladder
 - it holds filled positions to expiry in v1

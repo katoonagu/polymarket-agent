@@ -1,6 +1,6 @@
 # polymarket-agent
 
-`polymarket-agent` is a docs-first, execution-first workspace for building a modular Polymarket system. The current branch combines a strong public intelligence stack with guarded authenticated execution, a risk-gated strategy-dispatch bridge, a local-first operator control plane, a bounded one-cycle runbook layer, the first CLI/TUI parity slice, the first interactive CLI UX polish pass, the first Arkham enrichment slice for external wallet intelligence, and a portfolio truth plus reconciliation layer. It uses public Gamma, public CLOB, public Data API, public streams, Arkham REST intelligence, local gitignored operator state, authenticated setup and local order-signing, guarded approval and order lifecycle paths, explicit manual dispatch from approved strategy intents into execution, workflow-session tooling for operator review, bounded runbook commands for queueing and dispatch, a bounded interactive shell, an env-only setup wizard, richer Rich-based framed terminal output for the main operator workflows, and portfolio snapshots derived from public account state plus local execution linkage. Live behavior exists only behind explicit operator flags and is never the default.
+`polymarket-agent` is a docs-first, execution-first workspace for building a modular Polymarket system. The current branch combines a strong public intelligence stack with guarded authenticated execution, a risk-gated strategy-dispatch bridge, a local-first operator control plane, a bounded one-cycle runbook layer, the first CLI/TUI parity slice, the first interactive CLI UX polish pass, the first Arkham enrichment slice for external wallet intelligence, a portfolio truth plus reconciliation layer, and the first paper/research runtime for a market-specific BTC 15-minute strategy. It uses public Gamma, public CLOB, public Data API, public streams, Arkham REST intelligence, local gitignored operator state, authenticated setup and local order-signing, guarded approval and order lifecycle paths, explicit manual dispatch from approved strategy intents into execution, workflow-session tooling for operator review, bounded runbook commands for queueing and dispatch, a bounded interactive shell, an env-only setup wizard, richer Rich-based framed terminal output for the main operator workflows, portfolio snapshots derived from public account state plus local execution linkage, and dedicated BTC15m recorder plus replay artifacts for paper research. Live behavior exists only behind explicit operator flags and is never the default.
 
 ## Principles
 
@@ -117,6 +117,24 @@ Rules:
 ```
 
 Strategy evaluation is still read-only and persists candidate intents plus review decisions only. The only bridge into execution is an explicit operator dispatch step after manual approval and risk-policy checks. Execution remains the only module that can actually post or cancel orders.
+
+### BTC15m paper research strategy
+
+```powershell
+.venv\Scripts\pm strategy btc15m record start --seconds 60 --json
+.venv\Scripts\pm strategy btc15m record window --slug <market-slug> --json
+.venv\Scripts\pm strategy btc15m replay --from 2026-03-19T00:00:00Z --to 2026-03-20T00:00:00Z --json
+.venv\Scripts\pm strategy btc15m paper-run --limit 20 --json
+.venv\Scripts\pm strategy btc15m report --json
+```
+
+Rules:
+
+- the runtime implementation name is `btc_15m_chainlink_directional_ladder_v1`
+- this surface is paper/research only and stays outside the generic strategy review and dispatch registry in this phase
+- recorder artifacts persist under `.pm/state/` as dedicated BTC15m boundary, window, replay, and paper-run state
+- the minute-5 directional lock uses recorded Chainlink and Binance context against a Chainlink-derived start proxy
+- the paper ladder is buy-only at `0.30`, `0.20`, and `0.10`, with one fill per rung at most and no live order submission
 
 ### Operator control plane
 

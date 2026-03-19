@@ -7,27 +7,42 @@ current Polymarket operator stack: a paper-first BTC 15-minute directional
 ladder for recurring Up/Down markets whose resolution source is the Chainlink
 BTC/USD stream.
 
-This is a docs-first phase only. It does not add runtime strategy code, new
-CLI commands, a daemon, a scheduler, or live automation. The goal is to define
-the strategy precisely enough that the recorder, replay, paper-evaluation, and
-later guarded-live phases can be implemented without re-deciding the core
-design.
+This spec now covers both the target design and the first paper/research
+runtime on the current branch. The current implementation adds bounded recorder,
+replay, paper-run, and report commands under `pm strategy btc15m`, but it still
+does not add live automation, a daemon, a scheduler, or any execution-side
+mutation.
 
 ## Current Phase
 
-The planned future strategy name is:
+The broader strategy track name is:
 
 - `btc_15m_chainlink_ladder`
 
-This strategy is not implemented on the current branch. In this phase:
+The first runtime implementation name on the current branch is:
 
-- the strategy exists only as a technical specification
-- the first target is forward recording plus replay and paper evaluation
+- `btc_15m_chainlink_directional_ladder_v1`
+
+Current branch status:
+
+- bounded recorder, replay, paper-run, and report commands now exist under
+  `pm strategy btc15m`
+- the runtime remains a separate research surface and does not emit generic
+  reviewable strategy intents yet
+- the current target is forward recording plus replay and paper evaluation
 - guarded live use is explicitly deferred
 - execution remains the only module allowed to place or cancel orders
 
 This is the first planned specialization beyond the current generic
 `recurring_crypto_interval_observe` track.
+
+Current research commands:
+
+- `pm strategy btc15m record start [--seconds <n>]`
+- `pm strategy btc15m record window --slug <market_slug>`
+- `pm strategy btc15m replay --from <iso> --to <iso>`
+- `pm strategy btc15m paper-run --limit <n>`
+- `pm strategy btc15m report`
 
 ## Strategy Overview and Design Goals
 
@@ -135,7 +150,8 @@ Rules:
 
 ### Planned boundary persistence
 
-Future raw boundary observations should be append-only records under:
+The current runtime persists raw boundary observations as append-only records
+under:
 
 - `.pm/state/btc-15m-chainlink-boundary-observations.jsonl`
 
@@ -155,7 +171,7 @@ Each raw observation should include at least:
 - `selection_status`
 - `notes`
 
-Future canonical boundary decisions should be persisted under:
+The current runtime persists canonical boundary decisions under:
 
 - `.pm/state/btc-15m-chainlink-boundary-decisions.json`
 
@@ -327,7 +343,7 @@ The spec intentionally does not define live capital allocation behavior yet.
 
 ## Recording Requirements
 
-The future recorder must persist one per-window strategy record under:
+The current runtime persists one per-window strategy record under:
 
 - `.pm/state/btc-15m-chainlink-windows.jsonl`
 
@@ -357,20 +373,21 @@ Each per-window record should include at least:
 - replay outcome summary
 - MFE, MAE, and max favorable path metrics
 
-The previously chosen planned artifacts remain:
+The current runtime also persists:
 
 - `.pm/state/btc-15m-chainlink-boundary-observations.jsonl`
 - `.pm/state/btc-15m-chainlink-boundary-decisions.json`
 - `.pm/state/btc-15m-chainlink-replays.json`
 
-These artifacts are planned only. The current branch does not create them yet.
+The current branch now creates these research artifacts, but it still treats
+them as paper/research state only.
 
 ## Testing and Promotion Plan
 
 ### Forward recorder
 
-The first implementation step after this spec should be a forward recorder run
-for:
+The first runtime implementation on the current branch supports bounded forward
+recording and should still be used for an initial recorder run of:
 
 - `2 days`
 
@@ -385,7 +402,8 @@ It should:
 
 ### Replay harness
 
-The next step should be a replay harness over recorded windows. Replay should
+The current runtime includes a replay harness over recorded windows. Replay
+should
 reconstruct:
 
 - resolved market window identity
@@ -397,8 +415,10 @@ reconstruct:
 
 ### Paper evaluation
 
-Paper evaluation should run through the existing strategy, risk, and execution
-architecture rather than inventing a parallel execution path.
+The current runtime keeps paper evaluation as a dedicated research surface
+instead of emitting generic review intents yet. It still reuses the existing
+public market and stream architecture and deliberately avoids any live
+execution path.
 
 Paper evaluation should answer:
 

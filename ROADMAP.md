@@ -202,15 +202,18 @@ Define and validate the first market-specific recurring strategy track for BTC
 
 **Scope / Deliverables**
 
-- Docs-first strategy spec in `docs/specs/09-btc-15m-chainlink-ladder.md`
-- 2-day forward recorder for per-window Chainlink and Binance observations plus
-  start/end boundary capture
-- Canonical boundary selection artifacts and per-window recorder state
-- Replay harness for recorded BTC 15m windows
-- Paper evaluation through the existing strategy, risk, and execution stack
-- Fixed minute-5 direction lock using Chainlink and Binance confirmation
-- Fixed three-rung paper ladder at `0.30`, `0.20`, and `0.10`
-- Later guarded-live design only after replay and paper evidence exist
+- Delivered on the current branch:
+  - docs spec in `docs/specs/09-btc-15m-chainlink-ladder.md`
+  - first paper/research runtime under `pm strategy btc15m`
+  - bounded recorder state for per-window Chainlink, Binance, and market
+    context plus start/end boundary capture
+  - replay harness and chronological paper-run evaluation
+  - fixed minute-5 direction lock using Chainlink and Binance confirmation
+  - fixed three-rung paper ladder at `0.30`, `0.20`, and `0.10`
+- Still pending:
+  - multi-day evidence collection over live recurring windows
+  - replay-driven parameter tuning
+  - later guarded-live design only after paper evidence exists
 
 **Non-goals**
 

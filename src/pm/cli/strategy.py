@@ -5,6 +5,7 @@ from __future__ import annotations
 import typer
 from rich.console import RenderableType
 
+from pm.cli.strategy_btc15m import app as btc15m_app
 from pm.cli.support import (
     LOCAL_JSON_OPTION,
     emit_command_error,
@@ -425,6 +426,7 @@ def get_execution(
 
 app.add_typer(dispatch_app, name="dispatch")
 app.add_typer(execution_app, name="execution")
+app.add_typer(btc15m_app, name="btc15m")
 
 
 def _emit_strategy_error(
@@ -608,8 +610,7 @@ def _format_strategy_dispatch(response: StrategyDispatchResponse) -> str:
             [
                 "Execution reasons:",
                 "\n".join(
-                    _format_reason_block(item)
-                    for item in response.execution.execution_reasons
+                    _format_reason_block(item) for item in response.execution.execution_reasons
                 ),
             ]
         )
@@ -730,9 +731,7 @@ def _format_intent(item: StrategyCandidateIntent) -> str:
         if item.reason_blocks
         else "-",
         "Source refs:",
-        "\n".join(_format_source_ref(ref) for ref in item.source_refs)
-        if item.source_refs
-        else "-",
+        "\n".join(_format_source_ref(ref) for ref in item.source_refs) if item.source_refs else "-",
     ]
     return "\n".join(lines)
 
