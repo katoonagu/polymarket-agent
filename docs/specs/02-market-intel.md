@@ -223,16 +223,19 @@ the planned BTC 15m Chainlink ladder track will need:
 - recurring Gamma resolution for BTC 15m markets
 - public CLOB reads for bid, ask, midpoint, and spread
 - public RTDS crypto reads with `--source chainlink`
+- public RTDS crypto reads with `--source binance`
 
 However, the current branch does not yet provide the full future recorder
 contract for that strategy. In particular:
 
 - `pm stream recurring` is still a generic recurring-context stream surface
-- the ladder track will require explicit start and end boundary observation
-  recording
+- the ladder track will require explicit per-window Chainlink and Binance
+  capture plus start and end boundary recording
+- the ladder track will require minute-5 decision-state persistence and ladder
+  microstructure recording
 - canonical boundary selection rules still need empirical validation
 - current generic stream capture must not be treated as settlement-equivalent
-  Chainlink boundary truth
+  Chainlink boundary truth or as the full future recorder contract
 
 ## CLI Contract
 

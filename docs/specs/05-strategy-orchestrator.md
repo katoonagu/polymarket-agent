@@ -91,6 +91,9 @@ Rules for that planned track:
 - it does not replace the current generic
   `recurring_crypto_interval_observe` strategy
 - it is expected to begin with boundary recording, replay, and paper evaluation
+- it is designed around a one-time minute-5 direction lock
+- it uses a fixed minute 5 to minute 10 three-rung ladder
+- it holds filled positions to expiry in v1
 - any future guarded live mode remains deferred behind separate validation
   criteria
 

@@ -1,47 +1,74 @@
-# 09 - BTC 15m Chainlink Ladder Spec
+# 09 - BTC 15m Chainlink Directional Ladder Spec
 
 ## Purpose
 
-This spec defines the first planned market-specific strategy track for the current
-Polymarket operator stack: a paper-first BTC 15-minute Up/Down ladder that uses
-Polymarket recurring-market discovery, public CLOB reads, and Chainlink BTC/USD
-context from Polymarket RTDS.
+This spec defines the first planned market-specific strategy module for the
+current Polymarket operator stack: a paper-first BTC 15-minute directional
+ladder for recurring Up/Down markets whose resolution source is the Chainlink
+BTC/USD stream.
 
-The current step is docs-first only. It does not add runtime strategy code, a
-daemon, a scheduler, new CLI commands, or live automation. Its job is to make
-the future recorder, replay, paper-evaluation, and guarded-live phases decision
-complete before implementation begins.
+This is a docs-first phase only. It does not add runtime strategy code, new
+CLI commands, a daemon, a scheduler, or live automation. The goal is to define
+the strategy precisely enough that the recorder, replay, paper-evaluation, and
+later guarded-live phases can be implemented without re-deciding the core
+design.
 
 ## Current Phase
 
-This spec plans a future strategy named `btc_15m_chainlink_ladder`.
+The planned future strategy name is:
 
-The current branch does not implement it yet. In this phase:
+- `btc_15m_chainlink_ladder`
 
-- the strategy exists only as a planned design
-- the first goal is forward boundary recording plus replay and paper evaluation
-- guarded live automation is explicitly deferred
-- execution remains the only module that may ever place or cancel orders
+This strategy is not implemented on the current branch. In this phase:
 
-This strategy is intended to become the first market-specific specialization
-beyond the current generic `recurring_crypto_interval_observe` track.
+- the strategy exists only as a technical specification
+- the first target is forward recording plus replay and paper evaluation
+- guarded live use is explicitly deferred
+- execution remains the only module allowed to place or cancel orders
 
-## Market Scope and Recurring Identification
+This is the first planned specialization beyond the current generic
+`recurring_crypto_interval_observe` track.
+
+## Strategy Overview and Design Goals
+
+The strategy is a directional ladder for one recurring BTC 15-minute market
+window at a time.
+
+V1 design goals:
+
+- use deterministic recurring-market discovery
+- anchor direction to a start-of-window Chainlink price proxy
+- require confirmation from both Chainlink and Binance before choosing a side
+- keep the ladder simple, fixed, and auditable
+- hold to expiry in v1
+- record enough oracle, market, and microstructure context to support replay,
+  paper evaluation, and later guarded-live review
+
+V1 design limits:
+
+- no side flipping
+- no take-profit
+- no stop-loss
+- no background automation
+- no assumption that RTDS Chainlink is already settlement-equivalent
+
+## Market Type and Recurring Identification
 
 The target market class is:
 
 - recurring BTC 15-minute Up/Down markets on Polymarket
-- resolution source described by Polymarket market metadata as the Chainlink
-  BTC/USD stream or equivalent Chainlink BTC/USD oracle wording
+- markets whose resolution source is described in market metadata as Chainlink
+  BTC/USD or equivalent Chainlink BTC/USD oracle wording
 
-Recurring discovery should reuse the current deterministic Gamma-based resolver:
+Recurring discovery should reuse the existing deterministic Gamma-based
+resolver:
 
-- query-driven discovery with `query="btc"`
-- interval `15m`
-- deterministic ranking across active, open, stronger query match, and recency
-- explicit outcome and token alignment from normalized market outputs
+- `query="btc"`
+- `interval="15m"`
+- existing active/open/match-score/recency ranking
+- existing outcome-to-token alignment from normalized market outputs
 
-Each future ladder instance should resolve one market window identity with at
+Each future strategy window should resolve a normalized market identity with at
 least:
 
 - `window_id`
@@ -51,37 +78,60 @@ least:
 - `question`
 - `token_ids`
 - `outcomes`
+- `window_open_time`
 - `window_start_at` when discoverable
 - `window_end_at` when discoverable
 
-`window_id` should be deterministic and derived from the resolved market window,
-preferably from `condition_id`, with market slug and planned boundary timestamps
-as secondary inputs when needed.
+`condition_id` is the primary input for deterministic per-window identity.
 
-## Resolution Assumptions
+## Resolution Assumptions and Boundary Recording Rules
 
-### Provisional market-resolution model
+### Provisional resolution model
 
-The provisional assumption for this track is:
+The provisional operational assumption for this track is:
 
 - the market resolves by comparing a beginning-of-window BTC/USD reference price
   with an end-of-window BTC/USD reference price
-- `UP` wins when the end price is greater than the beginning price
-- `DOWN` wins when the end price is less than the beginning price
+- `UP` wins when the end value is greater than the beginning value
+- `DOWN` wins when the end value is less than the beginning value
 
-This model is intentionally provisional and must be validated empirically against
-real Polymarket recurring BTC 15m markets and their final resolution behavior.
+This assumption must be validated empirically against real BTC 15-minute
+Polymarket recurring markets before any guarded-live promotion.
 
-### Boundary observations
+### Required Chainlink boundary observations
 
-Future implementation must record both boundary phases:
+For every candidate market window, the future recorder must capture four
+boundary observations from the Chainlink RTDS stream:
 
-- start boundary observations near the opening of the 15-minute window
-- end boundary observations near the closing of the 15-minute window
+- last accepted Chainlink tick at or before the scheduled start
+- first accepted Chainlink tick after the scheduled start
+- last accepted Chainlink tick at or before the scheduled end
+- first accepted Chainlink tick after the scheduled end
 
-The system should persist raw candidate observations and a separate canonical
-boundary decision. The canonical decision must not overwrite or discard the raw
-window of candidate observations.
+These observations must be stored even when the window is later skipped.
+
+### Operational boundary proxies for v1
+
+The v1 operational start anchor is:
+
+- `start_price_proxy_v1`
+- defined as the arithmetic midpoint of the selected pre-start and post-start
+  Chainlink ticks
+
+The v1 replay and reconciliation end anchor is:
+
+- `end_price_proxy_v1`
+- defined as the arithmetic midpoint of the selected pre-end and post-end
+  Chainlink ticks
+
+Rules:
+
+- if either required start-side Chainlink tick is missing, the window is
+  skipped
+- if either required start-side Chainlink tick is stale beyond configured
+  tolerance, the window is skipped
+- `end_price_proxy_v1` is required for replay, post-window evaluation, and
+  reconciliation, not for minute-5 side selection
 
 ### Planned boundary persistence
 
@@ -94,277 +144,323 @@ Each raw observation should include at least:
 - `window_id`
 - `condition_id`
 - `market_slug`
-- `boundary_kind` with `start` or `end`
+- `boundary_kind`
 - `captured_at`
 - `source_timestamp`
 - `source_value`
-- `source` fixed to `chainlink_rtds`
+- `source` with `chainlink_rtds`
 - `session_id`
-- `selected` boolean
+- `accepted`
+- `selected`
 - `selection_status`
-- `notes` when useful for explainability
+- `notes`
 
 Future canonical boundary decisions should be persisted under:
 
 - `.pm/state/btc-15m-chainlink-boundary-decisions.json`
 
-Each canonical decision should summarize the selected start and end observations,
-selection rationale, and any ambiguity or fallback conditions.
+Each canonical decision should summarize:
 
-### What remains uncertain
+- selected pre-start and post-start ticks
+- selected pre-end and post-end ticks
+- `start_price_proxy_v1`
+- `end_price_proxy_v1`
+- selection rationale
+- ambiguity or fallback notes
 
-The following must stay explicit open validation items:
+### Unresolved empirical assumptions
 
-- exact start-boundary inclusion rule
-- exact end-boundary inclusion rule
-- acceptable timestamp granularity and clock skew tolerance
-- whether Chainlink RTDS is a sufficient proxy for final settlement behavior
-- whether Polymarket uses a rounded, truncated, or otherwise transformed
-  comparison value
-- whether equal start and end values imply a special tie rule or a deterministic
-  `DOWN`/`UP` convention
+The following remain unresolved and must be validated empirically:
+
+- exact inclusion rule around the scheduled start timestamp
+- exact inclusion rule around the scheduled end timestamp
+- acceptable source timestamp granularity
+- acceptable clock skew and capture tolerance
+- whether RTDS Chainlink is a sufficient proxy for final settlement behavior
+- whether Polymarket applies rounding, truncation, or other transformations
+- exact tie behavior when start and end values are equal
 
 ## Data Sources
 
-The planned strategy depends on these sources:
+The planned strategy depends on these existing or planned inputs:
 
-- Polymarket recurring market discovery via the current Gamma-based recurring
-  resolver
-- Polymarket public CLOB data for midpoint, spread, best bid, best ask, and
-  optional book-depth context
-- Polymarket RTDS Chainlink BTC/USD stream as the v1 boundary and directional
-  reference source
-- optional future direct Chainlink Data Streams integration only as a later
-  validation path, not as a v1 dependency
+- existing Polymarket recurring market resolver
+- existing public CLOB reads for best bid, best ask, midpoint, spread, and
+  lightweight book context
+- existing RTDS Chainlink BTC/USD stream
+- existing RTDS Binance BTC price stream as a second directional confirmation
+  feed
+- optional future Binance depth and volume integration as a later enhancement
+  only
 
 Rules:
 
-- market identification remains Gamma-search-based and deterministic
-- live entry evaluation uses public CLOB data only
-- boundary capture must be sourced from Chainlink RTDS in the first evaluation
-  phase
-- any future direct Chainlink integration is additive validation, not a blocker
-  for recorder or paper-eval v1
+- recurring market identification remains Gamma-search-based and deterministic
+- Chainlink is the start-price anchor in v1
+- Binance is used for directional confirmation in v1, not as the primary start
+  anchor
+- current generic `pm stream recurring` is not the future full recorder
+  contract, because the strategy needs separate Chainlink and Binance capture,
+  boundary-state persistence, and per-window microstructure recording
 
 ## Strategy Mechanics
 
-### Core shape
+### Observation timeline
 
-This strategy is a one-side-per-market momentum ladder anchored to the recorded
-start boundary price.
+The future runtime should observe each market window from the start of the
+window. The decision and ladder timeline is:
 
-Definitions:
+- minute 0 to minute 5: observe only
+- minute 5: lock one direction or skip
+- minute 5 inclusive to minute 10 exclusive: place and maintain the ladder in
+  paper mode
+- minute 10 onward: no new ladder placement
+- expiry: hold any filled position to resolution
 
-- `start_price` = canonical selected start boundary Chainlink BTC/USD value
-- `current_price` = latest accepted Chainlink BTC/USD value during the window
-- `displacement_pct` = `(current_price - start_price) / start_price * 100`
+### Direction lock at minute 5
 
-The direction rule is:
+Direction is chosen once, at minute 5, and never changed afterward in v1.
 
-- positive displacement activates the `UP` ladder
-- negative displacement activates the `DOWN` ladder
-- zero or near-zero displacement activates neither ladder
+Definitions at the minute-5 decision point:
 
-Only one direction may be active for a given market window. Once one direction
-is active, the strategy does not flip to the opposite side in v1.
+- `chainlink_decision_price` = latest accepted Chainlink BTC/USD value
+- `binance_decision_price` = latest accepted Binance BTC price value
+- `start_price_proxy_v1` = midpoint of the selected pre-start and post-start
+  Chainlink ticks
 
-### Entry ladder
+Direction rule:
 
-The ladder is triggered by monotonic displacement thresholds measured from the
-recorded `start_price`.
+- choose `UP` only if both `chainlink_decision_price` and
+  `binance_decision_price` are above `start_price_proxy_v1`
+- choose `DOWN` only if both are below `start_price_proxy_v1`
+- otherwise `SKIP`
 
-Each rung should be parameterized by:
+Equality, mixed direction, or missing decision prices all resolve to `SKIP` in
+v1.
 
-- `trigger_displacement_pct`
-- `notional_usdc`
-- `max_slippage_pct`
-- optional `min_confidence_flags`
+### Ladder placement window
 
-Rungs must be strictly ordered from lowest trigger to highest trigger. A rung is
-eligible only when:
+Only one direction may be active for a market window. Once selected:
 
-- its trigger threshold has been crossed
-- all prior enabled rungs for the same side have either been filled or skipped
-- the market remains active and open
-- entry cutoff has not passed
-- spread, drift, and stale-data guards all pass
+- the ladder may be placed only between minute 5 inclusive and minute 10
+  exclusive
+- no ladder orders are created before minute 5
+- no new ladder orders are created at or after minute 10
 
-### Side and order expression
+### Ladder shape
 
-V1 standardizes on buying the explicit matching outcome token:
+V1 uses a fixed three-rung ladder of literal outcome-token bid levels:
 
-- buy `UP` when the positive ladder is active
-- buy `DOWN` when the negative ladder is active
+- `0.30`
+- `0.20`
+- `0.10`
 
-V1 should not mix equivalent synthetic expressions such as selling the opposite
-side. The first paper-evaluation phase must keep the execution expression simple
-and auditable.
+The ladder is buy-only on the matching outcome token:
 
-### Monitoring window
+- buy `UP` when the locked direction is `UP`
+- buy `DOWN` when the locked direction is `DOWN`
 
-The future runtime should monitor a market window from shortly after the selected
-start boundary until an entry cutoff before the scheduled window end.
+No equivalent synthetic short expression is used in v1.
 
-The spec should treat these as future parameters:
+Unfilled rungs expire from the paper model after minute 10. Filled positions
+are held to expiry.
 
-- initial guard delay after the selected start boundary
-- continuous monitoring cadence or event-driven evaluation model
-- hard entry cutoff before expiry
+### V1 bankroll and rung sizing
 
-### Exit behavior
+Bankroll context for the initial paper strategy is:
 
-V1 is hold-to-expiry only:
+- `1000 USDC`
+
+Recommended v1 paper per-market risk budget is:
+
+- `50 USDC`
+
+Starting paper rung allocation is fixed at:
+
+- `20 USDC` at `0.30`
+- `15 USDC` at `0.20`
+- `15 USDC` at `0.10`
+
+This split is a starting default only and should remain a review item after
+replay and paper evaluation.
+
+### Exit behavior and future analytics
+
+V1 exit behavior is hold-to-expiry only:
 
 - no take-profit
 - no stop-loss
-- no intra-window hedge
+- no hedge
 - no side flip
 - no early close logic
 
-Any future take-profit or early-exit extension must be a separate strategy
-evolution, not hidden inside the initial ladder implementation.
+Even though v1 holds to expiry, the recorder and replay layer must capture:
+
+- MFE
+- MAE
+- max favorable price path after first fill
+
+These metrics are required so future take-profit work can be evaluated without
+redefining the strategy history format.
 
 ## Risk Controls
 
-The future implementation must include explicit guards for:
+The future implementation must enforce these v1 controls:
 
-- max size per rung
-- max total size per market window
-- max concurrent BTC 15m markets
-- spread guard
-- drift guard between CLOB entry price and Chainlink reference
-- stale-data guard for Chainlink RTDS updates
-- stale-data guard for public CLOB observations
-- skip on incomplete or ambiguous boundary capture
-- skip on incomplete outcome or token mapping
-- skip when recurring market resolution is no longer active or open
+- one market at a time
+- per-market paper risk budget of `50 USDC` in a `1000 USDC` bankroll context
+- stale-data guards for Chainlink ticks
+- stale-data guards for Binance ticks
+- stale-data guards for book context
+- spread guard from public CLOB context
+- minimum top-of-book liquidity guard
+- skip on incomplete boundary capture
+- skip on unresolved recurring market mapping
+- skip on inactive or closed market
+- skip on stale oracle data
+- skip on stale book data
+- skip on excessive spread
+- skip on insufficient top-of-book liquidity
+- skip on mixed Chainlink and Binance direction at minute 5
 
-The spec should keep these as configurable policy parameters:
+The spec intentionally does not define live capital allocation behavior yet.
 
-- `max_size_usdc_per_rung`
-- `max_size_usdc_per_market`
-- `max_concurrent_markets`
-- `max_entry_spread_pct`
-- `max_chainlink_clob_drift_pct`
-- `max_chainlink_staleness_seconds`
-- `max_clob_staleness_seconds`
-- `entry_cutoff_seconds_before_expiry`
+## Recording Requirements
 
-Exact numeric values remain provisional until replay and paper evaluation produce
-evidence for tuning.
+The future recorder must persist one per-window strategy record under:
+
+- `.pm/state/btc-15m-chainlink-windows.jsonl`
+
+Each per-window record should include at least:
+
+- market open time
+- normalized window start and end times
+- selected recurring market metadata
+- `window_id`
+- `condition_id`
+- `market_slug`
+- `token_ids`
+- `outcomes`
+- all accepted Chainlink ticks used by the strategy
+- all accepted Binance ticks used by the strategy
+- selected pre-start and post-start Chainlink ticks
+- selected pre-end and post-end Chainlink ticks
+- `start_price_proxy_v1`
+- `end_price_proxy_v1` when available
+- minute-5 direction decision
+- decision timestamp
+- ladder placement attempts
+- book context around each rung
+- simulated fills
+- skip reasons
+- final market resolution result
+- replay outcome summary
+- MFE, MAE, and max favorable path metrics
+
+The previously chosen planned artifacts remain:
+
+- `.pm/state/btc-15m-chainlink-boundary-observations.jsonl`
+- `.pm/state/btc-15m-chainlink-boundary-decisions.json`
+- `.pm/state/btc-15m-chainlink-replays.json`
+
+These artifacts are planned only. The current branch does not create them yet.
 
 ## Testing and Promotion Plan
 
 ### Forward recorder
 
-The first implementation step after this spec should be a forward recorder that:
+The first implementation step after this spec should be a forward recorder run
+for:
 
-- resolves the active BTC 15m recurring market
-- records candidate start and end Chainlink boundary observations
-- records enough market metadata to replay a window later
-- does not place orders
+- `2 days`
+
+It should:
+
+- resolve active BTC 15m recurring markets
+- capture Chainlink and Binance ticks throughout the window
+- capture the required pre/post boundary ticks
+- capture minute-5 decision context
+- capture minute 5 to minute 10 book context and ladder attempts
+- avoid all live execution behavior
 
 ### Replay harness
 
-The next step should be a replay harness that consumes:
+The next step should be a replay harness over recorded windows. Replay should
+reconstruct:
 
-- recorded boundary observations
-- canonical boundary decisions
-- recorded market metadata
-- recorded CLOB context needed for entry simulation
-
-Replay should reconstruct:
-
-- which side would have become active
-- which ladder rungs would have triggered
-- which entries would have passed or failed guards
-- hold-to-expiry PnL under paper assumptions
-
-Future replay artifacts should be persisted under:
-
-- `.pm/state/btc-15m-chainlink-replays.json`
+- resolved market window identity
+- `start_price_proxy_v1`
+- minute-5 direction decision
+- ladder placement and simulated fill outcomes
+- hold-to-expiry paper result
+- MFE, MAE, and favorable path metrics
 
 ### Paper evaluation
 
 Paper evaluation should run through the existing strategy, risk, and execution
-stack rather than inventing a parallel path.
+architecture rather than inventing a parallel execution path.
 
-The paper phase should prove:
+Paper evaluation should answer:
 
-- boundary capture is reliable
-- recurring market resolution is reliable
-- the trigger logic is explainable
-- fills can be approximated with reasonable CLOB assumptions
-- the ladder does not violate the strategy/risk/execution boundary
+- whether the boundary capture is reliable enough
+- whether minute-5 direction locking is explainable
+- whether fixed ladder levels are fillable often enough to study
+- whether skip conditions are firing for the right reasons
+- whether the strategy remains interpretable and operator-safe
 
-### Promotion criteria for guarded live mode
+### Criteria for guarded live consideration
 
-Guarded live mode should remain deferred until all of these are acceptable:
+Guarded live work should remain deferred until all of the following look
+acceptable:
 
-- stable start and end boundary capture quality
-- consistent canonical boundary selection
-- replay results match forward-recorded outcomes closely enough
-- paper-eval slippage and drift assumptions are credible
-- risk guards prevent pathological ladder accumulation
-- operator review surfaces remain clear and explainable
-
-## Planned Local State
-
-The future strategy track should use these planned artifact names:
-
-- strategy name: `btc_15m_chainlink_ladder`
-- recorder artifact:
-  `.pm/state/btc-15m-chainlink-boundary-observations.jsonl`
-- canonical boundary artifact:
-  `.pm/state/btc-15m-chainlink-boundary-decisions.json`
-- replay artifact:
-  `.pm/state/btc-15m-chainlink-replays.json`
-
-These are planned identifiers only. The current branch does not create them yet.
+- stable 2-day boundary capture
+- low ambiguity in start and end proxy selection
+- replay consistency against recorded windows
+- acceptable paper slippage and fill assumptions
+- clear skip-reason explainability
+- stable risk-guard behavior
 
 ## Planned Repository Changes
 
-The future implementation will require:
+Future implementation will require:
 
 - a strategy module for `btc_15m_chainlink_ladder`
+- recorder state for per-window strategy records
 - recorder state for raw and canonical Chainlink boundary observations
-- replay state and replay-oriented test fixtures
-- paper execution integration through the existing guarded strategy-dispatch and
-  execution stack
-- explicit operator-facing reporting for ladder decisions, skipped rungs, and
-  hold-to-expiry paper outcomes
+- replay state and replay fixtures
+- paper execution integration through the existing guarded
+  strategy/risk/execution path
 
-This strategy track does not require:
+This strategy track does not require in v1:
 
 - a daemon
-- a background scheduler in v1
-- direct live automation in the first implementation step
+- a background scheduler
 - new secret-handling behavior
+- direct live automation in the first implementation step
 
 ## Open Questions
 
-The following parameters are intentionally unresolved and must be validated
-before runtime implementation is considered complete:
+The following assumptions remain explicitly unresolved:
 
-- canonical boundary selection rule near the exact start and end timestamps
-- acceptable timestamp tolerance and source-clock skew window
-- exact rung thresholds
-- rung sizing schedule
-- maximum number of enabled rungs
-- entry cutoff timing before expiry
-- whether entry trigger checks should key off best ask, midpoint, or another
-  market metric
-- minimum observation quality needed before a rung can trigger
-- when direct Chainlink validation becomes mandatory instead of optional
-- whether any tie, rounding, or settlement-edge behavior requires special-case
-  paper treatment
+- canonical boundary selection rule around the exact scheduled timestamps
+- settlement-equivalence of RTDS Chainlink vs final market resolution
+- whether Binance should eventually get its own start proxy instead of using the
+  Chainlink anchor
+- whether `0.30/0.20/0.10` should remain absolute price levels across all BTC
+  15-minute windows
+- whether rung allocation should remain `20/15/15` or be rebalanced after
+  replay
+- whether future take-profit should key off midpoint, best bid, or realized fill
+  opportunity
+- whether direct Chainlink or Binance depth and volume integration become
+  mandatory before guarded live
 
 ## Non-Goals in This Phase
 
 - no runtime strategy code
-- no daemon or background loop
-- no auto-trading
 - no new CLI commands
-- no new secret-handling model
-- no implicit claim that current RTDS Chainlink reads are already settlement
-  equivalent
+- no daemon or background loop
+- no scheduler
+- no auto-trading
+- no secret-handling changes
+- no claim that the strategy is already implemented
