@@ -378,24 +378,35 @@ Rules:
 Local-first operator workflow and session commands.
 
 ```text
+pm ops bootstrap [--json]
 pm ops queue [--limit <n>] [--json]
 pm ops session start [--label <text>] [--json]
 pm ops session end [--json]
 pm ops review next [--json]
 pm ops dispatch approved [--limit <n>] [--paper] [--json]
+pm ops cycle queue [--limit <n>] [--json]
+pm ops cycle approved [--limit <n>] [--paper] [--live] [--confirm] [--json]
+pm ops cycle report [--json]
 pm ops report [--json]
 ```
 
 Rules:
 
+- `bootstrap` is a local idempotent readiness initializer
+- `bootstrap` initializes default risk policies when missing and ensures one active ops session exists
 - `queue` combines review work and dispatch-ready work into one deterministic list
 - review ordering is unreviewed `WAIT` first, then unreviewed `OBSERVE`, both newest-first
 - dispatch-ready ordering follows the guarded strategy dispatch rules and stays paper-first
 - `review next` returns the next reviewable item or `queue_empty=true`
 - `dispatch approved` is paper-only in this phase and delegates to the existing guarded strategy dispatch bridge
+- `cycle queue` evaluates all seeded strategies once in deterministic registry order
+- `cycle queue --limit` is the per-strategy evaluation limit, not a cap on the number of strategies
+- `cycle approved` is a bounded manual dispatch batch over already approved and dispatch-eligible intents
+- `cycle approved` is paper-default and requires both `--live` and `--confirm` for live dispatch
+- `cycle report` is local-only and summarizes persisted queue, dispatch, event, and reconciliation state without triggering a fresh reconcile call
 - sessions are optional but, when used, allow only one active session at a time
 - `report` prefers the active session scope, then the latest completed session, then a global local snapshot
-- `ops` is an operator UX layer only; it does not add a new execution path
+- `ops` is an operator UX layer only; it does not add a daemon, scheduler, or new execution path
 
 ## Human Output Direction
 
@@ -403,6 +414,7 @@ The current branch now uses stronger Rich-based human-readable tables for key op
 
 - `pm status`
 - `pm ops queue`
+- `pm ops cycle report`
 - `pm strategy intents`
 - `pm strategy executions`
 - `pm exec events`
@@ -445,6 +457,7 @@ Rules:
 - deterministic append order where applicable
 - validation failures must surface as explicit state errors
 - the current execution phase adds no local auth cache or API-key cache
+- the bounded runbook slice reuses existing risk, session, strategy, dispatch, event, and reconciliation files instead of adding a scheduler-specific state file
 
 ## Partial Error Handling
 
@@ -470,6 +483,7 @@ Current partial-result flows include:
 - `pm strategy review`
 - `pm strategy dispatch`
 - `pm strategy dispatch pending`
+- `pm ops cycle queue`
 
 Structured partial errors should look like:
 

@@ -4,11 +4,15 @@ from __future__ import annotations
 
 from pydantic import BaseModel, Field
 
-from pm.execution.models import CapturedExecutionEvent
+from pm.execution.models import (
+    CapturedExecutionEvent,
+    ExecutionReconciliationRecord,
+)
 from pm.strategy.models import (
     StrategyDispatchResponse,
     StrategyDispatchResultRecord,
     StrategyIntentView,
+    StrategySectionError,
 )
 
 
@@ -126,10 +130,43 @@ class OpsReviewNextResponse(BaseModel):
     item: OpsQueueItem | None = None
 
 
-class OpsDispatchApprovedResponse(BaseModel):
-    """Paper dispatch response for approved intents."""
+class OpsBootstrapResponse(BaseModel):
+    """Readiness response for one local ops bootstrap pass."""
+
+    ready: bool
+    risk_initialized: bool
+    risk_policies_persisted: bool
+    session_started: bool
+    active_session: OpsSessionView | None = None
+    status: OpsStatusResponse
+
+
+class OpsCycleQueueItem(BaseModel):
+    """Per-strategy summary for one bounded queue-evaluation pass."""
+
+    strategy_name: str
+    strategy_type: str
+    total_new_intents: int = 0
+    total_errors: int = 0
+    errors: list[StrategySectionError] = Field(default_factory=list)
+
+
+class OpsCycleQueueResponse(BaseModel):
+    """Aggregate response for one bounded queue-evaluation cycle."""
 
     active_session: OpsSessionView | None = None
+    limit_per_strategy: int
+    items: list[OpsCycleQueueItem] = Field(default_factory=list)
+    total_new_intents: int = 0
+    queue_counts: OpsQueueCounts = Field(default_factory=OpsQueueCounts)
+
+
+class OpsDispatchApprovedResponse(BaseModel):
+    """Bounded dispatch response for approved intents."""
+
+    active_session: OpsSessionView | None = None
+    mode: str = "paper"
+    noop: bool = False
     items: list[StrategyDispatchResponse] = Field(default_factory=list)
     total_candidates: int = 0
     total_dispatched: int = 0
@@ -146,3 +183,17 @@ class OpsReportResponse(BaseModel):
         default_factory=list
     )
     recent_execution_events: list[CapturedExecutionEvent] = Field(default_factory=list)
+
+
+class OpsCycleReportResponse(BaseModel):
+    """Current local runbook summary for one-cycle operator workflows."""
+
+    session: OpsSessionView | None = None
+    queue_counts: OpsQueueCounts = Field(default_factory=OpsQueueCounts)
+    approved_intent_count: int = 0
+    dispatch_ready_intent_count: int = 0
+    recent_strategy_executions: list[StrategyDispatchResultRecord] = Field(
+        default_factory=list
+    )
+    recent_execution_events: list[CapturedExecutionEvent] = Field(default_factory=list)
+    latest_reconciliation: ExecutionReconciliationRecord | None = None

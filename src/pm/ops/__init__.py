@@ -1,6 +1,10 @@
 """Local-first operator control plane and workflow session package."""
 
 from pm.ops.models import (
+    OpsBootstrapResponse,
+    OpsCycleQueueItem,
+    OpsCycleQueueResponse,
+    OpsCycleReportResponse,
     OpsDispatchApprovedResponse,
     OpsLatestActivity,
     OpsQueueCounts,
@@ -20,6 +24,10 @@ from pm.ops.service import OpsService, OpsValidationError
 from pm.ops.state import OpsSessionNotFoundError, OpsStateError, OpsStateService
 
 __all__ = [
+    "OpsBootstrapResponse",
+    "OpsCycleQueueItem",
+    "OpsCycleQueueResponse",
+    "OpsCycleReportResponse",
     "OpsDispatchApprovedResponse",
     "OpsLatestActivity",
     "OpsQueueCounts",

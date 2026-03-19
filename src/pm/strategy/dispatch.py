@@ -232,8 +232,9 @@ class StrategyDispatchService:
         self,
         *,
         limit: int = DEFAULT_LIMIT,
+        live: bool = False,
     ) -> StrategyDispatchPendingResponse:
-        """Paper-dispatch newest approved and undispatched eligible intents."""
+        """Dispatch newest approved and undispatched eligible intents."""
         if limit < 1:
             raise StrategyDispatchValidationError("Limit must be greater than zero.")
 
@@ -250,7 +251,7 @@ class StrategyDispatchService:
                 continue
             selected.append(intent.intent_id)
 
-        items = [self.dispatch_intent(intent_id, live=False) for intent_id in selected]
+        items = [self.dispatch_intent(intent_id, live=live) for intent_id in selected]
         dispatched = sum(1 for item in items if item.execution.decision in NON_SKIP_DECISIONS)
         skipped = sum(1 for item in items if item.execution.decision == "SKIP")
         return StrategyDispatchPendingResponse(

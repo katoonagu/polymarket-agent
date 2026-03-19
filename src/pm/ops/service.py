@@ -9,6 +9,10 @@ from uuid import uuid4
 from pm.execution import ExecutionStateService
 from pm.execution.models import CapturedExecutionEvent
 from pm.ops.models import (
+    OpsBootstrapResponse,
+    OpsCycleQueueItem,
+    OpsCycleQueueResponse,
+    OpsCycleReportResponse,
     OpsDispatchApprovedResponse,
     OpsLatestActivity,
     OpsQueueCounts,
@@ -31,6 +35,7 @@ from pm.strategy.models import (
     StrategyDispatchResultRecord,
     StrategyIntentView,
 )
+from pm.strategy.service import StrategyService
 from pm.strategy.state import StrategyStateService
 
 DEFAULT_LIMIT = 20
@@ -62,12 +67,34 @@ class OpsService:
         risk_service: RiskPolicyService | None = None,
         execution_state: ExecutionStateService | None = None,
         dispatch_service: StrategyDispatchService | None = None,
+        strategy_service: StrategyService | None = None,
     ) -> None:
         self._ops_state = ops_state or OpsStateService()
         self._strategy_state = strategy_state or StrategyStateService()
         self._risk_service = risk_service or RiskPolicyService()
         self._execution_state = execution_state or ExecutionStateService()
         self._dispatch_service = dispatch_service or StrategyDispatchService()
+        self._strategy_service = strategy_service or StrategyService(
+            state=self._strategy_state
+        )
+
+    def bootstrap(self) -> OpsBootstrapResponse:
+        """Initialize local risk defaults and ensure one active ops session exists."""
+        risk_init = self._risk_service.init_defaults()
+        active_session = self._ops_state.get_active_session()
+        session_started = False
+        if active_session is None:
+            active_session = self.start_session().session
+            session_started = True
+        status = self.status()
+        return OpsBootstrapResponse(
+            ready=status.risk_policies_persisted and status.active_session is not None,
+            risk_initialized=risk_init.initialized,
+            risk_policies_persisted=risk_init.persisted,
+            session_started=session_started,
+            active_session=active_session,
+            status=status,
+        )
 
     def status(self) -> OpsStatusResponse:
         """Return a compact local-first operator summary."""
@@ -166,17 +193,56 @@ class OpsService:
             return OpsReviewNextResponse(queue_empty=True, item=None)
         return OpsReviewNextResponse(queue_empty=False, item=review_items[0])
 
+    def cycle_queue(self, *, limit: int = DEFAULT_LIMIT) -> OpsCycleQueueResponse:
+        """Run one bounded evaluation pass across the seeded strategy catalog."""
+        if limit < 1:
+            raise OpsValidationError("Limit must be greater than zero.")
+
+        items: list[OpsCycleQueueItem] = []
+        total_new_intents = 0
+        for strategy in self._strategy_service.list_strategies().items:
+            result = self._strategy_service.evaluate_strategy(strategy.name, limit=limit)
+            items.append(
+                OpsCycleQueueItem(
+                    strategy_name=result.strategy.name,
+                    strategy_type=result.strategy.strategy_type,
+                    total_new_intents=result.total,
+                    total_errors=len(result.errors),
+                    errors=result.errors,
+                )
+            )
+            total_new_intents += result.total
+
+        return OpsCycleQueueResponse(
+            active_session=self._ops_state.get_active_session(),
+            limit_per_strategy=limit,
+            items=items,
+            total_new_intents=total_new_intents,
+            queue_counts=self._queue_state().counts,
+        )
+
     def dispatch_approved(
         self,
         *,
         limit: int = DEFAULT_LIMIT,
     ) -> OpsDispatchApprovedResponse:
         """Paper-dispatch approved intents through the existing bridge."""
+        return self.cycle_approved(limit=limit, live=False)
+
+    def cycle_approved(
+        self,
+        *,
+        limit: int = DEFAULT_LIMIT,
+        live: bool = False,
+    ) -> OpsDispatchApprovedResponse:
+        """Run one bounded paper or live dispatch cycle for approved intents."""
         if limit < 1:
             raise OpsValidationError("Limit must be greater than zero.")
-        result = self._dispatch_service.dispatch_pending(limit=limit)
+        result = self._dispatch_service.dispatch_pending(limit=limit, live=live)
         return OpsDispatchApprovedResponse(
             active_session=self._ops_state.get_active_session(),
+            mode="live" if live else "paper",
+            noop=result.total_candidates == 0,
             items=result.items,
             total_candidates=result.total_candidates,
             total_dispatched=result.total_dispatched,
@@ -217,6 +283,31 @@ class OpsService:
             summary=summary,
             recent_strategy_executions=recent_dispatches,
             recent_execution_events=recent_events,
+        )
+
+    def cycle_report(self) -> OpsCycleReportResponse:
+        """Return a local-only runbook summary without live reads or reconcile calls."""
+        queue_state = self._queue_state()
+        dispatches = list(reversed(self._strategy_state.list_dispatch_results()))[
+            :RECENT_ITEMS_LIMIT
+        ]
+        execution_events = list(reversed(self._execution_state.list_execution_events()))[
+            :RECENT_ITEMS_LIMIT
+        ]
+        reconciliations = self._execution_state.list_reconciliations()
+        approved_intent_count = sum(
+            1
+            for item in self._intent_views_newest_first()
+            if item.current_decision == "APPROVE"
+        )
+        return OpsCycleReportResponse(
+            session=self._active_or_latest_session(),
+            queue_counts=queue_state.counts,
+            approved_intent_count=approved_intent_count,
+            dispatch_ready_intent_count=queue_state.counts.dispatch_total,
+            recent_strategy_executions=dispatches,
+            recent_execution_events=execution_events,
+            latest_reconciliation=reconciliations[-1] if reconciliations else None,
         )
 
     def _queue_state(self) -> QueueState:
@@ -282,6 +373,12 @@ class OpsService:
             self._build_intent_view(intent)
             for intent in reversed(self._strategy_state.list_intents())
         ]
+
+    def _active_or_latest_session(self) -> OpsSessionView | None:
+        return (
+            self._ops_state.get_active_session()
+            or self._ops_state.get_latest_completed_session()
+        )
 
     def _build_intent_view(self, intent: StrategyCandidateIntent) -> StrategyIntentView:
         decisions = self._strategy_state.list_decisions(intent.intent_id)

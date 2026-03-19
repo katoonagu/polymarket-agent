@@ -7,8 +7,16 @@ import json
 from typer.testing import CliRunner
 
 from pm.cli.app import app
-from pm.execution.models import CapturedExecutionEvent
+from pm.execution.models import (
+    CapturedExecutionEvent,
+    ExecutionReconciliationRecord,
+    ExecutionReconciliationSummary,
+)
 from pm.ops import (
+    OpsBootstrapResponse,
+    OpsCycleQueueItem,
+    OpsCycleQueueResponse,
+    OpsCycleReportResponse,
     OpsDispatchApprovedResponse,
     OpsLatestActivity,
     OpsQueueCounts,
@@ -71,7 +79,66 @@ def _session(active: bool = True) -> OpsSessionView:
     )
 
 
+def _recent_event() -> CapturedExecutionEvent:
+    return CapturedExecutionEvent(
+        session_id="session-1",
+        source="polymarket_user_ws",
+        captured_at="2026-03-19T00:02:00Z",
+        condition_id="0x" + ("a" * 64),
+        order_id="order-1",
+        asset_id="100",
+        event_type="UPDATE",
+        trade_status="MATCHED",
+        side="BUY",
+        price="0.55",
+        size="10",
+        status="OPEN",
+        timestamp=1710806400,
+    )
+
+
+def _dispatch_item(*, mode: str = "paper") -> StrategyDispatchResponse:
+    intent = _intent_view(intent_id="intent-dispatch", current_decision="APPROVE")
+    return StrategyDispatchResponse(
+        intent=intent,
+        link=StrategyExecutionLinkRecord(
+            execution_id="strategy_exec_123",
+            intent_id=intent.intent.intent_id,
+            strategy_name=intent.intent.strategy_name,
+            strategy_type=intent.intent.strategy_type,
+            mode=mode,
+            created_at="2026-03-19T00:01:00Z",
+            execution_plan_id="plan-123",
+            execution_result_id="result-123",
+        ),
+        execution=StrategyDispatchResultRecord(
+            execution_id="strategy_exec_123",
+            intent_id=intent.intent.intent_id,
+            strategy_name=intent.intent.strategy_name,
+            strategy_type=intent.intent.strategy_type,
+            mode=mode,
+            decision="WOULD_POST",
+            created_at="2026-03-19T00:01:00Z",
+            market_slug="btc-15m",
+            condition_id="0x" + ("a" * 64),
+            token_id="100",
+            outcome="Yes",
+            side="BUY",
+        ),
+    )
+
+
 class FakeOpsService:
+    def bootstrap(self) -> OpsBootstrapResponse:
+        return OpsBootstrapResponse(
+            ready=True,
+            risk_initialized=True,
+            risk_policies_persisted=True,
+            session_started=True,
+            active_session=_session(),
+            status=self.status(),
+        )
+
     def status(self) -> OpsStatusResponse:
         return OpsStatusResponse(
             active_session=_session(),
@@ -93,35 +160,8 @@ class FakeOpsService:
         return OpsVerboseStatusResponse(
             **self.status().model_dump(mode="json"),
             queue=self.queue(limit=10),
-            recent_strategy_executions=[
-                StrategyDispatchResultRecord(
-                    execution_id="strategy_exec_123",
-                    intent_id="intent-dispatch",
-                    strategy_name="wallet_shadow_copy",
-                    strategy_type="wallet_shadow_copy",
-                    mode="paper",
-                    decision="WOULD_POST",
-                    created_at="2026-03-19T00:01:00Z",
-                    market_slug="btc-15m",
-                )
-            ],
-            recent_execution_events=[
-                CapturedExecutionEvent(
-                    session_id="session-1",
-                    source="polymarket_user_ws",
-                    captured_at="2026-03-19T00:02:00Z",
-                    condition_id="0x" + ("a" * 64),
-                    order_id="order-1",
-                    asset_id="100",
-                    event_type="UPDATE",
-                    trade_status="MATCHED",
-                    side="BUY",
-                    price="0.55",
-                    size="10",
-                    status="OPEN",
-                    timestamp=1710806400,
-                )
-            ],
+            recent_strategy_executions=[_dispatch_item().execution],
+            recent_execution_events=[_recent_event()],
         )
 
     def queue(self, *, limit: int = 20) -> OpsQueueResponse:
@@ -136,10 +176,44 @@ class FakeOpsService:
                 OpsQueueItem(
                     kind="dispatch",
                     note="Approved intent is dispatch-ready.",
-                    intent=_intent_view(intent_id="intent-dispatch", current_decision="APPROVE"),
+                    intent=_intent_view(
+                        intent_id="intent-dispatch",
+                        current_decision="APPROVE",
+                    ),
                 ),
             ],
             counts=OpsQueueCounts(total=2, review_total=1, dispatch_total=1),
+        )
+
+    def cycle_queue(self, *, limit: int = 20) -> OpsCycleQueueResponse:
+        return OpsCycleQueueResponse(
+            active_session=_session(),
+            limit_per_strategy=limit,
+            items=[
+                OpsCycleQueueItem(
+                    strategy_name="wallet_shadow_copy",
+                    strategy_type="wallet_shadow_copy",
+                    total_new_intents=2,
+                    total_errors=0,
+                    errors=[],
+                ),
+                OpsCycleQueueItem(
+                    strategy_name="market_watch_reversion",
+                    strategy_type="market_watch_reversion",
+                    total_new_intents=0,
+                    total_errors=0,
+                    errors=[],
+                ),
+                OpsCycleQueueItem(
+                    strategy_name="recurring_crypto_interval_observe",
+                    strategy_type="recurring_crypto_interval_observe",
+                    total_new_intents=0,
+                    total_errors=1,
+                    errors=[],
+                ),
+            ],
+            total_new_intents=2,
+            queue_counts=OpsQueueCounts(total=2, review_total=1, dispatch_total=1),
         )
 
     def start_session(self, *, label: str | None = None) -> OpsSessionMutationResponse:
@@ -181,38 +255,20 @@ class FakeOpsService:
         )
 
     def dispatch_approved(self, *, limit: int = 20) -> OpsDispatchApprovedResponse:
+        return self.cycle_approved(limit=limit, live=False)
+
+    def cycle_approved(
+        self,
+        *,
+        limit: int = 20,
+        live: bool = False,
+    ) -> OpsDispatchApprovedResponse:
         _ = limit
-        intent = _intent_view(intent_id="intent-dispatch", current_decision="APPROVE")
-        item = StrategyDispatchResponse(
-            intent=intent,
-            link=StrategyExecutionLinkRecord(
-                execution_id="strategy_exec_123",
-                intent_id=intent.intent.intent_id,
-                strategy_name=intent.intent.strategy_name,
-                strategy_type=intent.intent.strategy_type,
-                mode="paper",
-                created_at="2026-03-19T00:01:00Z",
-                execution_plan_id="plan-123",
-                execution_result_id="result-123",
-            ),
-            execution=StrategyDispatchResultRecord(
-                execution_id="strategy_exec_123",
-                intent_id=intent.intent.intent_id,
-                strategy_name=intent.intent.strategy_name,
-                strategy_type=intent.intent.strategy_type,
-                mode="paper",
-                decision="WOULD_POST",
-                created_at="2026-03-19T00:01:00Z",
-                market_slug="btc-15m",
-                condition_id="0x" + ("a" * 64),
-                token_id="100",
-                outcome="Yes",
-                side="BUY",
-            ),
-        )
         return OpsDispatchApprovedResponse(
             active_session=_session(),
-            items=[item],
+            mode="live" if live else "paper",
+            noop=False,
+            items=[_dispatch_item(mode="live" if live else "paper")],
             total_candidates=1,
             total_dispatched=1,
             total_skipped=0,
@@ -234,18 +290,32 @@ class FakeOpsService:
                 skipped_count=0,
                 execution_event_count=2,
             ),
-            recent_strategy_executions=[
-                StrategyDispatchResultRecord(
-                    execution_id="strategy_exec_123",
-                    intent_id="intent-dispatch",
-                    strategy_name="wallet_shadow_copy",
-                    strategy_type="wallet_shadow_copy",
-                    mode="paper",
-                    decision="WOULD_POST",
-                    created_at="2026-03-19T00:01:00Z",
-                )
-            ],
+            recent_strategy_executions=[_dispatch_item().execution],
             recent_execution_events=[],
+        )
+
+    def cycle_report(self) -> OpsCycleReportResponse:
+        return OpsCycleReportResponse(
+            session=_session(active=False),
+            queue_counts=OpsQueueCounts(total=2, review_total=1, dispatch_total=1),
+            approved_intent_count=2,
+            dispatch_ready_intent_count=1,
+            recent_strategy_executions=[_dispatch_item().execution],
+            recent_execution_events=[_recent_event()],
+            latest_reconciliation=ExecutionReconciliationRecord(
+                reconciliation_id="recon_123",
+                created_at="2026-03-19T00:03:00Z",
+                summary=ExecutionReconciliationSummary(
+                    window_event_count=1,
+                    total_orders=1,
+                    consistent_open=1,
+                    consistent_closed=0,
+                    inconclusive=0,
+                    mismatch=0,
+                ),
+                items=[],
+                errors=[],
+            ),
         )
 
 
@@ -257,14 +327,25 @@ def test_root_help_lists_status_and_ops() -> None:
     assert "ops" in result.stdout
 
 
-def test_ops_help_lists_session_review_dispatch() -> None:
+def test_ops_help_lists_session_review_dispatch_cycle() -> None:
     result = runner.invoke(app, ["ops", "--help"])
 
     assert result.exit_code == 0
+    assert "bootstrap" in result.stdout
     assert "queue" in result.stdout
     assert "session" in result.stdout
     assert "review" in result.stdout
     assert "dispatch" in result.stdout
+    assert "cycle" in result.stdout
+    assert "report" in result.stdout
+
+
+def test_ops_cycle_help_lists_queue_approved_report() -> None:
+    result = runner.invoke(app, ["ops", "cycle", "--help"])
+
+    assert result.exit_code == 0
+    assert "queue" in result.stdout
+    assert "approved" in result.stdout
     assert "report" in result.stdout
 
 
@@ -272,7 +353,12 @@ def test_status_and_ops_json_commands(monkeypatch) -> None:
     monkeypatch.setattr("pm.cli.ops.OpsService", FakeOpsService)
 
     status_result = runner.invoke(app, ["status", "--json"])
+    bootstrap_result = runner.invoke(app, ["ops", "bootstrap", "--json"])
     queue_result = runner.invoke(app, ["ops", "queue", "--limit", "5", "--json"])
+    cycle_queue_result = runner.invoke(
+        app,
+        ["ops", "cycle", "queue", "--limit", "5", "--json"],
+    )
     start_result = runner.invoke(
         app,
         ["ops", "session", "start", "--label", "desk", "--json"],
@@ -283,13 +369,24 @@ def test_status_and_ops_json_commands(monkeypatch) -> None:
         app,
         ["ops", "dispatch", "approved", "--limit", "5", "--json"],
     )
+    cycle_approved_result = runner.invoke(
+        app,
+        ["ops", "cycle", "approved", "--limit", "5", "--json"],
+    )
     report_result = runner.invoke(app, ["ops", "report", "--json"])
+    cycle_report_result = runner.invoke(app, ["ops", "cycle", "report", "--json"])
 
     assert status_result.exit_code == 0
     assert json.loads(status_result.stdout)["pending_review_count"] == 2
 
+    assert bootstrap_result.exit_code == 0
+    assert json.loads(bootstrap_result.stdout)["ready"] is True
+
     assert queue_result.exit_code == 0
     assert json.loads(queue_result.stdout)["counts"]["dispatch_total"] == 1
+
+    assert cycle_queue_result.exit_code == 0
+    assert json.loads(cycle_queue_result.stdout)["total_new_intents"] == 2
 
     assert start_result.exit_code == 0
     assert json.loads(start_result.stdout)["action"] == "started"
@@ -306,8 +403,16 @@ def test_status_and_ops_json_commands(monkeypatch) -> None:
     assert dispatch_result.exit_code == 0
     assert json.loads(dispatch_result.stdout)["total_dispatched"] == 1
 
+    assert cycle_approved_result.exit_code == 0
+    assert json.loads(cycle_approved_result.stdout)["mode"] == "paper"
+
     assert report_result.exit_code == 0
     assert json.loads(report_result.stdout)["summary"]["manual_review_count"] == 2
+
+    assert cycle_report_result.exit_code == 0
+    assert json.loads(cycle_report_result.stdout)["latest_reconciliation"][
+        "reconciliation_id"
+    ] == "recon_123"
 
 
 def test_status_verbose_json(monkeypatch) -> None:
@@ -326,6 +431,8 @@ def test_status_queue_human_tables(monkeypatch) -> None:
 
     status_result = runner.invoke(app, ["status", "--verbose"])
     queue_result = runner.invoke(app, ["ops", "queue"])
+    cycle_queue_result = runner.invoke(app, ["ops", "cycle", "queue"])
+    cycle_report_result = runner.invoke(app, ["ops", "cycle", "report"])
 
     assert status_result.exit_code == 0
     assert "Operator Status" in status_result.stdout
@@ -336,6 +443,25 @@ def test_status_queue_human_tables(monkeypatch) -> None:
     assert "Operator Queue" in queue_result.stdout
     assert "Intent ID" in queue_result.stdout
 
+    assert cycle_queue_result.exit_code == 0
+    assert "Cycle Queue Summary" in cycle_queue_result.stdout
+    assert "Strategy Evaluation Pass" in cycle_queue_result.stdout
+
+    assert cycle_report_result.exit_code == 0
+    assert "Cycle Report" in cycle_report_result.stdout
+    assert "Latest Reconciliation" in cycle_report_result.stdout
+
+
+def test_cycle_approved_live_requires_confirm(monkeypatch) -> None:
+    monkeypatch.setattr("pm.cli.ops.OpsService", FakeOpsService)
+
+    result = runner.invoke(app, ["ops", "cycle", "approved", "--live", "--json"])
+
+    assert result.exit_code == 1
+    payload = json.loads(result.stdout)
+    assert payload["error"]["code"] == "invalid_argument"
+    assert payload["error"]["identifier"] == "confirm"
+
 
 def test_root_output_json_works_for_status(monkeypatch) -> None:
     monkeypatch.setattr("pm.cli.ops.OpsService", FakeOpsService)
@@ -344,3 +470,12 @@ def test_root_output_json_works_for_status(monkeypatch) -> None:
 
     assert result.exit_code == 0
     assert json.loads(result.stdout)["approved_dispatch_ready_count"] == 1
+
+
+def test_root_output_json_works_for_cycle_queue(monkeypatch) -> None:
+    monkeypatch.setattr("pm.cli.ops.OpsService", FakeOpsService)
+
+    result = runner.invoke(app, ["--output", "json", "ops", "cycle", "queue"])
+
+    assert result.exit_code == 0
+    assert json.loads(result.stdout)["limit_per_strategy"] == 20

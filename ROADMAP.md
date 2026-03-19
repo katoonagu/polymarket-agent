@@ -235,6 +235,7 @@ Define the controls and evidence required before considering any live trading im
 - Kill switch and risk stop requirements
 - Secret management expectations
 - Replay confidence and integration test thresholds
+- Bounded operator runbooks for bootstrap, queue, approved dispatch, and reporting
 - Operational runbooks for reconciliation, incident response, and rollback
 
 **Non-goals**
@@ -248,4 +249,5 @@ Define the controls and evidence required before considering any live trading im
 - Readiness requirements are documented and testable
 - Replay and integration coverage are strong enough to validate behavior changes
 - Secret handling and operator approval paths are explicit
+- Operator workflow commands exist for one-cycle bootstrap, queueing, approved dispatch, and reporting without adding a daemon
 - Live mode remains gated behind deliberate future implementation work

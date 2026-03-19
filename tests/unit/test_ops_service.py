@@ -6,8 +6,14 @@ from dataclasses import dataclass
 
 import pytest
 
-from pm.execution import CapturedExecutionEvent, ExecutionStateService
+from pm.execution import (
+    CapturedExecutionEvent,
+    ExecutionReconciliationRecord,
+    ExecutionReconciliationSummary,
+    ExecutionStateService,
+)
 from pm.ops import (
+    OpsCycleQueueResponse,
     OpsService,
     OpsSessionEventRecord,
     OpsSessionNotFoundError,
@@ -19,13 +25,17 @@ from pm.ops import (
 from pm.risk import RiskPolicyService, RiskStateService
 from pm.strategy import StrategyCandidateIntent, StrategyDecisionRecord, StrategyStateService
 from pm.strategy.models import (
+    StrategyDefinition,
     StrategyDispatchPendingResponse,
     StrategyDispatchResponse,
     StrategyDispatchResultRecord,
+    StrategyEvaluateResponse,
     StrategyExecutionLinkRecord,
     StrategyExecutionRequest,
     StrategyIntentView,
+    StrategyListResponse,
     StrategyReasonBlock,
+    StrategySectionError,
 )
 from pm.strategy.registry import StrategyRegistryService
 
@@ -41,7 +51,7 @@ class OpsFixture:
     ops_state: OpsStateService
 
 
-def _fixture(tmp_path, *, dispatch_service=None) -> OpsFixture:
+def _fixture(tmp_path, *, dispatch_service=None, strategy_service=None) -> OpsFixture:
     strategy_state = StrategyStateService(
         intents_path=tmp_path / "strategy-intents.json",
         decisions_path=tmp_path / "strategy-decisions.json",
@@ -67,6 +77,7 @@ def _fixture(tmp_path, *, dispatch_service=None) -> OpsFixture:
         risk_service=risk_service,
         execution_state=execution_state,
         dispatch_service=dispatch_service,
+        strategy_service=strategy_service,
     )
     return OpsFixture(
         service=service,
@@ -194,9 +205,16 @@ def _append_execution_event(fixture: OpsFixture, *, captured_at: str) -> None:
 class FakeStrategyDispatchService:
     def __init__(self) -> None:
         self.last_limit: int | None = None
+        self.last_live: bool | None = None
 
-    def dispatch_pending(self, *, limit: int = 20) -> StrategyDispatchPendingResponse:
+    def dispatch_pending(
+        self,
+        *,
+        limit: int = 20,
+        live: bool = False,
+    ) -> StrategyDispatchPendingResponse:
         self.last_limit = limit
+        self.last_live = live
         intent = StrategyCandidateIntent(
             intent_id="intent-approved",
             strategy_name="wallet_shadow_copy",
@@ -245,6 +263,79 @@ class FakeStrategyDispatchService:
             total_candidates=1,
             total_dispatched=1,
             total_skipped=0,
+        )
+
+
+class FakeNoopDispatchService:
+    def __init__(self) -> None:
+        self.last_limit: int | None = None
+        self.last_live: bool | None = None
+
+    def dispatch_pending(
+        self,
+        *,
+        limit: int = 20,
+        live: bool = False,
+    ) -> StrategyDispatchPendingResponse:
+        self.last_limit = limit
+        self.last_live = live
+        return StrategyDispatchPendingResponse()
+
+
+class FakeStrategyService:
+    def __init__(self) -> None:
+        self.calls: list[tuple[str, int]] = []
+
+    def list_strategies(self) -> StrategyListResponse:
+        return StrategyListResponse(
+            items=[
+                StrategyDefinition(
+                    name="wallet_shadow_copy",
+                    strategy_type="wallet_shadow_copy",
+                    description="wallet shadow",
+                ),
+                StrategyDefinition(
+                    name="market_watch_reversion",
+                    strategy_type="market_watch_reversion",
+                    description="market watch",
+                ),
+                StrategyDefinition(
+                    name="recurring_crypto_interval_observe",
+                    strategy_type="recurring_crypto_interval_observe",
+                    description="recurring",
+                ),
+            ],
+            total=3,
+        )
+
+    def evaluate_strategy(
+        self,
+        name: str,
+        *,
+        limit: int = 20,
+    ) -> StrategyEvaluateResponse:
+        self.calls.append((name, limit))
+        total = 2 if name == "wallet_shadow_copy" else 0
+        errors = (
+            [
+                StrategySectionError(
+                    section=f"{name}:stream",
+                    code="not_found",
+                    message="missing upstream context",
+                )
+            ]
+            if name == "recurring_crypto_interval_observe"
+            else []
+        )
+        return StrategyEvaluateResponse(
+            strategy=StrategyDefinition(
+                name=name,
+                strategy_type=name,
+                description=name,
+            ),
+            items=[],
+            total=total,
+            errors=errors,
         )
 
 
@@ -399,6 +490,69 @@ def test_session_start_end_single_active(tmp_path, monkeypatch) -> None:
         fixture.service.end_session()
 
 
+def test_bootstrap_initializes_risk_and_starts_session(tmp_path) -> None:
+    fixture = _fixture(tmp_path)
+
+    result = fixture.service.bootstrap()
+
+    assert result.ready is True
+    assert result.risk_initialized is True
+    assert result.risk_policies_persisted is True
+    assert result.session_started is True
+    assert result.active_session is not None
+    assert result.status.active_session is not None
+
+
+def test_bootstrap_reuses_active_session_and_existing_risk(tmp_path) -> None:
+    fixture = _fixture(tmp_path)
+    fixture.service._risk_service.init_defaults()
+    fixture.ops_state.append_session_event(
+        OpsSessionEventRecord(
+            event_type="start",
+            session_id="ops_session_existing",
+            occurred_at="2026-03-19T00:00:00Z",
+            started_at="2026-03-19T00:00:00Z",
+            label="desk",
+        )
+    )
+
+    result = fixture.service.bootstrap()
+
+    assert result.risk_initialized is False
+    assert result.session_started is False
+    assert result.active_session is not None
+    assert result.active_session.session_id == "ops_session_existing"
+
+
+def test_cycle_queue_evaluates_seeded_strategies_in_order(tmp_path) -> None:
+    fake_strategy = FakeStrategyService()
+    fixture = _fixture(tmp_path, strategy_service=fake_strategy)
+    _append_intent(
+        fixture,
+        intent_id="intent-approved",
+        created_at="2026-03-19T00:06:00Z",
+        decision="WAIT",
+        manual_decision="APPROVE",
+    )
+
+    result = fixture.service.cycle_queue(limit=7)
+
+    assert isinstance(result, OpsCycleQueueResponse)
+    assert fake_strategy.calls == [
+        ("wallet_shadow_copy", 7),
+        ("market_watch_reversion", 7),
+        ("recurring_crypto_interval_observe", 7),
+    ]
+    assert result.total_new_intents == 2
+    assert [item.strategy_name for item in result.items] == [
+        "wallet_shadow_copy",
+        "market_watch_reversion",
+        "recurring_crypto_interval_observe",
+    ]
+    assert result.items[-1].total_errors == 1
+    assert result.queue_counts.dispatch_total == 1
+
+
 def test_dispatch_approved_reuses_paper_dispatch(tmp_path) -> None:
     fake_dispatch = FakeStrategyDispatchService()
     fixture = _fixture(tmp_path, dispatch_service=fake_dispatch)
@@ -415,9 +569,37 @@ def test_dispatch_approved_reuses_paper_dispatch(tmp_path) -> None:
     result = fixture.service.dispatch_approved(limit=5)
 
     assert fake_dispatch.last_limit == 5
+    assert fake_dispatch.last_live is False
     assert result.active_session is not None
+    assert result.mode == "paper"
+    assert result.noop is False
     assert result.total_dispatched == 1
     assert result.items[0].execution.decision == "WOULD_POST"
+
+
+def test_cycle_approved_noop_when_no_candidates_exist(tmp_path) -> None:
+    fake_dispatch = FakeNoopDispatchService()
+    fixture = _fixture(tmp_path, dispatch_service=fake_dispatch)
+
+    result = fixture.service.cycle_approved(limit=3, live=False)
+
+    assert fake_dispatch.last_limit == 3
+    assert fake_dispatch.last_live is False
+    assert result.noop is True
+    assert result.total_candidates == 0
+    assert result.total_dispatched == 0
+    assert result.total_skipped == 0
+
+
+def test_cycle_approved_live_reuses_batch_dispatch(tmp_path) -> None:
+    fake_dispatch = FakeStrategyDispatchService()
+    fixture = _fixture(tmp_path, dispatch_service=fake_dispatch)
+
+    result = fixture.service.cycle_approved(limit=2, live=True)
+
+    assert fake_dispatch.last_limit == 2
+    assert fake_dispatch.last_live is True
+    assert result.mode == "live"
 
 
 def test_report_uses_latest_completed_session(tmp_path) -> None:
@@ -470,6 +652,50 @@ def test_report_uses_latest_completed_session(tmp_path) -> None:
     assert report.summary.execution_event_count == 1
     assert len(report.recent_strategy_executions) == 1
     assert len(report.recent_execution_events) == 1
+
+
+def test_cycle_report_uses_latest_reconciliation(tmp_path) -> None:
+    fixture = _fixture(tmp_path)
+    _append_intent(
+        fixture,
+        intent_id="intent-approved",
+        created_at="2026-03-19T00:01:00Z",
+        decision="WAIT",
+        manual_decision="APPROVE",
+    )
+    _append_dispatch_result(
+        fixture,
+        execution_id="strategy_exec_1",
+        intent_id="intent-approved",
+        created_at="2026-03-19T00:02:00Z",
+    )
+    _append_execution_event(fixture, captured_at="2026-03-19T00:03:00Z")
+    fixture.execution_state.append_reconciliation(
+        ExecutionReconciliationRecord(
+            reconciliation_id="recon_123",
+            created_at="2026-03-19T00:04:00Z",
+            summary=ExecutionReconciliationSummary(
+                window_event_count=1,
+                total_orders=1,
+                consistent_open=1,
+                consistent_closed=0,
+                inconclusive=0,
+                mismatch=0,
+            ),
+            items=[],
+            errors=[],
+        )
+    )
+
+    result = fixture.service.cycle_report()
+
+    assert result.queue_counts.dispatch_total == 0
+    assert result.approved_intent_count == 1
+    assert result.dispatch_ready_intent_count == 0
+    assert len(result.recent_strategy_executions) == 1
+    assert len(result.recent_execution_events) == 1
+    assert result.latest_reconciliation is not None
+    assert result.latest_reconciliation.reconciliation_id == "recon_123"
 
 
 def test_invalid_ops_state_raises(tmp_path) -> None:

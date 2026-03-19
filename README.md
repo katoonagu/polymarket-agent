@@ -1,6 +1,6 @@
 # polymarket-agent
 
-`polymarket-agent` is a docs-first, execution-first workspace for building a modular Polymarket system. The current branch combines a strong public intelligence stack with guarded authenticated execution, a risk-gated strategy-dispatch bridge, a local-first operator control plane, and the first CLI/TUI parity slice. It uses public Gamma, public CLOB, public Data API, public streams, local gitignored operator state, authenticated setup and local order-signing, guarded approval and order lifecycle paths, explicit manual dispatch from approved strategy intents into execution, workflow-session tooling for operator review, a bounded interactive shell, and richer Rich-based terminal tables for the main operator workflows. Live behavior exists only behind explicit operator flags and is never the default.
+`polymarket-agent` is a docs-first, execution-first workspace for building a modular Polymarket system. The current branch combines a strong public intelligence stack with guarded authenticated execution, a risk-gated strategy-dispatch bridge, a local-first operator control plane, a bounded one-cycle runbook layer, and the first CLI/TUI parity slice. It uses public Gamma, public CLOB, public Data API, public streams, local gitignored operator state, authenticated setup and local order-signing, guarded approval and order lifecycle paths, explicit manual dispatch from approved strategy intents into execution, workflow-session tooling for operator review, bounded runbook commands for queueing and dispatch, a bounded interactive shell, and richer Rich-based terminal tables for the main operator workflows. Live behavior exists only behind explicit operator flags and is never the default.
 
 ## Principles
 
@@ -106,15 +106,20 @@ Strategy evaluation is still read-only and persists candidate intents plus revie
 .venv\Scripts\pm status --json
 .venv\Scripts\pm status --verbose
 .venv\Scripts\pm ops queue --limit 20 --json
+.venv\Scripts\pm ops bootstrap --json
 .venv\Scripts\pm ops session start --label "morning desk" --json
 .venv\Scripts\pm ops session end --json
 .venv\Scripts\pm ops review next --json
 .venv\Scripts\pm ops dispatch approved --limit 5 --json
+.venv\Scripts\pm ops cycle queue --limit 5 --json
+.venv\Scripts\pm ops cycle approved --limit 5 --json
+.venv\Scripts\pm ops cycle approved --limit 5 --live --confirm --json
+.venv\Scripts\pm ops cycle report --json
 .venv\Scripts\pm ops report --json
 .venv\Scripts\pm shell
 ```
 
-This layer stays local-first and operator-driven. It aggregates pending review work, approved dispatch-ready intents, recent dispatch results, and recent execution events into a compact workflow surface. Sessions are optional, append-only, and limited to one active session at a time.
+This layer stays local-first and operator-driven. It aggregates pending review work, approved dispatch-ready intents, recent dispatch results, recent execution events, and the latest persisted reconciliation state into a compact workflow surface. Sessions are optional, append-only, and limited to one active session at a time. The bounded runbook commands remain explicit one-cycle actions only: `bootstrap` ensures local risk and session readiness, `cycle queue` evaluates all seeded strategies once, `cycle approved` dispatches only already-approved intents with paper as the default, and `cycle report` stays local-only.
 
 ### First CLI/TUI parity slice
 
@@ -226,6 +231,8 @@ This branch uses local file-backed state under `.pm/state/`. These files are rep
 
 They are append-only or registry-style JSON documents used for deterministic operator workflows. They are not a database and they do not enable background daemons or live execution. This phase does not add any local auth cache, API-key cache, or private-key state file.
 
+The bounded runbook slice does not add a new state file. It reuses the existing risk, ops-session, strategy-dispatch, execution-event, and reconciliation artifacts.
+
 ## Development
 
 ```powershell
@@ -243,7 +250,9 @@ py -3.11 -m venv .venv
 - no public stream daemon
 - no background daemon
 - no background user-websocket daemon
+- no background scheduler
 - no full-screen daemon UI
+- no infinite loop
 - no automatic retry loop
 - no strategy auto-submit
 - no auto-dispatch loop
