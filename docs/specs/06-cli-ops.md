@@ -20,6 +20,7 @@ In the current phase, the CLI supports public intelligence plus authenticated pa
 - open bounded authenticated execution-watch sessions
 - reconcile recent execution websocket events against authenticated REST order views
 - bridge approved strategy intents into execution through explicit risk-gated dispatch
+- aggregate local strategy, risk, and execution state into a compact operator control plane
 - submit or cancel live orders only behind explicit operator gates
 
 It must not:
@@ -87,6 +88,20 @@ Canonical error codes in the current phase:
 - `not_tracked`
 
 ## Canonical Namespaces
+
+### `pm status`
+
+Local-first operator summary command.
+
+```text
+pm status [--json]
+```
+
+Rules:
+
+- `status` is local-first and does not perform authenticated live reads in this phase
+- it summarizes active session state, pending review work, dispatch-ready work, recent dispatches, recent execution events, and risk-policy persistence
+- it remains an operator workflow surface, not a daemon or live control loop
 
 ### `pm setup`
 
@@ -337,6 +352,30 @@ Rules:
 - execution remains the only module allowed to place or cancel orders
 - strategy state is file-backed, append-only where appropriate, and gitignored
 
+### `pm ops`
+
+Local-first operator workflow and session commands.
+
+```text
+pm ops queue [--limit <n>] [--json]
+pm ops session start [--label <text>] [--json]
+pm ops session end [--json]
+pm ops review next [--json]
+pm ops dispatch approved [--limit <n>] [--paper] [--json]
+pm ops report [--json]
+```
+
+Rules:
+
+- `queue` combines review work and dispatch-ready work into one deterministic list
+- review ordering is unreviewed `WAIT` first, then unreviewed `OBSERVE`, both newest-first
+- dispatch-ready ordering follows the guarded strategy dispatch rules and stays paper-first
+- `review next` returns the next reviewable item or `queue_empty=true`
+- `dispatch approved` is paper-only in this phase and delegates to the existing guarded strategy dispatch bridge
+- sessions are optional but, when used, allow only one active session at a time
+- `report` prefers the active session scope, then the latest completed session, then a global local snapshot
+- `ops` is an operator UX layer only; it does not add a new execution path
+
 ## Local Gitignored State
 
 Current file-backed state under `.pm/state/`:
@@ -354,6 +393,7 @@ Current file-backed state under `.pm/state/`:
 - `risk-policies.json`
 - `strategy-execution-links.json`
 - `strategy-dispatch-results.json`
+- `ops-sessions.json`
 - `approval-plans.json`
 - `approval-results.json`
 - `execution-order-plans.json`
@@ -408,21 +448,19 @@ Full-command failures should remain limited to validation errors, missing tracke
 
 ## Future CLI/TUI Parity Surface
 
-The current branch already includes `pm setup doctor`, `pm approve check`, and `pm approve set`. The following broader parity targets remain future and are not implemented yet:
+The current branch already includes `pm setup doctor`, `pm approve check`, `pm approve set`, and `pm status`. The following broader parity targets remain future and are not implemented yet:
 
 - `pm setup`
 - `pm wallet create`
 - `pm wallet import`
 - `pm wallet show`
 - `pm shell`
-- `pm status`
 
 Intended direction:
 
 - `pm setup`: guided onboarding over future local config, wallet readiness, and approval checks
 - `pm wallet create`, `pm wallet import`, `pm wallet show`: future execution-adjacent wallet configuration UX
 - `pm shell`: future interactive operator shell over existing and later command surfaces
-- `pm status`: future high-level operator health and readiness summary
 
 Guardrails:
 

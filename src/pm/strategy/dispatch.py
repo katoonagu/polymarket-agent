@@ -241,7 +241,8 @@ class StrategyDispatchService:
         for intent in reversed(self._state.list_intents()):
             if len(selected) >= limit:
                 break
-            if self._state.list_dispatch_results(intent_id=intent.intent_id):
+            prior_results = self._state.list_dispatch_results(intent_id=intent.intent_id)
+            if any(item.decision in NON_SKIP_DECISIONS for item in prior_results):
                 continue
             if self._risk_service.get_policy(intent.strategy_name).dispatch_enabled is False:
                 continue

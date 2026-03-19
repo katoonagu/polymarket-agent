@@ -1,6 +1,6 @@
 # polymarket-agent
 
-`polymarket-agent` is a docs-first, execution-first workspace for building a modular Polymarket system. The current branch combines a strong public intelligence stack with the first authenticated execution foundation and a guarded strategy-dispatch bridge. It uses public Gamma, public CLOB, public Data API, public streams, local gitignored operator state, authenticated setup and local order-signing, guarded approval and order lifecycle paths, and explicit risk-gated dispatch from approved strategy intents into execution. Live behavior exists only behind explicit operator flags and is never the default.
+`polymarket-agent` is a docs-first, execution-first workspace for building a modular Polymarket system. The current branch combines a strong public intelligence stack with the first authenticated execution foundation, a guarded strategy-dispatch bridge, and a local-first operator control plane. It uses public Gamma, public CLOB, public Data API, public streams, local gitignored operator state, authenticated setup and local order-signing, guarded approval and order lifecycle paths, explicit risk-gated dispatch from approved strategy intents into execution, and workflow-session tooling for operator review. Live behavior exists only behind explicit operator flags and is never the default.
 
 ## Principles
 
@@ -100,6 +100,20 @@ These sessions are always bounded, persist normalized captured events locally, a
 
 Strategy evaluation is still read-only and persists candidate intents plus review decisions only. The only bridge into execution is an explicit operator dispatch step after manual approval and risk-policy checks. Execution remains the only module that can actually post or cancel orders.
 
+### Operator control plane
+
+```powershell
+.venv\Scripts\pm status --json
+.venv\Scripts\pm ops queue --limit 20 --json
+.venv\Scripts\pm ops session start --label "morning desk" --json
+.venv\Scripts\pm ops session end --json
+.venv\Scripts\pm ops review next --json
+.venv\Scripts\pm ops dispatch approved --limit 5 --json
+.venv\Scripts\pm ops report --json
+```
+
+This layer stays local-first and operator-driven. It aggregates pending review work, approved dispatch-ready intents, recent dispatch results, and recent execution events into a compact workflow surface. Sessions are optional, append-only, and limited to one active session at a time.
+
 ## Authenticated Execution Foundation
 
 The first authenticated layer now covers non-mutating setup, approval inspection, paper-default order lifecycle planning, explicitly gated live writes, and bounded operator-driven user-channel observation.
@@ -140,6 +154,7 @@ Rules:
 - `pm exec watch` and `pm exec order wait` use the authenticated user websocket only in bounded operator-driven sessions
 - `pm exec reconcile` compares recent persisted websocket events against authenticated REST order views
 - approved strategy intents may hand off only through explicit `pm strategy dispatch` plus risk policy
+- `pm status` and `pm ops` aggregate local strategy, risk, and execution state without adding a daemon or auto-submit loop
 - strategy and orchestrator flows still do not auto-submit anything
 
 ## Output Contract
@@ -182,6 +197,7 @@ This branch uses local file-backed state under `.pm/state/`. These files are rep
 - `risk-policies.json`
 - `strategy-execution-links.json`
 - `strategy-dispatch-results.json`
+- `ops-sessions.json`
 - `approval-plans.json`
 - `approval-results.json`
 - `execution-order-plans.json`
@@ -210,6 +226,7 @@ py -3.11 -m venv .venv
 - no background user-websocket daemon
 - no automatic retry loop
 - no strategy auto-submit
+- no auto-dispatch loop
 - no database
 
 ## Related Specs

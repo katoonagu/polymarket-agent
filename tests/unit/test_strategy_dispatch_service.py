@@ -544,6 +544,24 @@ def test_dispatch_pending_and_get_execution(tmp_path) -> None:
     assert detail.link.intent_id == pending.items[0].intent.intent.intent_id
 
 
+def test_dispatch_pending_retries_prior_skip_intent(tmp_path) -> None:
+    failing = _fixture(
+        tmp_path,
+        order_lifecycle=FakeOrderLifecycleService(balance_status="fail"),
+    )
+    _append_wallet_shadow_intent(failing, intent_id="intent-1")
+    first = failing.service.dispatch_intent("intent-1")
+    assert first.execution.decision == "SKIP"
+
+    retried = _fixture(tmp_path)
+    pending = retried.service.dispatch_pending(limit=1)
+
+    assert pending.total_candidates == 1
+    assert pending.total_dispatched == 1
+    assert pending.items[0].intent.intent.intent_id == "intent-1"
+    assert pending.items[0].execution.decision == "WOULD_POST"
+
+
 def test_list_executions_returns_newest_first(tmp_path) -> None:
     fixture = _fixture(tmp_path)
     _append_wallet_shadow_intent(fixture, intent_id="intent-1")
