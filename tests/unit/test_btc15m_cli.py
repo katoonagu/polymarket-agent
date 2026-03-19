@@ -8,6 +8,12 @@ from typer.testing import CliRunner
 
 from pm.cli.app import app
 from pm.strategy import (
+    Btc15mCampaignNextWindowResponse,
+    Btc15mCampaignReportResponse,
+    Btc15mCampaignReportSummary,
+    Btc15mCampaignRunRecord,
+    Btc15mCampaignRunResponse,
+    Btc15mLiquiditySampleResponse,
     Btc15mPaperEvaluation,
     Btc15mPaperRunRecord,
     Btc15mPaperRunResponse,
@@ -70,6 +76,7 @@ class FakeBtc15mStrategyService:
                 run_id="run-1",
                 created_at="2026-03-19T01:00:00Z",
                 limit=limit,
+                source_kind="manual",
                 items=[_evaluation()],
                 total_considered=1,
                 total_evaluated=1,
@@ -79,6 +86,64 @@ class FakeBtc15mStrategyService:
             )
         )
 
+    def liquidity_sample(self, *, seconds: int = 30) -> Btc15mLiquiditySampleResponse:
+        return Btc15mLiquiditySampleResponse(
+            session_id="liquidity-1",
+            started_at="2026-03-19T00:00:00Z",
+            ended_at="2026-03-19T00:00:30Z",
+            requested_seconds=seconds,
+            items=[],
+            total=0,
+            errors=[],
+        )
+
+    def campaign_next_window(self) -> Btc15mCampaignNextWindowResponse:
+        return Btc15mCampaignNextWindowResponse(
+            checked_at="2026-03-19T00:00:00Z",
+            waited_seconds=0,
+            timed_out=False,
+            poll_count=0,
+            window=_window_record().window,
+            errors=[],
+        )
+
+    def campaign_run(self, *, hours: str) -> Btc15mCampaignRunResponse:
+        _ = hours
+        return Btc15mCampaignRunResponse(
+            campaign=Btc15mCampaignRunRecord(
+                run_id="campaign-1",
+                created_at="2026-03-19T00:00:00Z",
+                started_at="2026-03-19T00:00:00Z",
+                ended_at="2026-03-19T02:00:00Z",
+                requested_hours="2",
+                items=[_evaluation()],
+                total_windows=1,
+                total_skipped=0,
+                total_realized_pnl_usdc="241.6666662",
+                errors=[],
+            )
+        )
+
+    def campaign_report(self) -> Btc15mCampaignReportResponse:
+        return Btc15mCampaignReportResponse(
+            summary=Btc15mCampaignReportSummary(
+                campaign_run_count=1,
+                evaluated_window_count=1,
+                total_realized_pnl_usdc="241.6666662",
+                average_realized_pnl_usdc="241.6666662",
+                win_count=1,
+                loss_count=0,
+                tie_count=0,
+                skip_count=0,
+                average_decision_spread="0.02",
+                average_realized_vol_1m_bps="100",
+                average_realized_vol_3m_bps="150",
+            ),
+            recent_runs=[self.campaign_run(hours="2").campaign],
+            recent_evaluations=[_evaluation()],
+            errors=[],
+        )
+
     def report(self) -> Btc15mReportResponse:
         return Btc15mReportResponse(
             summary=Btc15mReportSummary(
@@ -86,6 +151,7 @@ class FakeBtc15mStrategyService:
                 completed_window_count=1,
                 replay_batch_count=1,
                 paper_run_count=1,
+                campaign_run_count=1,
                 evaluated_window_count=1,
                 total_realized_pnl_usdc="241.6666662",
                 average_realized_pnl_usdc="241.6666662",
@@ -95,6 +161,7 @@ class FakeBtc15mStrategyService:
                 skip_count=0,
             ),
             latest_active_window=None,
+            campaign_summary=self.campaign_report().summary,
             recent_replays=[self.replay(from_at="", to_at="").replay],
             recent_runs=[self.paper_run().run],
             recent_evaluations=[_evaluation()],
@@ -128,6 +195,18 @@ def test_btc15m_json_commands(monkeypatch) -> None:
     )
     paper_result = runner.invoke(app, ["strategy", "btc15m", "paper-run", "--limit", "5", "--json"])
     report_result = runner.invoke(app, ["strategy", "btc15m", "report", "--json"])
+    liquidity_result = runner.invoke(
+        app, ["strategy", "btc15m", "liquidity", "sample", "--json"]
+    )
+    campaign_next_result = runner.invoke(
+        app, ["strategy", "btc15m", "campaign", "next-window", "--json"]
+    )
+    campaign_run_result = runner.invoke(
+        app, ["strategy", "btc15m", "campaign", "run", "--hours", "2", "--json"]
+    )
+    campaign_report_result = runner.invoke(
+        app, ["strategy", "btc15m", "campaign", "report", "--json"]
+    )
 
     assert record_result.exit_code == 0
     assert json.loads(record_result.stdout)["total"] == 1
@@ -137,6 +216,14 @@ def test_btc15m_json_commands(monkeypatch) -> None:
     assert json.loads(paper_result.stdout)["run"]["total_evaluated"] == 1
     assert report_result.exit_code == 0
     assert json.loads(report_result.stdout)["summary"]["recorded_window_count"] == 1
+    assert liquidity_result.exit_code == 0
+    assert json.loads(liquidity_result.stdout)["total"] == 0
+    assert campaign_next_result.exit_code == 0
+    assert json.loads(campaign_next_result.stdout)["window"]["market_slug"] == "btc-15m-up-down-1"
+    assert campaign_run_result.exit_code == 0
+    assert json.loads(campaign_run_result.stdout)["campaign"]["total_windows"] == 1
+    assert campaign_report_result.exit_code == 0
+    assert json.loads(campaign_report_result.stdout)["summary"]["campaign_run_count"] == 1
 
 
 def test_btc15m_root_output_json(monkeypatch) -> None:

@@ -14,6 +14,9 @@ from pm.strategy.btc15m_models import (
     Btc15mBoundaryDecisionRecord,
     Btc15mBoundaryDecisionsFile,
     Btc15mBoundaryObservationRecord,
+    Btc15mCampaignRunRecord,
+    Btc15mCampaignRunsFile,
+    Btc15mLiquiditySampleRecord,
     Btc15mPaperRunRecord,
     Btc15mPaperRunsFile,
     Btc15mReplayRecord,
@@ -27,10 +30,13 @@ BOUNDARY_DECISIONS_FILENAME = "btc-15m-chainlink-boundary-decisions.json"
 WINDOWS_FILENAME = "btc-15m-chainlink-windows.jsonl"
 REPLAYS_FILENAME = "btc-15m-chainlink-replays.json"
 PAPER_RUNS_FILENAME = "btc-15m-chainlink-paper-runs.json"
+LIQUIDITY_SAMPLES_FILENAME = "btc-15m-chainlink-liquidity-samples.jsonl"
+CAMPAIGN_RUNS_FILENAME = "btc-15m-chainlink-campaign-runs.json"
 
 DocumentT = TypeVar(
     "DocumentT",
     Btc15mBoundaryDecisionsFile,
+    Btc15mCampaignRunsFile,
     Btc15mReplaysFile,
     Btc15mPaperRunsFile,
 )
@@ -51,6 +57,8 @@ class Btc15mStateService:
         windows_path: Path | None = None,
         replays_path: Path | None = None,
         paper_runs_path: Path | None = None,
+        liquidity_samples_path: Path | None = None,
+        campaign_runs_path: Path | None = None,
     ) -> None:
         state_dir = get_strategy_state_dir()
         self._boundary_observations_path = boundary_observations_path or (
@@ -62,6 +70,10 @@ class Btc15mStateService:
         self._windows_path = windows_path or (state_dir / WINDOWS_FILENAME)
         self._replays_path = replays_path or (state_dir / REPLAYS_FILENAME)
         self._paper_runs_path = paper_runs_path or (state_dir / PAPER_RUNS_FILENAME)
+        self._liquidity_samples_path = liquidity_samples_path or (
+            state_dir / LIQUIDITY_SAMPLES_FILENAME
+        )
+        self._campaign_runs_path = campaign_runs_path or (state_dir / CAMPAIGN_RUNS_FILENAME)
 
     def list_boundary_observations(self) -> list[Btc15mBoundaryObservationRecord]:
         """Return raw boundary observations in append order."""
@@ -102,6 +114,14 @@ class Btc15mStateService:
         """Append one or more recorded windows."""
         self._append_jsonl(self._windows_path, records)
 
+    def list_liquidity_samples(self) -> list[Btc15mLiquiditySampleRecord]:
+        """Return persisted BTC15m liquidity samples in append order."""
+        return self._read_jsonl(self._liquidity_samples_path, Btc15mLiquiditySampleRecord)
+
+    def append_liquidity_samples(self, records: list[Btc15mLiquiditySampleRecord]) -> None:
+        """Append one or more BTC15m liquidity sample records."""
+        self._append_jsonl(self._liquidity_samples_path, records)
+
     def list_replays(self) -> list[Btc15mReplayRecord]:
         """Return persisted replay batches in append order."""
         document = self._load_document(self._replays_path, Btc15mReplaysFile)
@@ -123,6 +143,17 @@ class Btc15mStateService:
         document = self._load_document(self._paper_runs_path, Btc15mPaperRunsFile)
         document.items.append(record)
         self._write_document(self._paper_runs_path, document)
+
+    def list_campaign_runs(self) -> list[Btc15mCampaignRunRecord]:
+        """Return persisted campaign batches in append order."""
+        document = self._load_document(self._campaign_runs_path, Btc15mCampaignRunsFile)
+        return document.items
+
+    def append_campaign_run(self, record: Btc15mCampaignRunRecord) -> None:
+        """Append one campaign batch."""
+        document = self._load_document(self._campaign_runs_path, Btc15mCampaignRunsFile)
+        document.items.append(record)
+        self._write_document(self._campaign_runs_path, document)
 
     @property
     def windows_path(self) -> Path:

@@ -38,3 +38,20 @@ def test_btc15m_record_start_and_report_smoke(tmp_path) -> None:
     assert report_result.exit_code == 0
     report_payload = json.loads(report_result.stdout)
     assert report_payload["summary"]["recorded_window_count"] >= 1
+
+
+@pytest.mark.skipif(not RUN_SMOKE, reason="set PM_RUN_BTC15M_STRATEGY_SMOKE=1")
+def test_btc15m_liquidity_sample_smoke(tmp_path) -> None:
+    env = os.environ.copy()
+    env["PM_STRATEGY_STATE_DIR"] = str(tmp_path)
+
+    result = runner.invoke(
+        app,
+        ["strategy", "btc15m", "liquidity", "sample", "--seconds", "5", "--json"],
+        env=env,
+    )
+
+    assert result.exit_code == 0
+    payload = json.loads(result.stdout)
+    assert payload["requested_seconds"] == 5
+    assert payload["total"] >= 1

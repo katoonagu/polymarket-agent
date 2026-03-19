@@ -210,8 +210,12 @@ Define and validate the first market-specific recurring strategy track for BTC
   - replay harness and chronological paper-run evaluation
   - fixed minute-5 direction lock using Chainlink and Binance confirmation
   - fixed three-rung paper ladder at `0.30`, `0.20`, and `0.10`
+  - bounded campaign runner for sequential full-window paper research
+  - Binance REST overlay for `bookTicker`, `depth`, and closed `1m` klines
+  - decision-time liquidity and anti-manipulation guards for paper evaluation
 - Still pending:
-  - multi-day evidence collection over live recurring windows
+  - multi-day evidence collection over live recurring windows using the bounded
+    campaign runner
   - replay-driven parameter tuning
   - later guarded-live design only after paper evidence exists
 
@@ -228,6 +232,8 @@ Define and validate the first market-specific recurring strategy track for BTC
 - Boundary and per-window recording requirements are explicit and testable
 - Replay artifacts can reconstruct minute-5 direction decisions and ladder
   triggers for recorded windows
+- Campaign artifacts can summarize liquidity context, anti-manipulation skips,
+  and per-window paper outcomes without running forever
 - Paper evaluation is explainable enough to judge whether guarded live work is
   justified
 - Any future live work remains explicitly deferred behind validation and policy

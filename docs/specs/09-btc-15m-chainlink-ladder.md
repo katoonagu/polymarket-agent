@@ -9,9 +9,9 @@ BTC/USD stream.
 
 This spec now covers both the target design and the first paper/research
 runtime on the current branch. The current implementation adds bounded recorder,
-replay, paper-run, and report commands under `pm strategy btc15m`, but it still
-does not add live automation, a daemon, a scheduler, or any execution-side
-mutation.
+replay, paper-run, liquidity-sample, campaign, and report commands under
+`pm strategy btc15m`, but it still does not add live automation, a daemon, a
+scheduler, or any execution-side mutation.
 
 ## Current Phase
 
@@ -25,11 +25,14 @@ The first runtime implementation name on the current branch is:
 
 Current branch status:
 
-- bounded recorder, replay, paper-run, and report commands now exist under
-  `pm strategy btc15m`
+- bounded recorder, replay, paper-run, liquidity-sample, campaign, and report
+  commands now exist under `pm strategy btc15m`
 - the runtime remains a separate research surface and does not emit generic
   reviewable strategy intents yet
-- the current target is forward recording plus replay and paper evaluation
+- the current target is forward recording plus replay, bounded campaign
+  collection, and paper evaluation
+- public Binance REST overlays are now part of the research path for
+  top-of-book, depth, and short-horizon realized-volatility context
 - guarded live use is explicitly deferred
 - execution remains the only module allowed to place or cancel orders
 
@@ -42,6 +45,10 @@ Current research commands:
 - `pm strategy btc15m record window --slug <market_slug>`
 - `pm strategy btc15m replay --from <iso> --to <iso>`
 - `pm strategy btc15m paper-run --limit <n>`
+- `pm strategy btc15m liquidity sample [--seconds <n>]`
+- `pm strategy btc15m campaign next-window`
+- `pm strategy btc15m campaign run --hours <n>`
+- `pm strategy btc15m campaign report`
 - `pm strategy btc15m report`
 
 ## Strategy Overview and Design Goals
@@ -58,6 +65,9 @@ V1 design goals:
 - hold to expiry in v1
 - record enough oracle, market, and microstructure context to support replay,
   paper evaluation, and later guarded-live review
+- enrich each recorded window with bounded Binance liquidity and realized-vol
+  overlays
+- make thin-liquidity and manipulation-style skips deterministic and explainable
 
 V1 design limits:
 
@@ -206,8 +216,10 @@ The planned strategy depends on these existing or planned inputs:
 - existing RTDS Chainlink BTC/USD stream
 - existing RTDS Binance BTC price stream as a second directional confirmation
   feed
-- optional future Binance depth and volume integration as a later enhancement
-  only
+- existing public Binance REST `bookTicker`, `depth`, and closed `1m` kline
+  reads for liquidity and short-horizon realized-volatility overlays
+- optional future Binance recent trades, aggregate trades, and deeper volume
+  integration as later enhancements only
 
 Rules:
 
@@ -215,9 +227,14 @@ Rules:
 - Chainlink is the start-price anchor in v1
 - Binance is used for directional confirmation in v1, not as the primary start
   anchor
+- Chainlink remains the only canonical start and end boundary source in the
+  current runtime; Binance boundary observations are contextual only
 - current generic `pm stream recurring` is not the future full recorder
   contract, because the strategy needs separate Chainlink and Binance capture,
   boundary-state persistence, and per-window microstructure recording
+- Binance REST overlays are part of the BTC15m research path, but they do not
+  change the generic `pm stream` contract and they do not imply a broader
+  exchange-integration surface
 
 ## Strategy Mechanics
 
@@ -329,15 +346,34 @@ The future implementation must enforce these v1 controls:
 - stale-data guards for Binance ticks
 - stale-data guards for book context
 - spread guard from public CLOB context
-- minimum top-of-book liquidity guard
+- visible-liquidity guard around the first `0.30` rung
+- Binance and Chainlink directional-agreement guard at minute 5
+- divergence guard between Polymarket pricing and underlying BTC movement
 - skip on incomplete boundary capture
 - skip on unresolved recurring market mapping
 - skip on inactive or closed market
 - skip on stale oracle data
 - skip on stale book data
 - skip on excessive spread
-- skip on insufficient top-of-book liquidity
+- skip on insufficient visible liquidity
 - skip on mixed Chainlink and Binance direction at minute 5
+
+Current paper-runtime defaults:
+
+- minute-5 Chainlink and Binance decision ticks must each be no older than `15`
+  seconds
+- decision-time Polymarket quote and liquidity context must be no older than `5`
+  seconds
+- skip `wide_polymarket_spread` when the target-token spread is missing or
+  greater than `0.08`
+- skip `thin_visible_liquidity` when cumulative visible ask size at or better
+  than `0.30` is below the first-rung quantity `66.666666`
+- skip `binance_chainlink_directional_disagreement` when Binance and Chainlink
+  disagree relative to the start proxy or when their minute-5 divergence exceeds
+  `15` bps
+- skip `abnormal_polymarket_underlying_divergence` when the chosen target-token
+  midpoint is above `0.70` while the absolute BTC move from the start proxy is
+  below `8` bps
 
 The spec intentionally does not define live capital allocation behavior yet.
 
@@ -361,23 +397,33 @@ Each per-window record should include at least:
 - all accepted Binance ticks used by the strategy
 - selected pre-start and post-start Chainlink ticks
 - selected pre-end and post-end Chainlink ticks
+- contextual pre-start and post-start Binance ticks when available
+- contextual pre-end and post-end Binance ticks when available
 - `start_price_proxy_v1`
 - `end_price_proxy_v1` when available
 - minute-5 direction decision
 - decision timestamp
 - ladder placement attempts
 - book context around each rung
+- Binance top-of-book and near-touch depth snapshots
+- short-horizon realized-volatility proxies from closed Binance `1m` klines
+- visible Polymarket ask liquidity around `0.30`, `0.20`, and `0.10`
+- anti-manipulation and thin-liquidity flags
 - simulated fills
 - skip reasons
 - final market resolution result
 - replay outcome summary
-- MFE, MAE, and max favorable path metrics
+- MFE, MAE, max favorable path metrics, and time to peak
 
 The current runtime also persists:
 
 - `.pm/state/btc-15m-chainlink-boundary-observations.jsonl`
 - `.pm/state/btc-15m-chainlink-boundary-decisions.json`
+- `.pm/state/btc-15m-chainlink-windows.jsonl`
 - `.pm/state/btc-15m-chainlink-replays.json`
+- `.pm/state/btc-15m-chainlink-paper-runs.json`
+- `.pm/state/btc-15m-chainlink-liquidity-samples.jsonl`
+- `.pm/state/btc-15m-chainlink-campaign-runs.json`
 
 The current branch now creates these research artifacts, but it still treats
 them as paper/research state only.
@@ -398,7 +444,26 @@ It should:
 - capture the required pre/post boundary ticks
 - capture minute-5 decision context
 - capture minute 5 to minute 10 book context and ladder attempts
+- capture Binance REST liquidity overlays on a bounded schedule plus mandatory
+  strategy checkpoints
 - avoid all live execution behavior
+
+### Bounded campaign runner
+
+The current runtime now also supports a bounded campaign path:
+
+- `pm strategy btc15m campaign next-window`
+- `pm strategy btc15m campaign run --hours <n>`
+- `pm strategy btc15m campaign report`
+
+Campaign rules:
+
+- campaigns record exactly one BTC 15m recurring window at a time
+- a new window is started only when enough time remains to capture through the
+  end boundary plus a short post-end wait
+- campaign runs stop cleanly instead of rolling into an unbounded loop
+- each completed campaign window persists one paper evaluation with
+  `source_kind="campaign"` so later standalone `paper-run` does not duplicate it
 
 ### Replay harness
 
@@ -425,6 +490,7 @@ Paper evaluation should answer:
 - whether the boundary capture is reliable enough
 - whether minute-5 direction locking is explainable
 - whether fixed ladder levels are fillable often enough to study
+- whether liquidity and anti-manipulation guards are skipping the right windows
 - whether skip conditions are firing for the right reasons
 - whether the strategy remains interpretable and operator-safe
 
@@ -440,18 +506,24 @@ acceptable:
 - clear skip-reason explainability
 - stable risk-guard behavior
 
-## Planned Repository Changes
+## Current Repository Artifacts and Remaining Work
 
-Future implementation will require:
+The current runtime now includes:
 
-- a strategy module for `btc_15m_chainlink_ladder`
+- a dedicated BTC15m research module implementing
+  `btc_15m_chainlink_directional_ladder_v1`
 - recorder state for per-window strategy records
 - recorder state for raw and canonical Chainlink boundary observations
-- replay state and replay fixtures
-- paper execution integration through the existing guarded
-  strategy/risk/execution path
+- replay state, paper-run state, liquidity-sample state, and campaign-run state
+- paper-only evaluation outside the generic strategy review and dispatch path
 
-This strategy track does not require in v1:
+Still deferred or incomplete:
+
+- broader replay-fixture coverage from multi-day recorded windows
+- replay-driven parameter tuning for ladder levels and sizing
+- any handoff into generic review, dispatch, or live execution flows
+
+This strategy track still does not require in v1:
 
 - a daemon
 - a background scheduler
@@ -477,10 +549,10 @@ The following assumptions remain explicitly unresolved:
 
 ## Non-Goals in This Phase
 
-- no runtime strategy code
-- no new CLI commands
+- no live order submission
+- no generic reviewable strategy intents yet
 - no daemon or background loop
 - no scheduler
 - no auto-trading
 - no secret-handling changes
-- no claim that the strategy is already implemented
+- no claim that guarded live behavior is ready

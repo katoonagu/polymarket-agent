@@ -1,6 +1,6 @@
 # polymarket-agent
 
-`polymarket-agent` is a docs-first, execution-first workspace for building a modular Polymarket system. The current branch combines a strong public intelligence stack with guarded authenticated execution, a risk-gated strategy-dispatch bridge, a local-first operator control plane, a bounded one-cycle runbook layer, the first CLI/TUI parity slice, the first interactive CLI UX polish pass, the first Arkham enrichment slice for external wallet intelligence, a portfolio truth plus reconciliation layer, and the first paper/research runtime for a market-specific BTC 15-minute strategy. It uses public Gamma, public CLOB, public Data API, public streams, Arkham REST intelligence, local gitignored operator state, authenticated setup and local order-signing, guarded approval and order lifecycle paths, explicit manual dispatch from approved strategy intents into execution, workflow-session tooling for operator review, bounded runbook commands for queueing and dispatch, a bounded interactive shell, an env-only setup wizard, richer Rich-based framed terminal output for the main operator workflows, portfolio snapshots derived from public account state plus local execution linkage, and dedicated BTC15m recorder plus replay artifacts for paper research. Live behavior exists only behind explicit operator flags and is never the default.
+`polymarket-agent` is a docs-first, execution-first workspace for building a modular Polymarket system. The current branch combines a strong public intelligence stack with guarded authenticated execution, a risk-gated strategy-dispatch bridge, a local-first operator control plane, a bounded one-cycle runbook layer, the first CLI/TUI parity slice, the first interactive CLI UX polish pass, the first Arkham enrichment slice for external wallet intelligence, a portfolio truth plus reconciliation layer, and the first paper/research runtime for a market-specific BTC 15-minute strategy plus a bounded campaign runner with Binance liquidity overlays. It uses public Gamma, public CLOB, public Data API, public streams, public Binance REST market-data overlays, Arkham REST intelligence, local gitignored operator state, authenticated setup and local order-signing, guarded approval and order lifecycle paths, explicit manual dispatch from approved strategy intents into execution, workflow-session tooling for operator review, bounded runbook commands for queueing and dispatch, a bounded interactive shell, an env-only setup wizard, richer Rich-based framed terminal output for the main operator workflows, portfolio snapshots derived from public account state plus local execution linkage, and dedicated BTC15m recorder, replay, liquidity-sample, and campaign artifacts for paper research. Live behavior exists only behind explicit operator flags and is never the default.
 
 ## Principles
 
@@ -125,6 +125,10 @@ Strategy evaluation is still read-only and persists candidate intents plus revie
 .venv\Scripts\pm strategy btc15m record window --slug <market-slug> --json
 .venv\Scripts\pm strategy btc15m replay --from 2026-03-19T00:00:00Z --to 2026-03-20T00:00:00Z --json
 .venv\Scripts\pm strategy btc15m paper-run --limit 20 --json
+.venv\Scripts\pm strategy btc15m liquidity sample --seconds 30 --json
+.venv\Scripts\pm strategy btc15m campaign next-window --json
+.venv\Scripts\pm strategy btc15m campaign run --hours 2 --json
+.venv\Scripts\pm strategy btc15m campaign report --json
 .venv\Scripts\pm strategy btc15m report --json
 ```
 
@@ -132,8 +136,11 @@ Rules:
 
 - the runtime implementation name is `btc_15m_chainlink_directional_ladder_v1`
 - this surface is paper/research only and stays outside the generic strategy review and dispatch registry in this phase
-- recorder artifacts persist under `.pm/state/` as dedicated BTC15m boundary, window, replay, and paper-run state
+- recorder artifacts persist under `.pm/state/` as dedicated BTC15m boundary, window, replay, liquidity-sample, campaign-run, and paper-run state
 - the minute-5 directional lock uses recorded Chainlink and Binance context against a Chainlink-derived start proxy
+- bounded campaigns record exactly one recurring BTC 15m window at a time and stop cleanly when no additional full window fits inside the requested duration
+- Binance REST `bookTicker`, `depth`, and closed `1m` kline reads enrich decision-time liquidity and volatility context without adding any authenticated or mutating behavior
+- anti-manipulation and thin-liquidity guards may skip paper entries when spread, visible liquidity, or underlying divergence looks poor
 - the paper ladder is buy-only at `0.30`, `0.20`, and `0.10`, with one fill per rung at most and no live order submission
 
 ### Operator control plane
@@ -288,12 +295,20 @@ This branch uses local file-backed state under `.pm/state/`. These files are rep
 - `market-snapshots.json`
 - `stream-events.jsonl`
 - `arkham-enrichments.json`
+- `operator-profile.json`
 - `strategies.json`
 - `strategy-intents.json`
 - `strategy-decisions.json`
 - `risk-policies.json`
 - `strategy-execution-links.json`
 - `strategy-dispatch-results.json`
+- `btc-15m-chainlink-boundary-observations.jsonl`
+- `btc-15m-chainlink-boundary-decisions.json`
+- `btc-15m-chainlink-windows.jsonl`
+- `btc-15m-chainlink-replays.json`
+- `btc-15m-chainlink-paper-runs.json`
+- `btc-15m-chainlink-liquidity-samples.jsonl`
+- `btc-15m-chainlink-campaign-runs.json`
 - `ops-sessions.json`
 - `approval-plans.json`
 - `approval-results.json`

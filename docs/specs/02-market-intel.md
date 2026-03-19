@@ -224,6 +224,8 @@ the planned BTC 15m Chainlink ladder track will need:
 - public CLOB reads for bid, ask, midpoint, and spread
 - public RTDS crypto reads with `--source chainlink`
 - public RTDS crypto reads with `--source binance`
+- public Binance REST overlays for `bookTicker`, `depth`, and closed `1m`
+  klines inside the bounded BTC15m research path
 
 However, the current branch does not yet provide the full future recorder
 contract for that strategy. In particular:
@@ -231,6 +233,9 @@ contract for that strategy. In particular:
 - `pm stream recurring` is still a generic recurring-context stream surface
 - the ladder track will require explicit per-window Chainlink and Binance
   capture plus start and end boundary recording
+- the ladder track now also records bounded Binance liquidity and volatility
+  overlays, but that overlay remains strategy-specific rather than part of the
+  generic stream CLI contract
 - the ladder track will require minute-5 decision-state persistence and ladder
   microstructure recording
 - canonical boundary selection rules still need empirical validation

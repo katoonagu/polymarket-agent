@@ -6,6 +6,13 @@ from datetime import UTC, datetime, timedelta
 
 import pytest
 
+from pm.binance import (
+    BinanceBookTicker,
+    BinanceDepthLevel,
+    BinanceDepthSnapshot,
+    BinanceKline,
+    BinanceLiquiditySnapshot,
+)
 from pm.market.gamma import GammaSearchCandidate
 from pm.market.models import (
     NormalizedBook,
@@ -18,11 +25,15 @@ from pm.market.models import (
 from pm.strategy import (
     BOUNDARY_DECISIONS_FILENAME,
     BOUNDARY_OBSERVATIONS_FILENAME,
+    CAMPAIGN_RUNS_FILENAME,
+    LIQUIDITY_SAMPLES_FILENAME,
     PAPER_RUNS_FILENAME,
     REPLAYS_FILENAME,
     WINDOWS_FILENAME,
     Btc15mBoundaryDecisionRecord,
+    Btc15mLiquiditySampleRecord,
     Btc15mPaperRunRecord,
+    Btc15mPolymarketLiquidityLevel,
     Btc15mStateError,
     Btc15mStateService,
     Btc15mStrategyService,
@@ -172,10 +183,89 @@ class FakeCryptoClient:
         )
 
 
+class FakeBinanceService:
+    def sample_liquidity(
+        self,
+        symbol: str = "BTCUSDT",
+        *,
+        depth_limit: int = 20,
+        kline_interval: str = "1m",
+        kline_limit: int = 4,
+    ) -> BinanceLiquiditySnapshot:
+        _ = symbol
+        _ = depth_limit
+        _ = kline_interval
+        _ = kline_limit
+        return BinanceLiquiditySnapshot(
+            symbol="BTCUSDT",
+            sampled_at="2026-03-19T00:05:00Z",
+            book_ticker=BinanceBookTicker(
+                symbol="BTCUSDT",
+                bid_price="101",
+                bid_quantity="5",
+                ask_price="101.01",
+                ask_quantity="6",
+                midpoint="101.005",
+                spread="0.01",
+            ),
+            depth=BinanceDepthSnapshot(
+                symbol="BTCUSDT",
+                last_update_id=1,
+                bids=[BinanceDepthLevel(price="101", quantity="20")],
+                asks=[BinanceDepthLevel(price="101.01", quantity="22")],
+                best_bid="101",
+                best_ask="101.01",
+                midpoint="101.005",
+                spread="0.01",
+            ),
+            klines=[
+                BinanceKline(
+                    symbol="BTCUSDT",
+                    interval="1m",
+                    open_time=1,
+                    close_time=2,
+                    open_price="100",
+                    high_price="101",
+                    low_price="99",
+                    close_price="101",
+                    volume="10",
+                    quote_volume="1000",
+                    trade_count=10,
+                    is_closed=True,
+                )
+            ]
+            * 4,
+            realized_vol_1m_bps="100",
+            realized_vol_3m_bps="150",
+            near_touch_bid_depth="20",
+            near_touch_ask_depth="22",
+            errors=[],
+        )
+
+
+async def _noop_async_sleep(seconds: float) -> None:
+    _ = seconds
+
+
+class _Clock:
+    def __init__(self, current: datetime) -> None:
+        self.current = current
+
+    def now(self) -> datetime:
+        return self.current
+
+    def sleep(self, seconds: float) -> None:
+        self.current += timedelta(seconds=seconds)
+
+    async def async_sleep(self, seconds: float) -> None:
+        self.current += timedelta(seconds=seconds)
+
+
 def _service(tmp_path, *, now: datetime | None = None) -> Btc15mStrategyService:
     candidate = _candidate(COND_1, "btc-15m-up-down-1")
     FakeGammaClient.candidate = _search_candidate(candidate)
     FakeGammaClient.market = _normalized_market(candidate)
+    clock = _Clock(now) if now is not None else None
     return Btc15mStrategyService(
         state=Btc15mStateService(
             boundary_observations_path=tmp_path / BOUNDARY_OBSERVATIONS_FILENAME,
@@ -183,6 +273,8 @@ def _service(tmp_path, *, now: datetime | None = None) -> Btc15mStrategyService:
             windows_path=tmp_path / WINDOWS_FILENAME,
             replays_path=tmp_path / REPLAYS_FILENAME,
             paper_runs_path=tmp_path / PAPER_RUNS_FILENAME,
+            liquidity_samples_path=tmp_path / LIQUIDITY_SAMPLES_FILENAME,
+            campaign_runs_path=tmp_path / CAMPAIGN_RUNS_FILENAME,
         ),
         market_intel_service=FakeMarketIntelService(candidate),
         market_client=FakeMarketClient(_market_events()),
@@ -190,9 +282,12 @@ def _service(tmp_path, *, now: datetime | None = None) -> Btc15mStrategyService:
             chainlink_events=_chainlink_events(),
             binance_events=_binance_events(),
         ),
+        binance_service=FakeBinanceService(),
         gamma_client_cls=FakeGammaClient,
         clob_client_cls=FakeClobClient,
-        now=(lambda: now) if now is not None else None,
+        now=clock.now if clock is not None else None,
+        sleep=clock.sleep if clock is not None else None,
+        async_sleep=clock.async_sleep if clock is not None else _noop_async_sleep,
     )
 
 
@@ -223,6 +318,18 @@ def test_record_start_persists_complete_window_and_boundaries(tmp_path) -> None:
     assert result.items[0].decision == "UP"
     assert len(service._state.list_boundary_observations()) == 4  # type: ignore[attr-defined]
     assert service._state.list_boundary_decisions()[0].start_price_proxy_v1 == "100"  # type: ignore[attr-defined]
+    assert len(service._state.list_liquidity_samples()) >= 2  # type: ignore[attr-defined]
+
+
+def test_liquidity_sample_persists_operator_samples(tmp_path) -> None:
+    service = _service(tmp_path, now=_dt("2026-03-19T00:00:00Z"))
+
+    result = service.liquidity_sample(seconds=10)
+
+    assert result.total == 2
+    assert result.items[0].sample_kind == "operator"
+    assert result.items[0].binance.realized_vol_1m_bps == "100"
+    assert len(service._state.list_liquidity_samples()) == 2  # type: ignore[attr-defined]
 
 
 def test_paper_run_uses_oldest_completed_unevaluated_window(tmp_path) -> None:
@@ -296,6 +403,57 @@ def test_replay_filters_range_and_report_aggregates(tmp_path) -> None:
     assert report.summary.paper_run_count == 1
     assert report.summary.skip_count == 1
     assert report.summary.total_realized_pnl_usdc == "241.6666662"
+
+
+def test_campaign_run_persists_campaign_and_campaign_report(tmp_path) -> None:
+    service = _service(tmp_path, now=_dt("2026-03-19T00:00:00Z"))
+
+    result = service.campaign_run(hours="0.3")
+    report = service.campaign_report()
+
+    assert result.campaign.total_windows == 1
+    assert result.campaign.items[0].source_kind == "campaign"
+    assert service._state.list_campaign_runs()[0].run_id == result.campaign.run_id  # type: ignore[attr-defined]
+    assert report.summary.campaign_run_count == 1
+    assert report.summary.evaluated_window_count == 1
+
+
+def test_evaluate_window_skips_on_wide_spread_and_thin_liquidity(tmp_path) -> None:
+    service = _service(tmp_path, now=_dt("2026-03-19T00:00:00Z"))
+    record = _window_record(COND_1, "btc-15m-up-down-1", "2026-03-19T00:00:00Z")
+    record.liquidity_samples = [
+        Btc15mLiquiditySampleRecord(
+            sample_id="bad-sample",
+            window_id=record.window.window_id,
+            condition_id=record.window.condition_id,
+            market_slug=record.window.market_slug,
+            sample_kind="minute_five",
+            sampled_at="2026-03-19T00:05:00Z",
+            scheduled_at="2026-03-19T00:05:00Z",
+            late_by_seconds=0,
+            binance=FakeBinanceService().sample_liquidity(),
+            polymarket=[
+                Btc15mPolymarketLiquidityLevel(
+                    token_id=TOKEN_UP,
+                    outcome="Up",
+                    best_bid="0.10",
+                    best_ask="0.80",
+                    midpoint="0.75",
+                    spread="0.70",
+                    visible_liquidity_030="10",
+                    visible_liquidity_020="5",
+                    visible_liquidity_010="0",
+                )
+            ],
+            errors=[],
+        )
+    ]
+
+    evaluation = service._evaluate_window(record)
+
+    assert evaluation.decision == "SKIP"
+    assert "wide_polymarket_spread" in evaluation.skip_reasons
+    assert "thin_visible_liquidity" in evaluation.skip_reasons
 
 
 def _candidate(condition_id: str, market_slug: str) -> RecurringMarketCandidate:
@@ -463,6 +621,7 @@ def _window_record(
             )
         ],
         market_samples=_market_events_to_samples(),
+        liquidity_samples=[_liquidity_sample("btc15m:" + condition_id, market_slug)],
     )
 
 
@@ -489,6 +648,45 @@ def _market_events_to_samples():
             ],
         )
     ]
+
+
+def _liquidity_sample(window_id: str, market_slug: str) -> Btc15mLiquiditySampleRecord:
+    return Btc15mLiquiditySampleRecord(
+        sample_id="sample-1",
+        window_id=window_id,
+        condition_id=window_id.replace("btc15m:", ""),
+        market_slug=market_slug,
+        sample_kind="minute_five",
+        sampled_at="2026-03-19T00:05:00Z",
+        scheduled_at="2026-03-19T00:05:00Z",
+        late_by_seconds=0,
+        binance=FakeBinanceService().sample_liquidity(),
+        polymarket=[
+            Btc15mPolymarketLiquidityLevel(
+                token_id=TOKEN_UP,
+                outcome="Up",
+                best_bid="0.08",
+                best_ask="0.10",
+                midpoint="0.09",
+                spread="0.02",
+                visible_liquidity_030="380",
+                visible_liquidity_020="300",
+                visible_liquidity_010="200",
+            ),
+            Btc15mPolymarketLiquidityLevel(
+                token_id=TOKEN_DOWN,
+                outcome="Down",
+                best_bid="0.08",
+                best_ask="0.72",
+                midpoint="0.40",
+                spread="0.64",
+                visible_liquidity_030="10",
+                visible_liquidity_020="5",
+                visible_liquidity_010="0",
+            ),
+        ],
+        errors=[],
+    )
 
 
 def _dt(value: str) -> datetime:

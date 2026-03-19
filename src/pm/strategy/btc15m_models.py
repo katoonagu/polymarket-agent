@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from pydantic import BaseModel, Field
 
+from pm.binance.models import BinanceLiquiditySnapshot
 from pm.market.models import NormalizedBookLevel
 
 
@@ -63,6 +64,36 @@ class Btc15mMarketSample(BaseModel):
     asks: list[NormalizedBookLevel] = Field(default_factory=list)
 
 
+class Btc15mPolymarketLiquidityLevel(BaseModel):
+    """One compact Polymarket token liquidity summary for a sample instant."""
+
+    token_id: str
+    outcome: str | None = None
+    best_bid: str | None = None
+    best_ask: str | None = None
+    midpoint: str | None = None
+    spread: str | None = None
+    visible_liquidity_030: str = "0"
+    visible_liquidity_020: str = "0"
+    visible_liquidity_010: str = "0"
+
+
+class Btc15mLiquiditySampleRecord(BaseModel):
+    """One bounded Binance plus Polymarket liquidity sample."""
+
+    sample_id: str
+    window_id: str
+    condition_id: str | None = None
+    market_slug: str
+    sample_kind: str
+    sampled_at: str
+    scheduled_at: str | None = None
+    late_by_seconds: int | None = None
+    binance: BinanceLiquiditySnapshot
+    polymarket: list[Btc15mPolymarketLiquidityLevel] = Field(default_factory=list)
+    errors: list[Btc15mSectionError] = Field(default_factory=list)
+
+
 class Btc15mBoundaryObservationRecord(BaseModel):
     """Append-only raw boundary observation for one window edge."""
 
@@ -110,13 +141,19 @@ class Btc15mWindowRecord(BaseModel):
     binance_source_session_id: str | None = None
     chainlink_ticks: list[Btc15mPriceTick] = Field(default_factory=list)
     binance_ticks: list[Btc15mPriceTick] = Field(default_factory=list)
+    binance_pre_start_tick: Btc15mPriceTick | None = None
+    binance_post_start_tick: Btc15mPriceTick | None = None
+    binance_pre_end_tick: Btc15mPriceTick | None = None
+    binance_post_end_tick: Btc15mPriceTick | None = None
     market_samples: list[Btc15mMarketSample] = Field(default_factory=list)
+    liquidity_samples: list[Btc15mLiquiditySampleRecord] = Field(default_factory=list)
     boundary_status: str
     start_price_proxy_v1: str | None = None
     end_price_proxy_v1: str | None = None
     decision: str = "PENDING"
     decision_at: str | None = None
     resolution_result: str = "PENDING"
+    manipulation_flags: list[str] = Field(default_factory=list)
     skip_reasons: list[str] = Field(default_factory=list)
     reason_blocks: list[Btc15mReasonBlock] = Field(default_factory=list)
     errors: list[Btc15mSectionError] = Field(default_factory=list)
@@ -162,11 +199,21 @@ class Btc15mPaperEvaluation(BaseModel):
     condition_id: str | None = None
     window_start_at: str | None = None
     window_end_at: str | None = None
+    source_kind: str = "manual"
+    campaign_run_id: str | None = None
     target_token_id: str | None = None
     target_outcome: str | None = None
     decision: str
     decision_at: str | None = None
     resolution_result: str
+    decision_liquidity_sample: Btc15mLiquiditySampleRecord | None = None
+    decision_spread: str | None = None
+    realized_vol_1m_bps: str | None = None
+    realized_vol_3m_bps: str | None = None
+    visible_liquidity_030: str | None = None
+    visible_liquidity_020: str | None = None
+    visible_liquidity_010: str | None = None
+    manipulation_flags: list[str] = Field(default_factory=list)
     skip_reasons: list[str] = Field(default_factory=list)
     reason_blocks: list[Btc15mReasonBlock] = Field(default_factory=list)
     start_price_proxy_v1: str | None = None
@@ -203,9 +250,26 @@ class Btc15mPaperRunRecord(BaseModel):
     run_id: str
     created_at: str
     limit: int
+    source_kind: str = "manual"
+    campaign_run_id: str | None = None
     items: list[Btc15mPaperEvaluation] = Field(default_factory=list)
     total_considered: int = 0
     total_evaluated: int = 0
+    total_skipped: int = 0
+    total_realized_pnl_usdc: str = "0"
+    errors: list[Btc15mSectionError] = Field(default_factory=list)
+
+
+class Btc15mCampaignRunRecord(BaseModel):
+    """Append-only bounded campaign batch record."""
+
+    run_id: str
+    created_at: str
+    started_at: str
+    ended_at: str
+    requested_hours: str
+    items: list[Btc15mPaperEvaluation] = Field(default_factory=list)
+    total_windows: int = 0
     total_skipped: int = 0
     total_realized_pnl_usdc: str = "0"
     errors: list[Btc15mSectionError] = Field(default_factory=list)
@@ -232,6 +296,13 @@ class Btc15mPaperRunsFile(BaseModel):
     items: list[Btc15mPaperRunRecord] = Field(default_factory=list)
 
 
+class Btc15mCampaignRunsFile(BaseModel):
+    """Versioned state document for persisted campaign batches."""
+
+    version: int = 1
+    items: list[Btc15mCampaignRunRecord] = Field(default_factory=list)
+
+
 class Btc15mRecordStartResponse(Btc15mWindowsIndexResponse):
     """Bounded recorder-start response."""
 
@@ -254,6 +325,61 @@ class Btc15mPaperRunResponse(BaseModel):
     run: Btc15mPaperRunRecord
 
 
+class Btc15mLiquiditySampleResponse(BaseModel):
+    """Bounded operator liquidity-sampling response."""
+
+    session_id: str
+    started_at: str
+    ended_at: str
+    requested_seconds: int
+    items: list[Btc15mLiquiditySampleRecord] = Field(default_factory=list)
+    total: int = 0
+    errors: list[Btc15mSectionError] = Field(default_factory=list)
+
+
+class Btc15mCampaignNextWindowResponse(BaseModel):
+    """Current or next BTC15m campaign window response."""
+
+    checked_at: str
+    waited_seconds: int = 0
+    timed_out: bool = False
+    poll_count: int = 0
+    window: Btc15mWindowIdentity | None = None
+    errors: list[Btc15mSectionError] = Field(default_factory=list)
+
+
+class Btc15mCampaignRunResponse(BaseModel):
+    """Bounded campaign-run response."""
+
+    campaign: Btc15mCampaignRunRecord
+
+
+class Btc15mCampaignReportSummary(BaseModel):
+    """Aggregate campaign-only summary."""
+
+    campaign_run_count: int = 0
+    evaluated_window_count: int = 0
+    total_realized_pnl_usdc: str = "0"
+    average_realized_pnl_usdc: str = "0"
+    win_count: int = 0
+    loss_count: int = 0
+    tie_count: int = 0
+    skip_count: int = 0
+    average_decision_spread: str | None = None
+    average_realized_vol_1m_bps: str | None = None
+    average_realized_vol_3m_bps: str | None = None
+    skip_reason_counts: dict[str, int] = Field(default_factory=dict)
+
+
+class Btc15mCampaignReportResponse(BaseModel):
+    """Aggregate campaign-only report."""
+
+    summary: Btc15mCampaignReportSummary
+    recent_runs: list[Btc15mCampaignRunRecord] = Field(default_factory=list)
+    recent_evaluations: list[Btc15mPaperEvaluation] = Field(default_factory=list)
+    errors: list[Btc15mSectionError] = Field(default_factory=list)
+
+
 class Btc15mReportSummary(BaseModel):
     """Compact BTC15m research summary."""
 
@@ -269,6 +395,7 @@ class Btc15mReportSummary(BaseModel):
     tie_count: int = 0
     skip_count: int = 0
     skip_reason_counts: dict[str, int] = Field(default_factory=dict)
+    campaign_run_count: int = 0
 
 
 class Btc15mReportResponse(BaseModel):
@@ -276,6 +403,7 @@ class Btc15mReportResponse(BaseModel):
 
     summary: Btc15mReportSummary
     latest_active_window: Btc15mWindowRecord | None = None
+    campaign_summary: Btc15mCampaignReportSummary | None = None
     recent_replays: list[Btc15mReplayRecord] = Field(default_factory=list)
     recent_runs: list[Btc15mPaperRunRecord] = Field(default_factory=list)
     recent_evaluations: list[Btc15mPaperEvaluation] = Field(default_factory=list)
