@@ -19,6 +19,7 @@ In the current phase, the CLI supports public intelligence plus authenticated pa
 - preview paper-mode order posting and cancellation
 - open bounded authenticated execution-watch sessions
 - reconcile recent execution websocket events against authenticated REST order views
+- bridge approved strategy intents into execution through explicit risk-gated dispatch
 - submit or cancel live orders only behind explicit operator gates
 
 It must not:
@@ -27,6 +28,7 @@ It must not:
 - start background daemons
 - replace orders yet
 - auto-submit from strategy or orchestration
+- auto-dispatch from strategy or orchestration
 - depend on a database
 
 ## Global Output Contract
@@ -136,6 +138,22 @@ Rules:
 - geoblock must be checked before live approval writes
 - raw private keys must never be printed
 - approval plans and live approval results are persisted locally for audit
+
+### `pm risk`
+
+Guarded strategy-dispatch policy commands.
+
+```text
+pm risk show [--json]
+pm risk init-defaults [--json]
+```
+
+Rules:
+
+- `show` returns the effective policy set
+- when the policy file does not exist yet, `show` returns built-in defaults with `persisted=false`
+- `init-defaults` is idempotent and creates the versioned file only when missing
+- dispatch policies remain local, deterministic, and gitignored
 
 ### `pm exec`
 
@@ -287,7 +305,7 @@ Rules:
 
 ### `pm strategy`
 
-Read-only seeded strategy registry and local manual review orchestration.
+Seeded strategy registry, local manual review orchestration, and guarded manual dispatch.
 
 ```text
 pm strategy list [--json]
@@ -298,6 +316,10 @@ pm strategy intents [--limit <n>] [--json]
 pm strategy review --intent-id <id> [--json]
 pm strategy approve --intent-id <id> [--json]
 pm strategy reject --intent-id <id> --reason <text> [--json]
+pm strategy dispatch --intent-id <id> [--paper] [--live] [--confirm] [--json]
+pm strategy dispatch pending [--limit <n>] [--paper] [--json]
+pm strategy executions [--limit <n>] [--json]
+pm strategy execution get --execution-id <id> [--json]
 ```
 
 Rules:
@@ -305,7 +327,14 @@ Rules:
 - strategy definitions are seeded locally and deterministic
 - evaluation produces candidate intents only
 - `APPROVE` is manual only and recorded locally
-- `approve` and `reject` do not call execution code
+- `approve` and `reject` do not call execution code by themselves
+- dispatch is a separate explicit operator action after approval
+- only approved intents may dispatch
+- paper mode is the default for dispatch
+- live dispatch requires both `--live` and `--confirm`
+- `dispatch pending` is paper-only in this phase
+- v1 dispatch is intentionally wallet-first; only `wallet_shadow_copy` is dispatch-enabled by default
+- execution remains the only module allowed to place or cancel orders
 - strategy state is file-backed, append-only where appropriate, and gitignored
 
 ## Local Gitignored State
@@ -322,6 +351,9 @@ Current file-backed state under `.pm/state/`:
 - `strategies.json`
 - `strategy-intents.json`
 - `strategy-decisions.json`
+- `risk-policies.json`
+- `strategy-execution-links.json`
+- `strategy-dispatch-results.json`
 - `approval-plans.json`
 - `approval-results.json`
 - `execution-order-plans.json`
@@ -359,6 +391,8 @@ Current partial-result flows include:
 - `pm stream recurring`
 - `pm strategy evaluate`
 - `pm strategy review`
+- `pm strategy dispatch`
+- `pm strategy dispatch pending`
 
 Structured partial errors should look like:
 
@@ -410,4 +444,4 @@ Later phases may add:
 - incident workflows
 - execution-specific operational controls
 
-Those capabilities remain part of the long-term operations surface, but they are outside the current read-only CLI phase.
+Those capabilities remain part of the long-term operations surface, but they are outside the current guarded manual-dispatch phase.

@@ -14,14 +14,26 @@ from pm.strategy.models import (
     StrategyCandidateIntent,
     StrategyDecisionRecord,
     StrategyDecisionsFile,
+    StrategyDispatchResultRecord,
+    StrategyDispatchResultsFile,
+    StrategyExecutionLinkRecord,
+    StrategyExecutionLinksFile,
     StrategyIntentsFile,
 )
 from pm.strategy.registry import StrategyRegistryError, get_strategy_state_dir
 
 INTENTS_FILENAME = "strategy-intents.json"
 DECISIONS_FILENAME = "strategy-decisions.json"
+EXECUTION_LINKS_FILENAME = "strategy-execution-links.json"
+DISPATCH_RESULTS_FILENAME = "strategy-dispatch-results.json"
 
-DocumentT = TypeVar("DocumentT", StrategyIntentsFile, StrategyDecisionsFile)
+DocumentT = TypeVar(
+    "DocumentT",
+    StrategyIntentsFile,
+    StrategyDecisionsFile,
+    StrategyExecutionLinksFile,
+    StrategyDispatchResultsFile,
+)
 
 
 class StrategyStateError(StrategyRegistryError):
@@ -32,6 +44,10 @@ class StrategyIntentNotFoundError(StrategyStateError):
     """Raised when a candidate intent id is unknown."""
 
 
+class StrategyExecutionNotFoundError(StrategyStateError):
+    """Raised when a strategy dispatch execution id is unknown."""
+
+
 class StrategyStateService:
     """Small append-only file-backed store for strategy intents and decisions."""
 
@@ -40,10 +56,18 @@ class StrategyStateService:
         *,
         intents_path: Path | None = None,
         decisions_path: Path | None = None,
+        execution_links_path: Path | None = None,
+        dispatch_results_path: Path | None = None,
     ) -> None:
         state_dir = get_strategy_state_dir()
         self._intents_path = intents_path or (state_dir / INTENTS_FILENAME)
         self._decisions_path = decisions_path or (state_dir / DECISIONS_FILENAME)
+        self._execution_links_path = execution_links_path or (
+            state_dir / EXECUTION_LINKS_FILENAME
+        )
+        self._dispatch_results_path = dispatch_results_path or (
+            state_dir / DISPATCH_RESULTS_FILENAME
+        )
 
     @property
     def intents_path(self) -> Path:
@@ -54,6 +78,16 @@ class StrategyStateService:
     def decisions_path(self) -> Path:
         """Return the resolved decision state path."""
         return self._decisions_path
+
+    @property
+    def execution_links_path(self) -> Path:
+        """Return the resolved strategy-execution link state path."""
+        return self._execution_links_path
+
+    @property
+    def dispatch_results_path(self) -> Path:
+        """Return the resolved strategy dispatch-result state path."""
+        return self._dispatch_results_path
 
     def list_intents(self, strategy_name: str | None = None) -> list[StrategyCandidateIntent]:
         """Return persisted candidate intents in append order."""
@@ -101,6 +135,74 @@ class StrategyStateService:
         document = self._load_document(self._decisions_path, StrategyDecisionsFile)
         document.decisions.append(decision)
         self._write_document(self._decisions_path, document)
+
+    def list_execution_links(
+        self,
+        *,
+        intent_id: str | None = None,
+        execution_id: str | None = None,
+    ) -> list[StrategyExecutionLinkRecord]:
+        """Return persisted strategy-execution links in append order."""
+        links = self._load_document(
+            self._execution_links_path,
+            StrategyExecutionLinksFile,
+        ).links
+        if intent_id is not None:
+            links = [item for item in links if item.intent_id == intent_id]
+        if execution_id is not None:
+            links = [item for item in links if item.execution_id == execution_id]
+        return links
+
+    def get_execution_link(self, execution_id: str) -> StrategyExecutionLinkRecord:
+        """Return one persisted strategy-execution link by execution id."""
+        for link in self.list_execution_links(execution_id=execution_id):
+            return link
+        raise StrategyExecutionNotFoundError(
+            f"strategy execution '{execution_id}' was not found"
+        )
+
+    def append_execution_link(self, link: StrategyExecutionLinkRecord) -> None:
+        """Append one strategy-execution link record."""
+        document = self._load_document(
+            self._execution_links_path,
+            StrategyExecutionLinksFile,
+        )
+        document.links.append(link)
+        self._write_document(self._execution_links_path, document)
+
+    def list_dispatch_results(
+        self,
+        *,
+        intent_id: str | None = None,
+        execution_id: str | None = None,
+    ) -> list[StrategyDispatchResultRecord]:
+        """Return persisted strategy dispatch results in append order."""
+        results = self._load_document(
+            self._dispatch_results_path,
+            StrategyDispatchResultsFile,
+        ).results
+        if intent_id is not None:
+            results = [item for item in results if item.intent_id == intent_id]
+        if execution_id is not None:
+            results = [item for item in results if item.execution_id == execution_id]
+        return results
+
+    def get_dispatch_result(self, execution_id: str) -> StrategyDispatchResultRecord:
+        """Return one persisted strategy dispatch result by execution id."""
+        for result in self.list_dispatch_results(execution_id=execution_id):
+            return result
+        raise StrategyExecutionNotFoundError(
+            f"strategy execution '{execution_id}' was not found"
+        )
+
+    def append_dispatch_result(self, result: StrategyDispatchResultRecord) -> None:
+        """Append one strategy dispatch result record."""
+        document = self._load_document(
+            self._dispatch_results_path,
+            StrategyDispatchResultsFile,
+        )
+        document.results.append(result)
+        self._write_document(self._dispatch_results_path, document)
 
     def _load_document(self, path: Path, model_type: type[DocumentT]) -> DocumentT:
         if not path.exists():

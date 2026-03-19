@@ -10,7 +10,14 @@ from pm.strategy import (
     StrategyDecisionMutationResponse,
     StrategyDecisionRecord,
     StrategyDefinition,
+    StrategyDispatchPendingResponse,
+    StrategyDispatchResponse,
+    StrategyDispatchResultRecord,
     StrategyEvaluateResponse,
+    StrategyExecutionDetailResponse,
+    StrategyExecutionNotFoundError,
+    StrategyExecutionRequest,
+    StrategyExecutionsResponse,
     StrategyIntentNotFoundError,
     StrategyIntentsResponse,
     StrategyIntentView,
@@ -27,11 +34,22 @@ from pm.strategy import (
     StrategyValidationError,
     StrategyValidationResult,
 )
+from pm.strategy.dispatch import StrategyDispatchService, StrategyDispatchValidationError
 
 app = typer.Typer(
     add_completion=False,
-    help="Read-only seeded strategy registry and manual orchestrator review commands.",
+    help="Seeded strategy registry, manual review, and guarded dispatch commands.",
     no_args_is_help=True,
+)
+dispatch_app = typer.Typer(
+    add_completion=False,
+    help="Guarded manual strategy dispatch commands.",
+    invoke_without_command=True,
+    no_args_is_help=False,
+)
+execution_app = typer.Typer(
+    add_completion=False,
+    help="Persisted strategy execution detail commands.",
 )
 
 NAME_OPTION = typer.Option(
@@ -56,6 +74,14 @@ REASON_OPTION = typer.Option(
     help="Required operator reason for a manual reject decision.",
 )
 JSON_OPTION = LOCAL_JSON_OPTION
+PAPER_OPTION = typer.Option(False, "--paper", help="Explicit paper mode. This is the default.")
+LIVE_OPTION = typer.Option(False, "--live", help="Allow a live strategy dispatch.")
+CONFIRM_OPTION = typer.Option(False, "--confirm", help="Required together with --live.")
+EXECUTION_ID_OPTION = typer.Option(
+    ...,
+    "--execution-id",
+    help="Persisted strategy execution id.",
+)
 
 
 @app.command("list")
@@ -255,6 +281,143 @@ def reject_intent(
     )
 
 
+@dispatch_app.callback()
+def dispatch_intent(
+    ctx: typer.Context,
+    intent_id: str | None = typer.Option(None, "--intent-id", help="Persisted strategy intent id."),
+    paper: bool = PAPER_OPTION,
+    live: bool = LIVE_OPTION,
+    confirm: bool = CONFIRM_OPTION,
+    json_output: bool = JSON_OPTION,
+) -> None:
+    """Dispatch one approved strategy intent into the execution layer."""
+    if ctx.invoked_subcommand is not None:
+        return
+    if intent_id is None or not intent_id.strip():
+        emit_command_error(
+            ctx,
+            code="invalid_argument",
+            message="Intent id is required.",
+            resource="strategy",
+            local_json_output=json_output,
+        )
+        raise typer.Exit(1)
+    _guard_dispatch_flags(
+        ctx,
+        paper=paper,
+        live=live,
+        confirm=confirm,
+        json_output=json_output,
+    )
+    try:
+        result = StrategyDispatchService().dispatch_intent(intent_id, live=live)
+    except (
+        StrategyDispatchValidationError,
+        StrategyIntentNotFoundError,
+        StrategyRegistryError,
+        StrategyStateError,
+    ) as exc:
+        _emit_strategy_error(
+            ctx,
+            exc=exc,
+            resource="intent",
+            identifier=intent_id.strip(),
+            json_output=json_output,
+        )
+        raise typer.Exit(1) from exc
+    emit_command_output(
+        ctx,
+        result.model_dump(mode="json"),
+        text=_format_strategy_dispatch(result),
+        local_json_output=json_output,
+    )
+
+
+@dispatch_app.command("pending")
+def dispatch_pending(
+    ctx: typer.Context,
+    limit: int = LIMIT_OPTION,
+    paper: bool = PAPER_OPTION,
+    json_output: bool = JSON_OPTION,
+) -> None:
+    """Paper-dispatch newest approved, undispatched strategy intents."""
+    _ = paper
+    try:
+        result = StrategyDispatchService().dispatch_pending(limit=limit)
+    except (
+        StrategyDispatchValidationError,
+        StrategyRegistryError,
+        StrategyStateError,
+    ) as exc:
+        _emit_strategy_error(ctx, exc=exc, json_output=json_output)
+        raise typer.Exit(1) from exc
+    emit_command_output(
+        ctx,
+        result.model_dump(mode="json"),
+        text=_format_strategy_dispatch_pending(result),
+        local_json_output=json_output,
+    )
+
+
+@app.command("executions")
+def list_executions(
+    ctx: typer.Context,
+    limit: int = LIMIT_OPTION,
+    json_output: bool = JSON_OPTION,
+) -> None:
+    """List persisted strategy dispatch results newest-first."""
+    try:
+        result = StrategyDispatchService().list_executions(limit=limit)
+    except (
+        StrategyDispatchValidationError,
+        StrategyRegistryError,
+        StrategyStateError,
+    ) as exc:
+        _emit_strategy_error(ctx, exc=exc, json_output=json_output)
+        raise typer.Exit(1) from exc
+    emit_command_output(
+        ctx,
+        result.model_dump(mode="json"),
+        text=_format_strategy_executions(result),
+        local_json_output=json_output,
+    )
+
+
+@execution_app.command("get")
+def get_execution(
+    ctx: typer.Context,
+    execution_id: str = EXECUTION_ID_OPTION,
+    json_output: bool = JSON_OPTION,
+) -> None:
+    """Show one persisted strategy execution detail payload."""
+    try:
+        result = StrategyDispatchService().get_execution(execution_id)
+    except (
+        StrategyDispatchValidationError,
+        StrategyExecutionNotFoundError,
+        StrategyRegistryError,
+        StrategyStateError,
+    ) as exc:
+        _emit_strategy_error(
+            ctx,
+            exc=exc,
+            resource="execution",
+            identifier=execution_id.strip(),
+            json_output=json_output,
+        )
+        raise typer.Exit(1) from exc
+    emit_command_output(
+        ctx,
+        result.model_dump(mode="json"),
+        text=_format_strategy_execution_detail(result),
+        local_json_output=json_output,
+    )
+
+
+app.add_typer(dispatch_app, name="dispatch")
+app.add_typer(execution_app, name="execution")
+
+
 def _emit_strategy_error(
     ctx: typer.Context,
     *,
@@ -274,13 +437,44 @@ def _emit_strategy_error(
 
 
 def _strategy_error_code(exc: Exception) -> str:
-    if isinstance(exc, (StrategyValidationError,)):
+    if isinstance(exc, (StrategyValidationError, StrategyDispatchValidationError)):
         return "invalid_argument"
-    if isinstance(exc, (StrategyNotFoundError, StrategyIntentNotFoundError)):
+    if isinstance(
+        exc,
+        (StrategyNotFoundError, StrategyIntentNotFoundError, StrategyExecutionNotFoundError),
+    ):
         return "not_found"
     if isinstance(exc, (StrategyRegistryError, StrategyStateError)):
         return "state_error"
     return "request_failed"
+
+
+def _guard_dispatch_flags(
+    ctx: typer.Context,
+    *,
+    paper: bool,
+    live: bool,
+    confirm: bool = False,
+    json_output: bool,
+) -> None:
+    if paper and live:
+        emit_command_error(
+            ctx,
+            code="invalid_argument",
+            message="Use either --paper or --live, not both.",
+            resource="strategy",
+            local_json_output=json_output,
+        )
+        raise typer.Exit(1)
+    if live and not confirm:
+        emit_command_error(
+            ctx,
+            code="invalid_argument",
+            message="Live strategy dispatch requires both --live and --confirm.",
+            resource="strategy",
+            local_json_output=json_output,
+        )
+        raise typer.Exit(1)
 
 
 def _format_strategy_list(response: StrategyListResponse) -> str:
@@ -343,6 +537,71 @@ def _format_strategy_review(response: StrategyReviewResponse) -> str:
 
 def _format_strategy_mutation(action: str, response: StrategyDecisionMutationResponse) -> str:
     return "\n".join([f"{action} strategy intent.", _format_intent_view(response.intent)])
+
+
+def _format_strategy_dispatch(response: StrategyDispatchResponse) -> str:
+    lines = [
+        _format_intent_view(response.intent),
+        "",
+        f"Execution ID: {response.execution.execution_id}",
+        f"Mode: {response.execution.mode}",
+        f"Decision: {response.execution.decision}",
+        f"Execution plan ID: {response.execution.execution_plan_id or '-'}",
+        f"Execution result ID: {response.execution.execution_result_id or '-'}",
+        f"Order ID: {response.execution.order_id or '-'}",
+        "Risk checks:",
+        "\n".join(_format_reason_block(item) for item in response.execution.risk_checks)
+        if response.execution.risk_checks
+        else "-",
+    ]
+    if response.execution.execution_request is not None:
+        lines.extend(
+            [
+                "Execution request:",
+                _format_execution_request(response.execution.execution_request),
+            ]
+        )
+    if response.execution.execution_reasons:
+        lines.extend(
+            [
+                "Execution reasons:",
+                "\n".join(
+                    _format_reason_block(item)
+                    for item in response.execution.execution_reasons
+                ),
+            ]
+        )
+    return "\n".join(lines)
+
+
+def _format_strategy_dispatch_pending(response: StrategyDispatchPendingResponse) -> str:
+    lines = [
+        f"Candidates: {response.total_candidates}",
+        f"Dispatched: {response.total_dispatched}",
+        f"Skipped: {response.total_skipped}",
+    ]
+    for item in response.items:
+        lines.extend(["", _format_strategy_dispatch(item)])
+    return "\n".join(lines)
+
+
+def _format_strategy_executions(response: StrategyExecutionsResponse) -> str:
+    if not response.items:
+        return "No persisted strategy executions."
+    return "\n\n".join(_format_execution_record(item) for item in response.items)
+
+
+def _format_strategy_execution_detail(response: StrategyExecutionDetailResponse) -> str:
+    lines = [
+        _format_execution_record(response.execution),
+        "",
+        f"Linked intent ID: {response.link.intent_id}",
+        f"Linked execution plan ID: {response.link.execution_plan_id or '-'}",
+        f"Linked execution result ID: {response.link.execution_result_id or '-'}",
+    ]
+    if response.intent is not None:
+        lines.extend(["", _format_intent_view(response.intent)])
+    return "\n".join(lines)
 
 
 def _format_strategy_definition(item: StrategyDefinition) -> str:
@@ -419,5 +678,55 @@ def _format_decision(item: StrategyDecisionRecord) -> str:
             f"  Decision: {item.decision}",
             f"  Decided at: {item.decided_at}",
             f"  Reason: {item.reason or '-'}",
+        ]
+    )
+
+
+def _format_execution_record(item: StrategyDispatchResultRecord) -> str:
+    lines = [
+        f"Execution ID: {item.execution_id}",
+        f"Intent ID: {item.intent_id}",
+        f"Strategy name: {item.strategy_name}",
+        f"Mode: {item.mode}",
+        f"Decision: {item.decision}",
+        f"Created at: {item.created_at}",
+        f"Market slug: {item.market_slug or '-'}",
+        f"Condition ID: {item.condition_id or '-'}",
+        f"Token ID: {item.token_id or '-'}",
+        f"Outcome: {item.outcome or '-'}",
+        f"Side: {item.side or '-'}",
+        f"Execution plan ID: {item.execution_plan_id or '-'}",
+        f"Execution result ID: {item.execution_result_id or '-'}",
+        f"Order ID: {item.order_id or '-'}",
+    ]
+    if item.execution_request is not None:
+        lines.extend(["Execution request:", _format_execution_request(item.execution_request)])
+    lines.extend(
+        [
+            "Risk checks:",
+            "\n".join(_format_reason_block(reason) for reason in item.risk_checks)
+            if item.risk_checks
+            else "-",
+        ]
+    )
+    if item.execution_reasons:
+        lines.extend(
+            [
+                "Execution reasons:",
+                "\n".join(_format_reason_block(reason) for reason in item.execution_reasons),
+            ]
+        )
+    return "\n".join(lines)
+
+
+def _format_execution_request(item: StrategyExecutionRequest) -> str:
+    return "\n".join(
+        [
+            f"  Market ref: {item.market_ref}",
+            f"  Price: {item.price}",
+            f"  Size: {item.size}",
+            f"  Notional USDC: {item.notional_usdc}",
+            f"  Order type: {item.order_type}",
+            f"  Post only: {item.post_only}",
         ]
     )

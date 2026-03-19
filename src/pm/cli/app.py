@@ -10,6 +10,7 @@ from pm.cli.clob import app as clob_app
 from pm.cli.data import app as data_app
 from pm.cli.execution import app as execution_app
 from pm.cli.market import app as market_app
+from pm.cli.risk import app as risk_app
 from pm.cli.setup import app as setup_app
 from pm.cli.strategy import app as strategy_app
 from pm.cli.stream import app as stream_app
@@ -50,6 +51,7 @@ app.add_typer(clob_app, name="clob")
 app.add_typer(data_app, name="data")
 app.add_typer(wallet_app, name="wallet")
 app.add_typer(stream_app, name="stream")
+app.add_typer(risk_app, name="risk")
 app.add_typer(strategy_app, name="strategy")
 app.add_typer(execution_app, name="exec")
 

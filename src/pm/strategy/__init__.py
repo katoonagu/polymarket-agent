@@ -1,4 +1,4 @@
-"""Read-only strategy registry and orchestrator package."""
+"""Strategy registry, review, and dispatch package exports."""
 
 from pm.strategy.models import (
     StrategyCandidateIntent,
@@ -6,7 +6,16 @@ from pm.strategy.models import (
     StrategyDecisionRecord,
     StrategyDecisionsFile,
     StrategyDefinition,
+    StrategyDispatchPendingResponse,
+    StrategyDispatchResponse,
+    StrategyDispatchResultRecord,
+    StrategyDispatchResultsFile,
     StrategyEvaluateResponse,
+    StrategyExecutionDetailResponse,
+    StrategyExecutionLinkRecord,
+    StrategyExecutionLinksFile,
+    StrategyExecutionRequest,
+    StrategyExecutionsResponse,
     StrategyIntentsFile,
     StrategyIntentsResponse,
     StrategyIntentView,
@@ -33,7 +42,10 @@ from pm.strategy.registry import (
 from pm.strategy.service import StrategyService, StrategyValidationError
 from pm.strategy.state import (
     DECISIONS_FILENAME,
+    DISPATCH_RESULTS_FILENAME,
+    EXECUTION_LINKS_FILENAME,
     INTENTS_FILENAME,
+    StrategyExecutionNotFoundError,
     StrategyIntentNotFoundError,
     StrategyStateError,
     StrategyStateService,
@@ -41,15 +53,27 @@ from pm.strategy.state import (
 
 __all__ = [
     "DECISIONS_FILENAME",
+    "DISPATCH_RESULTS_FILENAME",
+    "EXECUTION_LINKS_FILENAME",
     "INTENTS_FILENAME",
     "REGISTRY_FILENAME",
     "STATE_DIR_ENV_VAR",
     "StrategyCandidateIntent",
     "StrategyDecisionMutationResponse",
     "StrategyDecisionRecord",
+    "StrategyDispatchPendingResponse",
+    "StrategyDispatchResponse",
+    "StrategyDispatchResultRecord",
+    "StrategyDispatchResultsFile",
     "StrategyDecisionsFile",
     "StrategyDefinition",
     "StrategyEvaluateResponse",
+    "StrategyExecutionDetailResponse",
+    "StrategyExecutionLinkRecord",
+    "StrategyExecutionLinksFile",
+    "StrategyExecutionNotFoundError",
+    "StrategyExecutionRequest",
+    "StrategyExecutionsResponse",
     "StrategyIntentNotFoundError",
     "StrategyIntentView",
     "StrategyIntentsFile",

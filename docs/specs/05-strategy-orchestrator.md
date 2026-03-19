@@ -1,25 +1,26 @@
-# 05 - Read-Only Strategy and Orchestrator Spec
+# 05 - Strategy, Review, and Guarded Dispatch Spec
 
 ## Purpose
 
-This phase adds a deterministic strategy registry and orchestration layer on top of the existing public intelligence stack. The strategy layer consumes read-only market, wallet, and stream artifacts and produces candidate intents plus manual review decisions only.
+This phase adds a deterministic strategy registry and orchestration layer on top of the existing public intelligence stack. The strategy layer consumes read-only market, wallet, and stream artifacts, produces candidate intents plus manual review decisions, and supports an explicit operator-driven handoff into execution through risk-gated dispatch.
 
 It does not:
 
-- authenticate wallets
-- sign transactions
-- place or cancel orders
-- call the execution engine
+- auto-submit intents
 - run as a daemon
+- bypass execution policy checks
+- let strategy place or cancel orders directly
 - require a database
 
-Execution remains the only module allowed to place or cancel orders in later phases.
+Execution remains the only module allowed to place or cancel orders.
 
 ## Current Scope
 
-The current branch exposes a read-only `pm strategy` namespace with:
+The current branch exposes:
 
 ```text
+pm risk show [--json]
+pm risk init-defaults [--json]
 pm strategy list
 pm strategy show --name <name>
 pm strategy validate --name <name>
@@ -28,17 +29,24 @@ pm strategy intents [--limit <n>]
 pm strategy review --intent-id <id>
 pm strategy approve --intent-id <id>
 pm strategy reject --intent-id <id> --reason <text>
+pm strategy dispatch --intent-id <id> [--paper] [--live --confirm]
+pm strategy dispatch pending [--limit <n>] [--paper]
+pm strategy executions [--limit <n>]
+pm strategy execution get --execution-id <id>
 ```
 
-These commands operate on local gitignored state and existing public intelligence outputs.
+These commands operate on local gitignored state, existing public intelligence outputs, and the existing execution module. Strategy still does not post or cancel orders by itself; it may only hand off through explicit manual dispatch.
 
 ## Local State
 
-Strategy state lives under `.pm/state/`:
+Strategy and risk state live under `.pm/state/`:
 
 - `strategies.json`
 - `strategy-intents.json`
 - `strategy-decisions.json`
+- `risk-policies.json`
+- `strategy-execution-links.json`
+- `strategy-dispatch-results.json`
 
 Rules:
 
@@ -48,6 +56,7 @@ Rules:
 - validation failures surface as explicit state errors
 - past intents are never mutated in place
 - current review status is derived from the latest decision record for an intent
+- dispatch and execution-link audit history is append-only
 
 ## Seeded Strategy Registry
 
@@ -59,7 +68,11 @@ Current seeded strategies:
 2. `market_watch_reversion`
 3. `recurring_crypto_interval_observe`
 
-In v1, strategy names match strategy types exactly.
+In v1, strategy names match strategy types exactly. Dispatch is intentionally wallet-first:
+
+- `wallet_shadow_copy` is dispatch-enabled by default
+- `market_watch_reversion` is reviewable but not dispatchable
+- `recurring_crypto_interval_observe` is reviewable but not dispatchable
 
 ## Strategy Inputs
 
@@ -69,7 +82,7 @@ Consumes persisted wallet shadow simulation output:
 
 - `wallet-shadow-runs.json`
 
-It looks only at upstream shadow candidates and never executes them.
+It evaluates upstream shadow candidates during strategy review. After manual `APPROVE`, it may be converted into an execution request only through explicit `pm strategy dispatch` plus risk policy.
 
 ### `market_watch_reversion`
 
@@ -109,9 +122,9 @@ Strategy evaluation persists normalized candidate intents with at least:
 
 `source_refs` point back to the upstream wallet, market, or stream artifacts used to derive the intent.
 
-## Decision States
+## Decision States and Review
 
-The current read-only phase uses:
+The current phase uses:
 
 - `OBSERVE`
 - `WAIT`
@@ -123,50 +136,101 @@ Rules:
 - `evaluate` may emit only `OBSERVE`, `WAIT`, or `REJECT`
 - `APPROVE` is manual only
 - `approve` and `reject` append local review records only
-- no decision is forwarded to execution in this phase
+- review alone never forwards anything to execution
+- dispatch is a separate explicit operator step
 
-## Seeded Policy Behavior
+## Risk Policy
 
-### `wallet_shadow_copy`
+The current phase adds a small local `pm risk` surface:
 
-Source:
+- `pm risk show`
+- `pm risk init-defaults`
 
-- persisted wallet shadow candidate intents
+`risk-policies.json` stores one default policy and fully materialized per-strategy policies.
 
-Behavior:
+Seeded defaults:
 
-- upstream `WOULD_COPY` candidates with complete context become `WAIT`
-- upstream `WOULD_COPY` candidates with incomplete or stale context become `OBSERVE`
-- upstream `SKIP` candidates become `REJECT`
+- `wallet_shadow_copy`: `dispatch_enabled=true`
+- `market_watch_reversion`: `dispatch_enabled=false`
+- `recurring_crypto_interval_observe`: `dispatch_enabled=false`
+- `max_drift_pct=5`
+- `max_spread_pct=5`
+- `max_size_usdc_per_order=25`
+- `max_exposure_usdc_per_market=100`
+- `max_exposure_usdc_per_strategy=250`
+- `require_market_open=true`
+- `require_balance_ready=true`
+- `require_allowance_ready=true`
 
-### `market_watch_reversion`
+`pm risk show` returns built-in defaults with `persisted=false` when the file does not exist yet. `pm risk init-defaults` is idempotent and creates the file only when missing.
 
-Source:
+## Dispatch Bridge
 
-- watched markets
-- baseline market snapshots
-- fresh current snapshot context
+Manual dispatch is the only supported bridge from strategy into execution.
 
-Behavior:
+Supported commands:
 
-- default outcome is conservative
-- emits `WAIT` only when the market is active, open, and widened spread plus midpoint drift exceed the seeded thresholds
-- emits `OBSERVE` when data is incomplete or the move is weaker
-- emits `REJECT` when the market is inactive or closed
+- `pm strategy dispatch --intent-id <id> [--paper] [--live --confirm]`
+- `pm strategy dispatch pending [--limit <n>] [--paper]`
+- `pm strategy executions [--limit <n>]`
+- `pm strategy execution get --execution-id <id>`
 
-### `recurring_crypto_interval_observe`
+Rules:
 
-Source:
+- only intents whose latest manual decision is `APPROVE` may dispatch
+- only strategies with `dispatch_enabled=true` may dispatch
+- paper mode is the default
+- live dispatch requires `--live --confirm`
+- `dispatch pending` is paper-only in this phase
+- once an intent has a non-skip dispatch result, later dispatch attempts must return `SKIP already_dispatched`
 
-- recurring resolver output
-- persisted market stream events
-- persisted RTDS crypto events
+In v1, only `wallet_shadow_copy` is dispatch-enabled by default. Explicit dispatch of the other seeded strategies should return `SKIP strategy_dispatch_disabled`.
 
-Behavior:
+### Deterministic wallet-first conversion
 
-- emits `WAIT` only when recurring market direction aligns with crypto direction strongly enough
-- emits `OBSERVE` when the recurring candidate is valid but alignment is weak or incomplete
-- emits `REJECT` when the resolved recurring market is inactive or closed
+For `wallet_shadow_copy`, the bridge resolves the upstream wallet shadow candidate from stored source references and derives an execution request deterministically:
+
+- `market_ref`: prefer `condition_id`, else `market_slug`
+- `outcome`: from the approved intent
+- `side`: from the approved intent
+- `order_type`: fixed `gtc`
+- `post_only`: fixed `false`
+
+Dispatch price uses fresh public book context:
+
+- `buy`: best ask, else midpoint, else upstream `current_price`
+- `sell`: best bid, else midpoint, else upstream `current_price`
+
+Dispatch size is derived from upstream notional:
+
+- `size = simulated_size_usdc / dispatch_price`
+- rounded down to 6 decimal places
+- invalid or zero sizes return `SKIP`
+
+### Dispatch-time risk checks
+
+Risk and policy checks run before calling execution:
+
+- market active and open when required
+- drift threshold
+- spread threshold
+- max notional per order
+- max exposure per market
+- max exposure per strategy
+- balance readiness
+- allowance readiness
+
+Exposure is defined in this phase as tool-local planned exposure from prior non-skip strategy dispatch results. It is not a full account-wide risk engine.
+
+If checks fail, dispatch persists `SKIP` plus reason blocks and does not call execution. If checks pass:
+
+- paper dispatch reuses the existing execution post path in paper mode
+- live dispatch reuses the existing execution post path with `live=True` and explicit confirmation
+
+Every dispatch persists:
+
+- a normalized dispatch result
+- a link record joining `intent_id`, `execution_id`, execution plan/result ids, and order id when available
 
 ## Explainability and Partial Errors
 
@@ -182,9 +246,9 @@ Aggregate outputs may also include structured partial errors:
 - `code`
 - `message`
 
-Partial gaps should degrade into explainable `OBSERVE` or `REJECT` outcomes when possible instead of crashing the full evaluation pass.
+Partial gaps should degrade into explainable outcomes when possible instead of crashing the full evaluation or dispatch pass.
 
-## Manual Review Lifecycle
+## Manual Review and Dispatch Lifecycle
 
 The intended operator flow in the current phase is:
 
@@ -194,18 +258,23 @@ The intended operator flow in the current phase is:
 4. append a local manual decision with:
    - `pm strategy approve --intent-id ...`
    - or `pm strategy reject --intent-id ... --reason "..."`
+5. optionally hand off one approved intent with:
+   - `pm strategy dispatch --intent-id ...`
+   - or `pm strategy dispatch --intent-id ... --live --confirm`
+6. optionally inspect persisted bridge history with:
+   - `pm strategy executions`
+   - `pm strategy execution get --execution-id ...`
 
-Manual review records are append-only. The latest review record determines the current manual status shown by `review` and `intents`.
+Manual review and dispatch records are append-only. The latest review record determines manual status, while dispatch history remains a separate audit trail.
 
 ## Non-Goals in This Phase
 
 - no strategy authoring UI
-- no live execution hooks
-- no order payload generation
 - no background orchestration loop
 - no database-backed signal bus
 - no LLM-controlled execution policy
 - no automatic approval path
+- no strategy self-execution or auto-submit loop
 
 ## Future Direction
 
@@ -213,8 +282,8 @@ Later phases may add:
 
 - richer strategy configuration
 - pause and resume controls
-- execution-bound handoff after explicit approval
 - stronger observability and audit trails
 - shell or TUI review surfaces
+- broader strategy-specific execution mappings beyond wallet-first dispatch
 
-Those features are intentionally deferred until auth, signing, approval, and execution boundaries are designed explicitly.
+Those features are intentionally deferred until auth, signing, approval, execution, and operator UX boundaries are designed explicitly.

@@ -4,7 +4,7 @@
 
 The execution layer is the only module allowed to place, cancel, or eventually replace orders. Every other module in this repository may produce context, rankings, signals, candidate intents, or manual review decisions only.
 
-The current phase introduces the first controlled write path:
+The current phase includes:
 
 - authenticated setup and readiness checks
 - authenticated balances and allowance reads
@@ -13,6 +13,7 @@ The current phase introduces the first controlled write path:
 - paper-default order posting and cancellation lifecycle
 - explicitly gated live order submission and cancellation
 - bounded authenticated user-channel watch and reconciliation
+- guarded manual strategy-to-execution dispatch
 
 The current phase still does not include:
 
@@ -44,6 +45,12 @@ Implemented now:
 - `pm exec cancel`
 - `pm exec cancel-all`
 - `pm exec cancel-market`
+- `pm risk show`
+- `pm risk init-defaults`
+- `pm strategy dispatch`
+- `pm strategy dispatch pending`
+- `pm strategy executions`
+- `pm strategy execution get`
 
 Still out of scope:
 
@@ -51,7 +58,7 @@ Still out of scope:
 - automatic or daemonized reconciliation loops
 - live order polling loops
 - unbounded private websocket monitoring
-- execution orchestration from strategy
+- automatic execution orchestration from strategy
 
 ## Design Principles
 
@@ -192,6 +199,62 @@ Live mode:
 - rechecks geoblock status before writing
 - calls the official client allowance-update flow
 - persists both a local plan and a local result
+
+## Strategy-to-Execution Bridge
+
+The current phase adds a guarded bridge from manually approved strategy intents into the execution module.
+
+Commands:
+
+- `pm risk show`
+- `pm risk init-defaults`
+- `pm strategy dispatch --intent-id <id> [--paper] [--live --confirm]`
+- `pm strategy dispatch pending [--limit <n>] [--paper]`
+- `pm strategy executions [--limit <n>]`
+- `pm strategy execution get --execution-id <id>`
+
+Rules:
+
+- only intents whose latest manual decision is `APPROVE` may dispatch
+- paper mode is the default
+- live dispatch requires both `--live` and `--confirm`
+- `dispatch pending` stays paper-only in this phase
+- execution remains the only module that can actually post or cancel orders
+
+`pm risk show` returns the effective dispatch policy set. `pm risk init-defaults` creates a versioned local policy file only when missing.
+
+### Dispatch-enabled strategy scope
+
+The bridge is intentionally narrow in v1:
+
+- `wallet_shadow_copy` is dispatch-enabled by default
+- `market_watch_reversion` remains reviewable but returns `SKIP strategy_dispatch_disabled`
+- `recurring_crypto_interval_observe` remains reviewable but returns `SKIP strategy_dispatch_disabled`
+
+### Dispatch-time checks
+
+Before calling execution, the bridge runs deterministic policy and risk checks:
+
+- market active and open when required
+- drift threshold
+- spread threshold
+- max size per order
+- max exposure per market
+- max exposure per strategy
+- balance readiness
+- allowance readiness
+
+Exposure is tool-local in this phase. It is derived from prior non-skip strategy dispatch results persisted by this tool, not from a full account-wide position engine.
+
+If checks fail, dispatch returns and persists `SKIP` with explicit reason blocks. If checks pass:
+
+- paper dispatch reuses the existing order-post path with `live=False`
+- live dispatch reuses the existing order-post path with `live=True` and explicit confirmation
+
+Each dispatch persists:
+
+- a normalized dispatch result
+- a linkage record connecting the source `intent_id` to execution plan/result ids and the exchange `order_id` when available
 
 ## `pm exec dry-run`
 
@@ -405,6 +468,9 @@ Execution responses return `decision: SKIP` when relevant conditions fail, inclu
 
 The current execution phase persists append-only local audit state under `.pm/state/`:
 
+- `risk-policies.json`
+- `strategy-execution-links.json`
+- `strategy-dispatch-results.json`
 - `approval-plans.json`
 - `approval-results.json`
 - `execution-order-plans.json`
@@ -425,6 +491,7 @@ Rules:
 - background or daemonized private websocket monitoring
 - automatic retry loops
 - strategy-driven auto-submit or auto-cancel
+- strategy self-execution without explicit dispatch
 - database-backed execution storage
 
 The current phase still adds no local cache for:
@@ -440,7 +507,7 @@ The current phase still adds no local cache for:
 
 ### Intelligence modules
 
-The following modules remain unable to place or cancel orders:
+The following modules remain unable to place or cancel orders directly:
 
 - market intelligence
 - public CLOB reads
@@ -457,6 +524,8 @@ They may only emit:
 - candidate intents
 - local review decisions
 
+Strategy and orchestrator may hand off only through explicit manual dispatch plus risk policy.
+
 ### Execution module
 
 The execution module remains the only owner of:
@@ -468,7 +537,7 @@ The execution module remains the only owner of:
 - future replace flows
 - future fills reconciliation
 
-Strategy and orchestrator flows must remain unable to auto-submit during this phase.
+Execution remains the only module allowed to place or cancel orders.
 
 ## Security Requirements
 

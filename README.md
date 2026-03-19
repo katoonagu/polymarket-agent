@@ -1,6 +1,6 @@
 # polymarket-agent
 
-`polymarket-agent` is a docs-first, execution-first workspace for building a modular Polymarket system. The current branch combines a strong public intelligence stack with the first authenticated execution foundation. It uses public Gamma, public CLOB, public Data API, public streams, local gitignored operator state, authenticated setup and local order-signing, and the first guarded approval and order lifecycle paths. Live behavior exists only behind explicit operator flags and is never the default.
+`polymarket-agent` is a docs-first, execution-first workspace for building a modular Polymarket system. The current branch combines a strong public intelligence stack with the first authenticated execution foundation and a guarded strategy-dispatch bridge. It uses public Gamma, public CLOB, public Data API, public streams, local gitignored operator state, authenticated setup and local order-signing, guarded approval and order lifecycle paths, and explicit risk-gated dispatch from approved strategy intents into execution. Live behavior exists only behind explicit operator flags and is never the default.
 
 ## Principles
 
@@ -78,9 +78,11 @@ These sessions are always bounded, persist normalized captured events locally, a
 .venv\Scripts\pm wallet shadow report --address <0x...> --json
 ```
 
-### Read-only strategy registry and orchestrator
+### Strategy registry, review, and guarded dispatch
 
 ```powershell
+.venv\Scripts\pm risk show --json
+.venv\Scripts\pm risk init-defaults --json
 .venv\Scripts\pm strategy list --json
 .venv\Scripts\pm strategy show --name wallet_shadow_copy --json
 .venv\Scripts\pm strategy validate --name wallet_shadow_copy --json
@@ -89,9 +91,14 @@ These sessions are always bounded, persist normalized captured events locally, a
 .venv\Scripts\pm strategy review --intent-id <intent-id> --json
 .venv\Scripts\pm strategy approve --intent-id <intent-id> --json
 .venv\Scripts\pm strategy reject --intent-id <intent-id> --reason "operator veto" --json
+.venv\Scripts\pm strategy dispatch --intent-id <intent-id> --json
+.venv\Scripts\pm strategy dispatch --intent-id <intent-id> --live --confirm --json
+.venv\Scripts\pm strategy dispatch pending --limit 5 --json
+.venv\Scripts\pm strategy executions --limit 20 --json
+.venv\Scripts\pm strategy execution get --execution-id <execution-id> --json
 ```
 
-This namespace is still fully read-only. `evaluate` persists candidate intents and derived decisions only. `approve` and `reject` are local review actions that append decision history; they do not create orders or call execution code.
+Strategy evaluation is still read-only and persists candidate intents plus review decisions only. The only bridge into execution is an explicit operator dispatch step after manual approval and risk-policy checks. Execution remains the only module that can actually post or cancel orders.
 
 ## Authenticated Execution Foundation
 
@@ -132,6 +139,7 @@ Rules:
 - `pm exec dry-run` still builds and signs locally without posting
 - `pm exec watch` and `pm exec order wait` use the authenticated user websocket only in bounded operator-driven sessions
 - `pm exec reconcile` compares recent persisted websocket events against authenticated REST order views
+- approved strategy intents may hand off only through explicit `pm strategy dispatch` plus risk policy
 - strategy and orchestrator flows still do not auto-submit anything
 
 ## Output Contract
@@ -171,6 +179,9 @@ This branch uses local file-backed state under `.pm/state/`. These files are rep
 - `strategies.json`
 - `strategy-intents.json`
 - `strategy-decisions.json`
+- `risk-policies.json`
+- `strategy-execution-links.json`
+- `strategy-dispatch-results.json`
 - `approval-plans.json`
 - `approval-results.json`
 - `execution-order-plans.json`

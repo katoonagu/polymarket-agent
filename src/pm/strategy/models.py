@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from typing import Any
+
 from pydantic import BaseModel, Field
 
 
@@ -146,3 +148,103 @@ class StrategyDecisionMutationResponse(BaseModel):
     """Manual approve/reject response payload."""
 
     intent: StrategyIntentView
+
+
+class StrategyExecutionRequest(BaseModel):
+    """Deterministic execution request derived from an approved strategy intent."""
+
+    market_ref: str
+    market_slug: str | None = None
+    condition_id: str | None = None
+    token_id: str | None = None
+    outcome: str
+    side: str
+    price: str
+    size: str
+    notional_usdc: str
+    order_type: str = "gtc"
+    post_only: bool = False
+
+
+class StrategyExecutionLinkRecord(BaseModel):
+    """Append-only link between an intent and execution lifecycle records."""
+
+    execution_id: str
+    intent_id: str
+    strategy_name: str
+    strategy_type: str
+    mode: str
+    created_at: str
+    execution_plan_id: str | None = None
+    execution_result_id: str | None = None
+    order_id: str | None = None
+
+
+class StrategyDispatchResultRecord(BaseModel):
+    """Append-only dispatch audit record for one manual strategy handoff."""
+
+    execution_id: str
+    intent_id: str
+    strategy_name: str
+    strategy_type: str
+    mode: str
+    decision: str
+    created_at: str
+    market_slug: str | None = None
+    condition_id: str | None = None
+    token_id: str | None = None
+    outcome: str | None = None
+    side: str | None = None
+    execution_request: StrategyExecutionRequest | None = None
+    risk_checks: list[StrategyReasonBlock] = Field(default_factory=list)
+    execution_reasons: list[StrategyReasonBlock] = Field(default_factory=list)
+    execution_plan_id: str | None = None
+    execution_result_id: str | None = None
+    order_id: str | None = None
+    execution_response: dict[str, Any] | None = None
+
+
+class StrategyExecutionLinksFile(BaseModel):
+    """On-disk strategy-execution link state document."""
+
+    version: int = 1
+    links: list[StrategyExecutionLinkRecord] = Field(default_factory=list)
+
+
+class StrategyDispatchResultsFile(BaseModel):
+    """On-disk strategy dispatch-result state document."""
+
+    version: int = 1
+    results: list[StrategyDispatchResultRecord] = Field(default_factory=list)
+
+
+class StrategyDispatchResponse(BaseModel):
+    """Single manual strategy-dispatch response."""
+
+    intent: StrategyIntentView
+    link: StrategyExecutionLinkRecord
+    execution: StrategyDispatchResultRecord
+
+
+class StrategyDispatchPendingResponse(BaseModel):
+    """Batch paper dispatch response for pending approved intents."""
+
+    items: list[StrategyDispatchResponse] = Field(default_factory=list)
+    total_candidates: int = 0
+    total_dispatched: int = 0
+    total_skipped: int = 0
+
+
+class StrategyExecutionsResponse(BaseModel):
+    """Persisted strategy dispatch-result listing payload."""
+
+    items: list[StrategyDispatchResultRecord] = Field(default_factory=list)
+    total: int = 0
+
+
+class StrategyExecutionDetailResponse(BaseModel):
+    """Single persisted strategy execution detail payload."""
+
+    intent: StrategyIntentView | None = None
+    link: StrategyExecutionLinkRecord
+    execution: StrategyDispatchResultRecord

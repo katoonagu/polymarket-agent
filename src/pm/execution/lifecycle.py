@@ -324,7 +324,7 @@ class OrderLifecycleService:
                 balance_reasons = self._balance_allowance_reasons(
                     client=client,
                     settings=settings,
-                    market=plan.market,
+                    token_id=plan.market.token_id,
                     side=request.side,
                     price=request.price,
                     size=request.size,
@@ -647,12 +647,32 @@ class OrderLifecycleService:
             reasons=reasons,
         )
 
+    def balance_allowance_reasons(
+        self,
+        *,
+        token_id: str | None,
+        side: str,
+        price: str,
+        size: str,
+    ) -> list[ExecutionReasonBlock]:
+        """Return authenticated balance and allowance readiness reasons."""
+        settings = self._auth_service.require_valid_config()
+        client = self._auth_service.build_level_2_client(settings)
+        return self._balance_allowance_reasons(
+            client=client,
+            settings=settings,
+            token_id=token_id,
+            side=side,
+            price=price,
+            size=size,
+        )
+
     def _balance_allowance_reasons(
         self,
         *,
         client: Any,
         settings: Any,
-        market: Any,
+        token_id: str | None,
         side: str,
         price: str,
         size: str,
@@ -675,7 +695,7 @@ class OrderLifecycleService:
             payload = client.get_balance_allowance(
                 BalanceAllowanceParams(
                     asset_type=AssetType.CONDITIONAL,
-                    token_id=market.token_id,
+                    token_id=token_id,
                     signature_type=settings.signature_type,
                 )
             )
