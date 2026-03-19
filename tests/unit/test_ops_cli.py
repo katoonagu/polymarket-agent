@@ -463,6 +463,17 @@ def test_cycle_approved_live_requires_confirm(monkeypatch) -> None:
     assert payload["error"]["identifier"] == "confirm"
 
 
+def test_cycle_approved_live_prompt_accepts(monkeypatch) -> None:
+    monkeypatch.setattr("pm.cli.ops.OpsService", FakeOpsService)
+    monkeypatch.setattr("pm.cli.support.interactive_allowed", lambda *args, **kwargs: True)
+
+    result = runner.invoke(app, ["ops", "cycle", "approved", "--live"], input="y\n")
+
+    assert result.exit_code == 0
+    assert "live" in result.stdout
+    assert "Dispatch Cycle Summary" in result.stdout
+
+
 def test_root_output_json_works_for_status(monkeypatch) -> None:
     monkeypatch.setattr("pm.cli.ops.OpsService", FakeOpsService)
 

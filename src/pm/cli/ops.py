@@ -5,12 +5,18 @@ from __future__ import annotations
 import typer
 from rich.console import RenderableType
 
-from pm.cli.support import LOCAL_JSON_OPTION, emit_command_error, emit_command_output
+from pm.cli.support import (
+    LOCAL_JSON_OPTION,
+    emit_command_error,
+    emit_command_output,
+    resolve_live_confirmation,
+)
 from pm.common.tables import (
     empty_message,
     format_bool,
     render_group,
     row_table,
+    section_panel,
     shorten_identifier,
     summary_table,
 )
@@ -270,19 +276,19 @@ def cycle_approved(
             local_json_output=json_output,
         )
         raise typer.Exit(1)
-    if live and not confirm:
-        emit_command_error(
-            ctx,
-            code="invalid_argument",
-            message="Live mode requires --confirm.",
-            resource="ops",
-            identifier="confirm",
-            local_json_output=json_output,
-        )
-        raise typer.Exit(1)
+    confirm = resolve_live_confirmation(
+        ctx,
+        live=live,
+        confirm=confirm,
+        local_json_output=json_output,
+        resource="ops",
+        missing_confirm_message="Live mode requires --confirm.",
+        prompt_message="Dispatch approved intents through live guarded execution now?",
+        declined_message="Live approved-dispatch cycle cancelled.",
+    )
 
     try:
-        result = OpsService().cycle_approved(limit=limit, live=live)
+        result = OpsService().cycle_approved(limit=limit, live=live and confirm)
     except (OpsStateError, OpsValidationError) as exc:
         _emit_ops_error(ctx, exc=exc, json_output=json_output)
         raise typer.Exit(1) from exc
@@ -466,9 +472,9 @@ def _render_status(response: OpsStatusResponse) -> RenderableType:
         ],
     )
     if not isinstance(response, OpsVerboseStatusResponse):
-        return summary
+        return section_panel("Operator Status", summary)
     return render_group(
-        summary,
+        section_panel("Operator Status", summary),
         _render_queue(response=response.queue),
         _render_status_executions(response.recent_strategy_executions),
         _render_status_events(response.recent_execution_events),
@@ -489,7 +495,10 @@ def _render_bootstrap(response: OpsBootstrapResponse) -> RenderableType:
             ),
         ],
     )
-    return render_group(summary, _render_status(response.status))
+    return render_group(
+        section_panel("Runbook Bootstrap", summary),
+        _render_status(response.status),
+    )
 
 
 def _render_queue(*, response: OpsQueueResponse) -> RenderableType:
@@ -502,7 +511,10 @@ def _render_queue(*, response: OpsQueueResponse) -> RenderableType:
         ],
     )
     if not response.items:
-        return render_group(summary, empty_message("No queue items."))
+        return render_group(
+            section_panel("Queue Summary", summary),
+            section_panel("Operator Queue", empty_message("No queue items.")),
+        )
     table = row_table(
         title="Operator Queue",
         columns=[
@@ -527,7 +539,10 @@ def _render_queue(*, response: OpsQueueResponse) -> RenderableType:
             for item in response.items
         ],
     )
-    return render_group(summary, table)
+    return render_group(
+        section_panel("Queue Summary", summary),
+        section_panel("Operator Queue", table),
+    )
 
 
 def _render_cycle_queue(response: OpsCycleQueueResponse) -> RenderableType:
@@ -557,35 +572,44 @@ def _render_cycle_queue(response: OpsCycleQueueResponse) -> RenderableType:
             for item in response.items
         ],
     )
-    return render_group(summary, table)
+    return render_group(
+        section_panel("Cycle Queue Summary", summary),
+        section_panel("Strategy Evaluation Pass", table),
+    )
 
 
 def _render_status_executions(
     items: list[StrategyDispatchResultRecord],
 ) -> RenderableType:
     if not items:
-        return empty_message("No recent strategy executions.")
-    return row_table(
-        title="Recent Strategy Executions",
-        columns=[
-            "Execution ID",
-            "Intent ID",
-            "Decision",
-            "Mode",
-            "Market",
-            "Created",
-        ],
-        rows=[
-            [
-                shorten_identifier(item.execution_id),
-                shorten_identifier(item.intent_id),
-                item.decision,
-                item.mode,
-                item.market_slug or "-",
-                item.created_at,
-            ]
-            for item in items
-        ],
+        return section_panel(
+            "Recent Strategy Executions",
+            empty_message("No recent strategy executions."),
+        )
+    return section_panel(
+        "Recent Strategy Executions",
+        row_table(
+            title="Recent Strategy Executions",
+            columns=[
+                "Execution ID",
+                "Intent ID",
+                "Decision",
+                "Mode",
+                "Market",
+                "Created",
+            ],
+            rows=[
+                [
+                    shorten_identifier(item.execution_id),
+                    shorten_identifier(item.intent_id),
+                    item.decision,
+                    item.mode,
+                    item.market_slug or "-",
+                    item.created_at,
+                ]
+                for item in items
+            ],
+        ),
     )
 
 
@@ -605,7 +629,13 @@ def _render_dispatch_approved(response: OpsDispatchApprovedResponse) -> Renderab
         ],
     )
     if not response.items:
-        return render_group(summary, empty_message("No approved intents were dispatched."))
+        return render_group(
+            section_panel("Dispatch Cycle Summary", summary),
+            section_panel(
+                "Dispatch Results",
+                empty_message("No approved intents were dispatched."),
+            ),
+        )
     table = row_table(
         title="Dispatch Results",
         columns=["Execution ID", "Intent ID", "Decision", "Mode", "Order ID", "Created"],
@@ -621,33 +651,42 @@ def _render_dispatch_approved(response: OpsDispatchApprovedResponse) -> Renderab
             for item in response.items
         ],
     )
-    return render_group(summary, table)
+    return render_group(
+        section_panel("Dispatch Cycle Summary", summary),
+        section_panel("Dispatch Results", table),
+    )
 
 
 def _render_status_events(items: list[CapturedExecutionEvent]) -> RenderableType:
     if not items:
-        return empty_message("No recent execution events.")
-    return row_table(
-        title="Recent Execution Events",
-        columns=[
-            "Captured",
-            "Order ID",
-            "Condition",
-            "Event",
-            "Trade",
-            "Status",
-        ],
-        rows=[
-            [
-                item.captured_at,
-                shorten_identifier(item.order_id),
-                shorten_identifier(item.condition_id),
-                item.event_type,
-                item.trade_status or "-",
-                item.status or "-",
-            ]
-            for item in items
-        ],
+        return section_panel(
+            "Recent Execution Events",
+            empty_message("No recent execution events."),
+        )
+    return section_panel(
+        "Recent Execution Events",
+        row_table(
+            title="Recent Execution Events",
+            columns=[
+                "Captured",
+                "Order ID",
+                "Condition",
+                "Event",
+                "Trade",
+                "Status",
+            ],
+            rows=[
+                [
+                    item.captured_at,
+                    shorten_identifier(item.order_id),
+                    shorten_identifier(item.condition_id),
+                    item.event_type,
+                    item.trade_status or "-",
+                    item.status or "-",
+                ]
+                for item in items
+            ],
+        ),
     )
 
 
@@ -786,7 +825,7 @@ def _render_cycle_report(response: OpsCycleReportResponse) -> RenderableType:
         ],
     )
     return render_group(
-        summary,
+        section_panel("Cycle Report", summary),
         _render_status_executions(response.recent_strategy_executions),
         _render_status_events(response.recent_execution_events),
         _render_latest_reconciliation(response),
@@ -795,18 +834,24 @@ def _render_cycle_report(response: OpsCycleReportResponse) -> RenderableType:
 
 def _render_latest_reconciliation(response: OpsCycleReportResponse) -> RenderableType:
     if response.latest_reconciliation is None:
-        return empty_message("No persisted reconciliation state.")
+        return section_panel(
+            "Latest Reconciliation",
+            empty_message("No persisted reconciliation state."),
+        )
     reconciliation = response.latest_reconciliation
-    return summary_table(
-        title="Latest Reconciliation",
-        rows=[
-            ("Reconciliation ID", reconciliation.reconciliation_id),
-            ("Created", reconciliation.created_at),
-            ("Window events", str(reconciliation.summary.window_event_count)),
-            ("Total orders", str(reconciliation.summary.total_orders)),
-            ("Consistent open", str(reconciliation.summary.consistent_open)),
-            ("Consistent closed", str(reconciliation.summary.consistent_closed)),
-            ("Inconclusive", str(reconciliation.summary.inconclusive)),
-            ("Mismatch", str(reconciliation.summary.mismatch)),
-        ],
+    return section_panel(
+        "Latest Reconciliation",
+        summary_table(
+            title="Latest Reconciliation",
+            rows=[
+                ("Reconciliation ID", reconciliation.reconciliation_id),
+                ("Created", reconciliation.created_at),
+                ("Window events", str(reconciliation.summary.window_event_count)),
+                ("Total orders", str(reconciliation.summary.total_orders)),
+                ("Consistent open", str(reconciliation.summary.consistent_open)),
+                ("Consistent closed", str(reconciliation.summary.consistent_closed)),
+                ("Inconclusive", str(reconciliation.summary.inconclusive)),
+                ("Mismatch", str(reconciliation.summary.mismatch)),
+            ],
+        ),
     )

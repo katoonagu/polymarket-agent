@@ -5,8 +5,13 @@ from __future__ import annotations
 import typer
 from rich.console import RenderableType
 
-from pm.cli.support import LOCAL_JSON_OPTION, emit_command_error, emit_command_output
-from pm.common.tables import empty_message, row_table, shorten_identifier
+from pm.cli.support import (
+    LOCAL_JSON_OPTION,
+    emit_command_error,
+    emit_command_output,
+    resolve_live_confirmation,
+)
+from pm.common.tables import empty_message, row_table, section_panel, shorten_identifier
 from pm.strategy import (
     StrategyCandidateIntent,
     StrategyDecisionMutationResponse,
@@ -305,7 +310,7 @@ def dispatch_intent(
             local_json_output=json_output,
         )
         raise typer.Exit(1)
-    _guard_dispatch_flags(
+    confirm = _guard_dispatch_flags(
         ctx,
         paper=paper,
         live=live,
@@ -460,7 +465,7 @@ def _guard_dispatch_flags(
     live: bool,
     confirm: bool = False,
     json_output: bool,
-) -> None:
+) -> bool:
     if paper and live:
         emit_command_error(
             ctx,
@@ -470,15 +475,16 @@ def _guard_dispatch_flags(
             local_json_output=json_output,
         )
         raise typer.Exit(1)
-    if live and not confirm:
-        emit_command_error(
-            ctx,
-            code="invalid_argument",
-            message="Live strategy dispatch requires both --live and --confirm.",
-            resource="strategy",
-            local_json_output=json_output,
-        )
-        raise typer.Exit(1)
+    return resolve_live_confirmation(
+        ctx,
+        live=live,
+        confirm=confirm,
+        local_json_output=json_output,
+        resource="strategy",
+        missing_confirm_message="Live strategy dispatch requires both --live and --confirm.",
+        prompt_message="Dispatch this approved strategy intent to live execution now?",
+        declined_message="Live strategy dispatch cancelled.",
+    )
 
 
 def _format_strategy_list(response: StrategyListResponse) -> str:
@@ -527,30 +533,33 @@ def _format_strategy_intents(response: StrategyIntentsResponse) -> str:
 
 def _render_strategy_intents(response: StrategyIntentsResponse) -> RenderableType:
     if not response.items:
-        return empty_message("No persisted strategy intents.")
-    return row_table(
-        title="Strategy Intents",
-        columns=[
-            "Intent ID",
-            "Strategy",
-            "Current",
-            "Derived",
-            "Market",
-            "Outcome",
-            "Created",
-        ],
-        rows=[
-            [
-                shorten_identifier(item.intent.intent_id),
-                item.intent.strategy_name,
-                item.current_decision,
-                item.intent.decision,
-                item.intent.market_slug or "-",
-                item.intent.outcome or "-",
-                item.intent.created_at,
-            ]
-            for item in response.items
-        ],
+        return section_panel("Strategy Intents", empty_message("No persisted strategy intents."))
+    return section_panel(
+        "Strategy Intents",
+        row_table(
+            title="Strategy Intents",
+            columns=[
+                "Intent ID",
+                "Strategy",
+                "Current",
+                "Derived",
+                "Market",
+                "Outcome",
+                "Created",
+            ],
+            rows=[
+                [
+                    shorten_identifier(item.intent.intent_id),
+                    item.intent.strategy_name,
+                    item.current_decision,
+                    item.intent.decision,
+                    item.intent.market_slug or "-",
+                    item.intent.outcome or "-",
+                    item.intent.created_at,
+                ]
+                for item in response.items
+            ],
+        ),
     )
 
 
@@ -626,30 +635,36 @@ def _format_strategy_executions(response: StrategyExecutionsResponse) -> str:
 
 def _render_strategy_executions(response: StrategyExecutionsResponse) -> RenderableType:
     if not response.items:
-        return empty_message("No persisted strategy executions.")
-    return row_table(
-        title="Strategy Executions",
-        columns=[
-            "Execution ID",
-            "Intent ID",
-            "Decision",
-            "Mode",
-            "Market",
-            "Order ID",
-            "Created",
-        ],
-        rows=[
-            [
-                shorten_identifier(item.execution_id),
-                shorten_identifier(item.intent_id),
-                item.decision,
-                item.mode,
-                item.market_slug or "-",
-                shorten_identifier(item.order_id),
-                item.created_at,
-            ]
-            for item in response.items
-        ],
+        return section_panel(
+            "Strategy Executions",
+            empty_message("No persisted strategy executions."),
+        )
+    return section_panel(
+        "Strategy Executions",
+        row_table(
+            title="Strategy Executions",
+            columns=[
+                "Execution ID",
+                "Intent ID",
+                "Decision",
+                "Mode",
+                "Market",
+                "Order ID",
+                "Created",
+            ],
+            rows=[
+                [
+                    shorten_identifier(item.execution_id),
+                    shorten_identifier(item.intent_id),
+                    item.decision,
+                    item.mode,
+                    item.market_slug or "-",
+                    shorten_identifier(item.order_id),
+                    item.created_at,
+                ]
+                for item in response.items
+            ],
+        ),
     )
 
 

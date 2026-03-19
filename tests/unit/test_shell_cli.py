@@ -40,6 +40,7 @@ def test_root_help_lists_shell() -> None:
     result = runner.invoke(app, ["--help"])
 
     assert result.exit_code == 0
+    assert "POLYMARKET AGENT" in result.stdout
     assert "shell" in result.stdout
 
 
@@ -73,7 +74,8 @@ def test_shell_loop_executes_commands_and_exits_on_quit() -> None:
         ["ops", "queue", "--json"],
         ["market", "show", "--slug", "btc"],
     ]
-    assert any("Shell Shortcuts" in item for item in console.printed)
+    assert any("POLYMARKET AGENT" in item for item in console.printed)
+    assert any("Quick Menu" in item for item in console.printed)
     assert any("Shell ended." in item for item in console.printed)
 
 
@@ -84,3 +86,30 @@ def test_shell_loop_exits_on_eof() -> None:
     shell.run()
 
     assert any("Shell ended." in item for item in console.printed)
+
+
+def test_shell_menu_numeric_shortcuts_and_back() -> None:
+    executed: list[list[str]] = []
+    console = FakeConsole(inputs=["1", "1", "btc", "back", "3", "2", "quit"])
+
+    shell = OperatorShell(
+        console=console,  # type: ignore[arg-type]
+        executor=lambda tokens: executed.append(tokens) or 0,
+    )
+    shell.run()
+
+    assert executed == [
+        ["market", "search", "--query", "btc"],
+        ["ops", "review", "next"],
+    ]
+    assert any("Market Workflows" in item for item in console.printed)
+    assert any("Strategy Workflows" in item for item in console.printed)
+
+
+def test_shell_menu_command_reprints_menu() -> None:
+    console = FakeConsole(inputs=["menu", "quit"])
+    shell = OperatorShell(console=console, executor=lambda tokens: 0)  # type: ignore[arg-type]
+
+    shell.run()
+
+    assert sum("Quick Menu" in item for item in console.printed) >= 2

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import os
+from collections.abc import Mapping
 from dataclasses import dataclass
 from typing import Any
 
@@ -31,6 +32,7 @@ from pm.auth.models import (
     SetupGuideCheckpoint,
     SetupGuideEnvironmentItem,
     SetupGuideResponse,
+    SetupWizardResponse,
 )
 
 DEFAULT_CLOB_HOST = "https://clob.polymarket.com"
@@ -74,10 +76,12 @@ class AuthService:
         *,
         http_client: httpx.Client | None = None,
         sdk_client_cls: type[SDKClobClient] = SDKClobClient,
+        env_overrides: Mapping[str, str | None] | None = None,
     ) -> None:
         self._owns_http_client = http_client is None
         self._http_client = http_client or httpx.Client(timeout=DEFAULT_TIMEOUT)
         self._sdk_client_cls = sdk_client_cls
+        self._env_overrides = dict(env_overrides or {})
 
     def __enter__(self) -> AuthService:
         return self
@@ -279,6 +283,30 @@ class AuthService:
             next_steps=next_steps,
         )
 
+    def wizard(
+        self,
+        *,
+        interactive: bool,
+        private_key_source: str,
+        session_only_used: bool = False,
+    ) -> SetupWizardResponse:
+        """Return the current setup wizard state without persisting secrets."""
+        guide = self.guide()
+        has_private_key = guide.auth.private_key_present
+        resolved_source = private_key_source if has_private_key else "missing"
+        return SetupWizardResponse(
+            auth=guide.auth,
+            doctor=guide.doctor,
+            environment_items=guide.environment_items,
+            checkpoints=guide.checkpoints,
+            next_steps=guide.next_steps,
+            interactive=interactive,
+            has_private_key=has_private_key,
+            private_key_source=resolved_source,
+            session_only_supported=True,
+            session_only_used=session_only_used,
+        )
+
     def derive_api_key(self) -> AuthDeriveApiKeyResponse:
         """Derive ephemeral Level 2 API credentials without persisting them."""
         settings = self.require_valid_config()
@@ -323,11 +351,11 @@ class AuthService:
 
     def require_valid_config(self) -> AuthSettings:
         """Require a complete valid authenticated environment configuration."""
-        private_key = os.getenv(PRIVATE_KEY_ENV, "").strip()
+        private_key = (self._env(PRIVATE_KEY_ENV) or "").strip()
         if not private_key:
             raise AuthValidationError(f"{PRIVATE_KEY_ENV} is required for authenticated commands.")
 
-        signature_raw = os.getenv(SIGNATURE_TYPE_ENV, "").strip()
+        signature_raw = (self._env(SIGNATURE_TYPE_ENV) or "").strip()
         if not signature_raw:
             raise AuthValidationError(
                 f"{SIGNATURE_TYPE_ENV} is required for authenticated commands."
@@ -337,7 +365,7 @@ class AuthService:
         except ValueError as exc:
             raise AuthValidationError(str(exc)) from exc
 
-        funder_address = os.getenv(FUNDER_ENV, "").strip() or None
+        funder_address = (self._env(FUNDER_ENV) or "").strip() or None
         if signature_type != 0 and not funder_address:
             raise AuthValidationError(
                 f"{FUNDER_ENV} is required when signature type is {signature_type_name}."
@@ -346,11 +374,11 @@ class AuthService:
             raise AuthValidationError(f"{FUNDER_ENV} must use 0x followed by 40 hex characters.")
 
         clob_host = (
-            os.getenv(CLOB_HOST_ENV, "").strip()
-            or os.getenv(LEGACY_CLOB_HOST_ENV, "").strip()
+            (self._env(CLOB_HOST_ENV) or "").strip()
+            or (self._env(LEGACY_CLOB_HOST_ENV) or "").strip()
             or DEFAULT_CLOB_HOST
         ).rstrip("/")
-        chain_id_raw = os.getenv(CHAIN_ID_ENV, "").strip()
+        chain_id_raw = (self._env(CHAIN_ID_ENV) or "").strip()
         if clob_host != DEFAULT_CLOB_HOST and not chain_id_raw:
             raise AuthValidationError(
                 f"{CHAIN_ID_ENV} is required when {CLOB_HOST_ENV} overrides the default host."
@@ -491,15 +519,15 @@ class AuthService:
         errors: list[AuthSectionError],
         require_private_key: bool,
     ) -> AuthContext:
-        private_key = os.getenv(PRIVATE_KEY_ENV, "").strip()
-        signature_raw = os.getenv(SIGNATURE_TYPE_ENV, "").strip()
-        funder_address = os.getenv(FUNDER_ENV, "").strip() or None
+        private_key = (self._env(PRIVATE_KEY_ENV) or "").strip()
+        signature_raw = (self._env(SIGNATURE_TYPE_ENV) or "").strip()
+        funder_address = (self._env(FUNDER_ENV) or "").strip() or None
         clob_host = (
-            os.getenv(CLOB_HOST_ENV, "").strip()
-            or os.getenv(LEGACY_CLOB_HOST_ENV, "").strip()
+            (self._env(CLOB_HOST_ENV) or "").strip()
+            or (self._env(LEGACY_CLOB_HOST_ENV) or "").strip()
             or DEFAULT_CLOB_HOST
         ).rstrip("/")
-        chain_id_raw = os.getenv(CHAIN_ID_ENV, "").strip()
+        chain_id_raw = (self._env(CHAIN_ID_ENV) or "").strip()
 
         chain_id: int | None = (
             DEFAULT_CHAIN_ID if not chain_id_raw and clob_host == DEFAULT_CLOB_HOST else None
@@ -611,13 +639,13 @@ class AuthService:
         self,
         auth: AuthContext,
     ) -> list[SetupGuideEnvironmentItem]:
-        signature_raw = os.getenv(SIGNATURE_TYPE_ENV, "").strip()
-        funder_raw = os.getenv(FUNDER_ENV, "").strip()
+        signature_raw = (self._env(SIGNATURE_TYPE_ENV) or "").strip()
+        funder_raw = (self._env(FUNDER_ENV) or "").strip()
         custom_host = bool(
-            os.getenv(CLOB_HOST_ENV, "").strip()
-            or os.getenv(LEGACY_CLOB_HOST_ENV, "").strip()
+            (self._env(CLOB_HOST_ENV) or "").strip()
+            or (self._env(LEGACY_CLOB_HOST_ENV) or "").strip()
         )
-        chain_raw = os.getenv(CHAIN_ID_ENV, "").strip()
+        chain_raw = (self._env(CHAIN_ID_ENV) or "").strip()
         funder_required = auth.signature_type not in (None, 0)
         chain_required = custom_host
         return [
@@ -804,6 +832,11 @@ class AuthService:
             "Set the required environment variables, then re-run pm setup doctor --json."
         )
         return steps
+
+    def _env(self, name: str) -> str | None:
+        if name in self._env_overrides:
+            return self._env_overrides[name]
+        return os.getenv(name)
 
 
 def _parse_signature_type(value: str) -> tuple[int, str]:

@@ -202,6 +202,54 @@ class FakeLifecycleCLIService:
         return _mutation("cancel_market", market=market, token_id=token_id)
 
 
+class SpyLifecycleCLIService(FakeLifecycleCLIService):
+    def __init__(self) -> None:
+        self.last_set_approval: dict[str, object] | None = None
+        self.last_post: dict[str, object] | None = None
+        self.last_cancel: dict[str, object] | None = None
+
+    def set_approval(
+        self,
+        *,
+        asset: str,
+        live: bool = False,
+        confirm: bool = False,
+    ) -> ApprovalSetResponse:
+        self.last_set_approval = {
+            "asset": asset,
+            "live": live,
+            "confirm": confirm,
+        }
+        return super().set_approval(asset=asset, live=live, confirm=confirm)
+
+    def post(self, **kwargs: object) -> PostOrderResponse:
+        self.last_post = dict(kwargs)
+        response = super().post(**kwargs)
+        if bool(kwargs.get("live", False)):
+            return response.model_copy(
+                update={
+                    "mode": "live",
+                    "decision": "POSTED",
+                    "live_response": {"orderID": "order-live-1"},
+                }
+            )
+        return response
+
+    def cancel(
+        self,
+        *,
+        order_id: str,
+        live: bool = False,
+        confirm: bool = False,
+    ) -> ExecutionMutationResponse:
+        self.last_cancel = {
+            "order_id": order_id,
+            "live": live,
+            "confirm": confirm,
+        }
+        return _mutation("cancel", order_id=order_id, live=live)
+
+
 def test_approve_check_and_set_json(monkeypatch) -> None:
     monkeypatch.setattr("pm.cli.approve.OrderLifecycleService", lambda: FakeLifecycleCLIService())
 
@@ -267,27 +315,113 @@ def test_exec_root_output_json_for_cancel_all(monkeypatch) -> None:
     assert json.loads(result.stdout)["decision"] == "WOULD_CANCEL_ALL"
 
 
+def test_approve_live_prompt_decline_cancels(monkeypatch) -> None:
+    monkeypatch.setattr("pm.cli.support.interactive_allowed", lambda *args, **kwargs: True)
+
+    result = runner.invoke(app, ["approve", "set", "--asset", "usdc", "--live"], input="n\n")
+
+    assert result.exit_code == 0
+    assert "cancelled" in result.stdout.lower()
+
+
+def test_exec_post_live_prompt_accepts_and_sets_confirm(monkeypatch) -> None:
+    service = SpyLifecycleCLIService()
+    monkeypatch.setattr("pm.cli.execution.OrderLifecycleService", lambda: service)
+    monkeypatch.setattr("pm.cli.support.interactive_allowed", lambda *args, **kwargs: True)
+
+    result = runner.invoke(
+        app,
+        [
+            "exec",
+            "post",
+            "--market",
+            "btc-above-100k",
+            "--outcome",
+            "yes",
+            "--side",
+            "buy",
+            "--price",
+            "0.55",
+            "--size",
+            "10",
+            "--live",
+        ],
+        input="y\n",
+    )
+
+    assert result.exit_code == 0
+    assert service.last_post is not None
+    assert service.last_post["live"] is True
+    assert service.last_post["confirm"] is True
+    assert "POSTED" in result.stdout
+
+
+def test_exec_cancel_live_prompt_decline_cancels(monkeypatch) -> None:
+    service = SpyLifecycleCLIService()
+    monkeypatch.setattr("pm.cli.execution.OrderLifecycleService", lambda: service)
+    monkeypatch.setattr("pm.cli.support.interactive_allowed", lambda *args, **kwargs: True)
+
+    result = runner.invoke(
+        app,
+        ["exec", "cancel", "--order-id", "order-123", "--live"],
+        input="n\n",
+    )
+
+    assert result.exit_code == 0
+    assert service.last_cancel is None
+    assert "cancelled" in result.stdout.lower()
+
+
+def test_exec_post_live_json_requires_confirm(monkeypatch) -> None:
+    monkeypatch.setattr("pm.cli.execution.OrderLifecycleService", lambda: FakeLifecycleCLIService())
+
+    result = runner.invoke(
+        app,
+        [
+            "exec",
+            "post",
+            "--market",
+            "btc-above-100k",
+            "--outcome",
+            "yes",
+            "--side",
+            "buy",
+            "--price",
+            "0.55",
+            "--size",
+            "10",
+            "--live",
+            "--json",
+        ],
+    )
+
+    assert result.exit_code == 1
+    payload = json.loads(result.stdout)
+    assert payload["error"]["identifier"] == "confirm"
+
+
 def _mutation(
     action: str,
     order_id: str | None = None,
     market: str | None = None,
     token_id: str | None = None,
+    live: bool = False,
 ) -> ExecutionMutationResponse:
     return ExecutionMutationResponse(
         auth=_auth_context(),
         action=action,
-        mode="paper",
+        mode="live" if live else "paper",
         decision={
-            "cancel": "WOULD_CANCEL",
-            "cancel_all": "WOULD_CANCEL_ALL",
-            "cancel_market": "WOULD_CANCEL_MARKET",
+            "cancel": "CANCELLED" if live else "WOULD_CANCEL",
+            "cancel_all": "CANCELLED" if live else "WOULD_CANCEL_ALL",
+            "cancel_market": "CANCELLED" if live else "WOULD_CANCEL_MARKET",
         }[action],
         plan_id="execution_plan_1",
         result_id="execution_result_1",
         order_id=order_id,
         market=market,
         token_id=token_id,
-        response=None,
+        response={"ok": True} if live else None,
         reasons=[
             ExecutionReasonBlock(
                 section="auth_config",

@@ -204,6 +204,11 @@ Deliver a more operator-friendly CLI and TUI surface inspired by the official Po
   - stronger table-first human-readable output for key operator commands
   - `pm setup guide`
   - `pm shell`
+- First interactive CLI polish slice:
+  - `pm setup wizard`
+  - blue operator-style banners and framed sections for root, setup, shell, and operator-status flows
+  - menu-driven shell shortcuts for common workflows
+  - interactive Y/N confirmations for sensitive live actions in human mode
 - Future command placeholders for broader wallet and setup surfaces
 - Explicit architectural boundaries for future execution-adjacent UX
 - Guardrails that keep read-only intelligence phases separate from auth and live operator flows
@@ -220,6 +225,7 @@ Deliver a more operator-friendly CLI and TUI surface inspired by the official Po
 - The parity research note exists and is linked from repo docs
 - The roadmap explicitly names the CLI/TUI parity track
 - `pm setup guide`, `pm shell`, and `pm status --verbose` are documented as implemented
+- `pm setup wizard` and the first interactive confirmation and banner/menu polish slice are documented as implemented
 - The CLI spec distinguishes the delivered parity slice from still-deferred parity targets
 - Repo docs clearly separate current UX parity work from future live/operator expansions
 

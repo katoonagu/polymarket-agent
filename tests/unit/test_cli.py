@@ -27,6 +27,7 @@ def test_root_help_lists_namespaces_and_output_contract() -> None:
     result = runner.invoke(app, ["--help"])
 
     assert result.exit_code == 0
+    assert "POLYMARKET AGENT" in result.stdout
     assert "setup" in result.stdout
     assert "auth" in result.stdout
     assert "approve" in result.stdout

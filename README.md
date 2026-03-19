@@ -1,6 +1,6 @@
 # polymarket-agent
 
-`polymarket-agent` is a docs-first, execution-first workspace for building a modular Polymarket system. The current branch combines a strong public intelligence stack with guarded authenticated execution, a risk-gated strategy-dispatch bridge, a local-first operator control plane, a bounded one-cycle runbook layer, and the first CLI/TUI parity slice. It uses public Gamma, public CLOB, public Data API, public streams, local gitignored operator state, authenticated setup and local order-signing, guarded approval and order lifecycle paths, explicit manual dispatch from approved strategy intents into execution, workflow-session tooling for operator review, bounded runbook commands for queueing and dispatch, a bounded interactive shell, and richer Rich-based terminal tables for the main operator workflows. Live behavior exists only behind explicit operator flags and is never the default.
+`polymarket-agent` is a docs-first, execution-first workspace for building a modular Polymarket system. The current branch combines a strong public intelligence stack with guarded authenticated execution, a risk-gated strategy-dispatch bridge, a local-first operator control plane, a bounded one-cycle runbook layer, the first CLI/TUI parity slice, and the first interactive CLI UX polish pass. It uses public Gamma, public CLOB, public Data API, public streams, local gitignored operator state, authenticated setup and local order-signing, guarded approval and order lifecycle paths, explicit manual dispatch from approved strategy intents into execution, workflow-session tooling for operator review, bounded runbook commands for queueing and dispatch, a bounded interactive shell, an env-only setup wizard, and richer Rich-based framed terminal output for the main operator workflows. Live behavior exists only behind explicit operator flags and is never the default.
 
 ## Principles
 
@@ -125,6 +125,7 @@ This layer stays local-first and operator-driven. It aggregates pending review w
 
 ```powershell
 .venv\Scripts\pm setup guide --json
+.venv\Scripts\pm setup wizard
 .venv\Scripts\pm status --verbose
 .venv\Scripts\pm shell
 ```
@@ -132,9 +133,11 @@ This layer stays local-first and operator-driven. It aggregates pending review w
 This first parity slice stays intentionally narrow:
 
 - `pm setup guide` is env-only and non-mutating
+- `pm setup wizard` is bounded, interactive, and never persists plaintext private keys
 - `pm status --verbose` adds richer queue and recent-activity previews without live reads
-- `pm shell` is a bounded REPL over existing commands, not a daemon or full-screen TUI
-- selected commands now use richer human-readable tables while JSON stays normalized
+- `pm shell` is a bounded REPL with quick-menu shortcuts, not a daemon or full-screen TUI
+- selected commands now use richer framed human-readable sections while JSON stays normalized
+- interactive live confirmations add ergonomics in human mode without weakening `--live --confirm` safety in JSON or non-TTY flows
 
 ## Authenticated Execution Foundation
 
@@ -171,6 +174,7 @@ Rules:
 - `pm approve set` is preview-only unless `--live --confirm` is present
 - `pm exec post`, `pm exec cancel`, `pm exec cancel-all`, and `pm exec cancel-market` are paper-by-default
 - real approval writes and real exchange mutations require explicit `--live --confirm`
+- interactive human mode may prompt for Y/N confirmation when `--live` is supplied without `--confirm`; JSON and non-TTY flows still require explicit `--confirm`
 - geoblock checks run before live approval writes and live order writes
 - `pm exec dry-run` still builds and signs locally without posting
 - `pm exec watch` and `pm exec order wait` use the authenticated user websocket only in bounded operator-driven sessions
@@ -178,6 +182,7 @@ Rules:
 - approved strategy intents may hand off only through explicit `pm strategy dispatch` plus risk policy
 - `pm status` and `pm ops` aggregate local strategy, risk, and execution state without adding a daemon or auto-submit loop
 - `pm setup guide` summarizes env requirements, signature/funder expectations, geoblock, balances, and allowances without writing config
+- `pm setup wizard` may accept a hidden session-only private key for one wizard run, but it never persists plaintext secrets
 - `pm shell` is a bounded operator shell over existing command workflows only
 - strategy and orchestrator flows still do not auto-submit anything
 
@@ -261,6 +266,7 @@ py -3.11 -m venv .venv
 ## Intentional Differences From Official CLI
 
 - Secrets stay env-only by default; this branch does not create or import plaintext wallet config.
+- `pm setup wizard` may use a hidden session-only private key during one wizard run, but it still does not persist plaintext secret material.
 - JSON responses use normalized contracts instead of mirroring raw upstream payloads.
 - Paper/default mode and explicit `--live --confirm` gates remain the only path to live writes.
 - `pm shell` is a bounded REPL, not a daemonized or full-screen terminal UI.

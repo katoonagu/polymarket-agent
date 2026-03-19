@@ -5,7 +5,12 @@ from __future__ import annotations
 import typer
 
 from pm.auth import AuthClientError, AuthValidationError
-from pm.cli.support import LOCAL_JSON_OPTION, emit_command_error, emit_command_output
+from pm.cli.support import (
+    LOCAL_JSON_OPTION,
+    emit_command_error,
+    emit_command_output,
+    resolve_live_confirmation,
+)
 from pm.execution import (
     ApprovalCheckResponse,
     ApprovalSetResponse,
@@ -49,6 +54,16 @@ def approve_set(
     json_output: bool = LOCAL_JSON_OPTION,
 ) -> None:
     """Preview or perform an approval write."""
+    confirm = resolve_live_confirmation(
+        ctx,
+        live=live,
+        confirm=confirm,
+        local_json_output=json_output,
+        resource="approve",
+        missing_confirm_message="Live approval writes require both --live and --confirm.",
+        prompt_message=f"Approve live {asset.strip().lower()} allowance update now?",
+        declined_message="Live approval update cancelled.",
+    )
     try:
         result = OrderLifecycleService().set_approval(
             asset=asset,

@@ -249,11 +249,39 @@ def test_strategy_dispatch_live_requires_confirm() -> None:
     assert json.loads(result.stdout) == {
         "error": {
             "code": "invalid_argument",
+            "identifier": "confirm",
             "message": "Live strategy dispatch requires both --live and --confirm.",
             "resource": "strategy",
         },
         "ok": False,
     }
+
+
+def test_strategy_dispatch_live_prompt_accepts(monkeypatch) -> None:
+    monkeypatch.setattr("pm.cli.strategy.StrategyDispatchService", FakeStrategyDispatchService)
+    monkeypatch.setattr("pm.cli.support.interactive_allowed", lambda *args, **kwargs: True)
+
+    result = runner.invoke(
+        app,
+        ["strategy", "dispatch", "--intent-id", "intent-123", "--live"],
+        input="y\n",
+    )
+
+    assert result.exit_code == 0
+    assert "POSTED" in result.stdout
+
+
+def test_strategy_dispatch_live_prompt_decline_cancels(monkeypatch) -> None:
+    monkeypatch.setattr("pm.cli.support.interactive_allowed", lambda *args, **kwargs: True)
+
+    result = runner.invoke(
+        app,
+        ["strategy", "dispatch", "--intent-id", "intent-123", "--live"],
+        input="n\n",
+    )
+
+    assert result.exit_code == 0
+    assert "cancelled" in result.stdout.lower()
 
 
 def test_root_output_json_works_for_risk(monkeypatch) -> None:

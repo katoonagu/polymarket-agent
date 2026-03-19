@@ -6,8 +6,13 @@ import typer
 from rich.console import RenderableType
 
 from pm.auth import AuthClientError, AuthValidationError
-from pm.cli.support import LOCAL_JSON_OPTION, emit_command_error, emit_command_output
-from pm.common.tables import empty_message, row_table, shorten_identifier
+from pm.cli.support import (
+    LOCAL_JSON_OPTION,
+    emit_command_error,
+    emit_command_output,
+    resolve_live_confirmation,
+)
+from pm.common.tables import empty_message, row_table, section_panel, shorten_identifier
 from pm.execution import (
     DryRunResponse,
     DryRunService,
@@ -104,6 +109,16 @@ def post_order(
             local_json_output=json_output,
         )
         raise typer.Exit(1)
+    confirm = resolve_live_confirmation(
+        ctx,
+        live=live,
+        confirm=confirm,
+        local_json_output=json_output,
+        resource="execution",
+        missing_confirm_message="Live order posting requires both --live and --confirm.",
+        prompt_message="Post this order through the live guarded execution path now?",
+        declined_message="Live order post cancelled.",
+    )
     try:
         result = OrderLifecycleService().post(
             market_ref=market,
@@ -286,7 +301,16 @@ def cancel(
     json_output: bool = LOCAL_JSON_OPTION,
 ) -> None:
     """Preview or cancel one order."""
-    _guard_mode_flags(ctx, paper=paper, live=live, json_output=json_output)
+    confirm = _guard_mode_flags(
+        ctx,
+        paper=paper,
+        live=live,
+        confirm=confirm,
+        json_output=json_output,
+        missing_confirm_message="Live order cancellation requires both --live and --confirm.",
+        prompt_message="Cancel this order through the live guarded execution path now?",
+        declined_message="Live order cancellation cancelled.",
+    )
     try:
         result = OrderLifecycleService().cancel(order_id=order_id, live=live, confirm=confirm)
     except (AuthValidationError, AuthClientError, ExecutionValidationError) as exc:
@@ -309,7 +333,16 @@ def cancel_all(
     json_output: bool = LOCAL_JSON_OPTION,
 ) -> None:
     """Preview or cancel all open orders."""
-    _guard_mode_flags(ctx, paper=paper, live=live, json_output=json_output)
+    confirm = _guard_mode_flags(
+        ctx,
+        paper=paper,
+        live=live,
+        confirm=confirm,
+        json_output=json_output,
+        missing_confirm_message="Live order cancellation requires both --live and --confirm.",
+        prompt_message="Cancel all open orders through the live guarded execution path now?",
+        declined_message="Live order cancellation cancelled.",
+    )
     try:
         result = OrderLifecycleService().cancel_all(live=live, confirm=confirm)
     except (AuthValidationError, AuthClientError, ExecutionValidationError) as exc:
@@ -334,7 +367,16 @@ def cancel_market(
     json_output: bool = LOCAL_JSON_OPTION,
 ) -> None:
     """Preview or cancel market-scoped orders."""
-    _guard_mode_flags(ctx, paper=paper, live=live, json_output=json_output)
+    confirm = _guard_mode_flags(
+        ctx,
+        paper=paper,
+        live=live,
+        confirm=confirm,
+        json_output=json_output,
+        missing_confirm_message="Live order cancellation requires both --live and --confirm.",
+        prompt_message="Cancel market-scoped orders through the live guarded execution path now?",
+        declined_message="Live order cancellation cancelled.",
+    )
     try:
         result = OrderLifecycleService().cancel_market(
             market=market,
@@ -362,8 +404,12 @@ def _guard_mode_flags(
     *,
     paper: bool,
     live: bool,
+    confirm: bool,
     json_output: bool,
-) -> None:
+    missing_confirm_message: str,
+    prompt_message: str,
+    declined_message: str,
+) -> bool:
     if paper and live:
         emit_command_error(
             ctx,
@@ -373,6 +419,16 @@ def _guard_mode_flags(
             local_json_output=json_output,
         )
         raise typer.Exit(1)
+    return resolve_live_confirmation(
+        ctx,
+        live=live,
+        confirm=confirm,
+        local_json_output=json_output,
+        resource="execution",
+        missing_confirm_message=missing_confirm_message,
+        prompt_message=prompt_message,
+        declined_message=declined_message,
+    )
 
 
 def _emit_exec_error(
@@ -546,32 +602,38 @@ def _format_events(response: ExecutionEventsResponse) -> str:
 
 def _render_events(response: ExecutionEventsResponse) -> RenderableType:
     if not response.items:
-        return empty_message("No persisted execution events.")
-    return row_table(
-        title="Execution Events",
-        columns=[
-            "Captured",
-            "Order ID",
-            "Condition",
-            "Event",
-            "Trade",
-            "Status",
-            "Price",
-            "Size",
-        ],
-        rows=[
-            [
-                item.captured_at,
-                shorten_identifier(item.order_id),
-                shorten_identifier(item.condition_id),
-                item.event_type,
-                item.trade_status or "-",
-                item.status or "-",
-                item.price or "-",
-                item.size or "-",
-            ]
-            for item in response.items
-        ],
+        return section_panel(
+            "Execution Events",
+            empty_message("No persisted execution events."),
+        )
+    return section_panel(
+        "Execution Events",
+        row_table(
+            title="Execution Events",
+            columns=[
+                "Captured",
+                "Order ID",
+                "Condition",
+                "Event",
+                "Trade",
+                "Status",
+                "Price",
+                "Size",
+            ],
+            rows=[
+                [
+                    item.captured_at,
+                    shorten_identifier(item.order_id),
+                    shorten_identifier(item.condition_id),
+                    item.event_type,
+                    item.trade_status or "-",
+                    item.status or "-",
+                    item.price or "-",
+                    item.size or "-",
+                ]
+                for item in response.items
+            ],
+        ),
     )
 
 

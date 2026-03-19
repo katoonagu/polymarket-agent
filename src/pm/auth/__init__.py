@@ -16,6 +16,7 @@ from pm.auth.models import (
     SetupGuideCheckpoint,
     SetupGuideEnvironmentItem,
     SetupGuideResponse,
+    SetupWizardResponse,
 )
 from pm.auth.service import (
     CHAIN_ID_ENV,
@@ -53,4 +54,5 @@ __all__ = [
     "SetupGuideEnvironmentItem",
     "SetupGuideResponse",
     "SetupDoctorResponse",
+    "SetupWizardResponse",
 ]

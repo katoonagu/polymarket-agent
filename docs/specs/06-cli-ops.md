@@ -111,17 +111,19 @@ Authenticated non-mutating readiness checks.
 ```text
 pm setup doctor [--json]
 pm setup guide [--json]
+pm setup wizard [--json]
 ```
 
 Rules:
 
-- `pm setup doctor` and `pm setup guide` are the implemented setup commands in the current phase
+- `pm setup doctor`, `pm setup guide`, and `pm setup wizard` are the implemented setup commands in the current phase
 - it must remain non-mutating
 - it must not derive API credentials, post orders, or write approvals
 - `pm setup guide` is also non-mutating and env-only
+- `pm setup wizard` is bounded and interactive in human mode, but non-interactive in JSON mode
 - `pm setup guide` summarizes required env vars, signature and funder expectations, geoblock status, and balance or allowance checkpoints
-- neither setup command may print raw private keys or create plaintext wallet config
-- broader setup-wizard behavior remains a future parity target
+- `pm setup wizard` may accept a hidden session-only private key for one wizard run only
+- no setup command may print raw private keys or create plaintext wallet config by default
 
 ### `pm shell`
 
@@ -136,6 +138,7 @@ Rules:
 - `pm shell` is a bounded REPL over existing commands, not a daemon or full-screen TUI
 - it executes one command at a time and returns to the prompt
 - it supports a small alias set for common workflows plus direct passthrough commands without the `pm` prefix
+- it also supports a quick menu, numeric shortcuts, and `menu` / `back` pseudo-commands for common workflows
 - it exits on `exit`, `quit`, EOF, or interrupt
 - it does not add background jobs, polling, saved history, or hidden execution behavior
 
@@ -171,6 +174,7 @@ Rules:
 - `check` is an authenticated live read
 - `set` is preview-only by default
 - real approval writes require both `--live` and `--confirm`
+- in interactive human mode, `--live` without `--confirm` may trigger a Y/N confirmation prompt; JSON and non-TTY flows still require explicit `--confirm`
 - geoblock must be checked before live approval writes
 - raw private keys must never be printed
 - approval plans and live approval results are persisted locally for audit
@@ -216,6 +220,7 @@ Rules:
 - `dry-run` returns `WOULD_POST` or `SKIP` plus reason blocks
 - `post`, `cancel`, `cancel-all`, and `cancel-market` are paper-by-default
 - live order submission and live cancellations require both `--live` and `--confirm`
+- in interactive human mode, `--live` without `--confirm` may trigger a Y/N confirmation prompt; JSON and non-TTY flows still require explicit `--confirm`
 - `orders open` and `order get` are authenticated live reads
 - `watch` and `order wait` use the authenticated user websocket only in bounded sessions
 - `events` reads local persisted execution events only
@@ -368,6 +373,7 @@ Rules:
 - only approved intents may dispatch
 - paper mode is the default for dispatch
 - live dispatch requires both `--live` and `--confirm`
+- in interactive human mode, `--live` without `--confirm` may trigger a Y/N confirmation prompt; JSON and non-TTY flows still require explicit `--confirm`
 - `dispatch pending` is paper-only in this phase
 - v1 dispatch is intentionally wallet-first; only `wallet_shadow_copy` is dispatch-enabled by default
 - execution remains the only module allowed to place or cancel orders
@@ -403,6 +409,7 @@ Rules:
 - `cycle queue --limit` is the per-strategy evaluation limit, not a cap on the number of strategies
 - `cycle approved` is a bounded manual dispatch batch over already approved and dispatch-eligible intents
 - `cycle approved` is paper-default and requires both `--live` and `--confirm` for live dispatch
+- in interactive human mode, `--live` without `--confirm` may trigger a Y/N confirmation prompt; JSON and non-TTY flows still require explicit `--confirm`
 - `cycle report` is local-only and summarizes persisted queue, dispatch, event, and reconciliation state without triggering a fresh reconcile call
 - sessions are optional but, when used, allow only one active session at a time
 - `report` prefers the active session scope, then the latest completed session, then a global local snapshot
@@ -410,7 +417,7 @@ Rules:
 
 ## Human Output Direction
 
-The current branch now uses stronger Rich-based human-readable tables for key operator commands:
+The current branch now uses stronger Rich-based framed panels and tables for key operator commands:
 
 - `pm status`
 - `pm ops queue`
@@ -418,12 +425,17 @@ The current branch now uses stronger Rich-based human-readable tables for key op
 - `pm strategy intents`
 - `pm strategy executions`
 - `pm exec events`
+- `pm setup guide`
+- `pm setup wizard`
+- `pm shell`
 
 Rules:
 
 - JSON remains the canonical machine-facing contract
 - richer human output must not change JSON shapes
 - table output may shorten long ids for readability, but JSON must continue to return full values
+- root help, setup flows, and shell now use an operator-style banner treatment
+- `pm status --verbose` is the showcase surface for grouped summary, queue, and recent-activity framing
 
 ## Local Gitignored State
 
@@ -499,9 +511,8 @@ Full-command failures should remain limited to validation errors, missing tracke
 
 ## Future CLI/TUI Parity Surface
 
-The current branch already includes `pm setup doctor`, `pm setup guide`, `pm approve check`, `pm approve set`, `pm status`, and `pm shell`. The following broader parity targets remain future and are not implemented yet:
+The current branch already includes `pm setup doctor`, `pm setup guide`, `pm setup wizard`, `pm approve check`, `pm approve set`, `pm status`, and `pm shell`. The following broader parity targets remain future and are not implemented yet:
 
-- broader setup-wizard behavior beyond `doctor` and `guide`
 - `pm wallet create`
 - `pm wallet import`
 - `pm wallet show`

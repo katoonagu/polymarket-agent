@@ -14,7 +14,14 @@ import typer
 from rich.console import RenderableType
 from typer.core import TyperGroup
 
-from pm.common.output import emit_error, emit_output
+from pm.common.output import (
+    emit_error,
+    emit_output,
+    is_interactive_terminal,
+    operator_banner,
+    prompt_yes_no,
+    render_renderable,
+)
 
 
 class OutputMode(StrEnum):
@@ -77,6 +84,18 @@ def resolve_output_mode(
     return OutputMode.TABLE
 
 
+def interactive_allowed(
+    ctx: typer.Context,
+    *,
+    local_json_output: bool = False,
+) -> bool:
+    """Return whether an interactive prompt is allowed for this command."""
+    return (
+        resolve_output_mode(ctx, local_json_output=local_json_output) is OutputMode.TABLE
+        and is_interactive_terminal()
+    )
+
+
 def emit_command_output(
     ctx: typer.Context,
     payload: dict[str, Any],
@@ -115,6 +134,38 @@ def emit_command_error(
         identifier=identifier,
         hint=hint,
     )
+
+
+def resolve_live_confirmation(
+    ctx: typer.Context,
+    *,
+    live: bool,
+    confirm: bool,
+    local_json_output: bool,
+    resource: str,
+    missing_confirm_message: str,
+    prompt_message: str,
+    declined_message: str,
+) -> bool:
+    """Resolve live confirmation with interactive prompting when allowed."""
+    if not live or confirm:
+        return confirm
+
+    if interactive_allowed(ctx, local_json_output=local_json_output):
+        if prompt_yes_no(prompt_message, default=False):
+            return True
+        emit_output({"cancelled": True}, json_output=False, text=declined_message)
+        raise typer.Exit(0)
+
+    emit_command_error(
+        ctx,
+        code="invalid_argument",
+        message=missing_confirm_message,
+        resource=resource,
+        identifier="confirm",
+        local_json_output=local_json_output,
+    )
+    raise typer.Exit(1)
 
 
 def _wants_json(args: list[str]) -> bool:
@@ -185,6 +236,19 @@ def render_click_exception(exc: click.ClickException, *, args: list[str]) -> Non
 
 class JSONAwareTyperGroup(TyperGroup):
     """Typer group that normalizes parser errors for CLI and tests."""
+
+    def get_help(self, ctx: click.Context) -> str:
+        help_text = super().get_help(ctx)
+        if ctx.parent is not None:
+            return help_text
+
+        banner = render_renderable(
+            operator_banner(
+                subtitle="Operator-grade intelligence, guarded execution, and workflow control."
+            ),
+            force_terminal=is_interactive_terminal(),
+        )
+        return f"{banner}\n\n{help_text}"
 
     def main(
         self,

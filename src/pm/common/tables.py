@@ -6,6 +6,7 @@ from collections.abc import Iterable, Sequence
 
 from rich import box
 from rich.console import Group, RenderableType
+from rich.panel import Panel
 from rich.table import Table
 from rich.text import Text
 
@@ -21,9 +22,18 @@ def summary_table(
     rows: Sequence[tuple[str, str]],
 ) -> Table:
     """Render a compact two-column summary table."""
-    table = Table(title=title, box=box.SIMPLE_HEAVY, show_lines=False)
+    table = Table(
+        title=title,
+        box=box.ROUNDED,
+        show_lines=False,
+        border_style="bright_blue",
+        header_style="bold bright_blue",
+        title_style="bold bright_blue",
+        expand=False,
+        pad_edge=False,
+    )
     table.add_column("Field", style="bold")
-    table.add_column("Value")
+    table.add_column("Value", overflow="fold")
     for label, value in rows:
         table.add_row(label, value)
     return table
@@ -36,9 +46,18 @@ def row_table(
     rows: Iterable[Sequence[str]],
 ) -> Table:
     """Render a compact row table."""
-    table = Table(title=title, box=box.SIMPLE_HEAVY, show_lines=False)
+    table = Table(
+        title=title,
+        box=box.ROUNDED,
+        show_lines=False,
+        border_style="bright_blue",
+        header_style="bold bright_blue",
+        title_style="bold bright_blue",
+        expand=False,
+        pad_edge=False,
+    )
     for column in columns:
-        table.add_column(column)
+        table.add_column(column, overflow="fold")
     for row in rows:
         table.add_row(*row)
     return table
@@ -46,7 +65,24 @@ def row_table(
 
 def empty_message(message: str) -> Text:
     """Render a short empty-state message."""
-    return Text(message)
+    return Text(message, style="dim")
+
+
+def section_panel(
+    title: str,
+    body: RenderableType,
+    *,
+    subtitle: str | None = None,
+) -> Panel:
+    """Wrap a renderable in a framed operator section."""
+    return Panel(
+        body,
+        title=title,
+        subtitle=subtitle,
+        border_style="bright_blue",
+        padding=(0, 1),
+        expand=False,
+    )
 
 
 def format_bool(value: bool) -> str:

@@ -83,6 +83,17 @@ class SetupGuideResponse(BaseModel):
     next_steps: list[str] = Field(default_factory=list)
 
 
+class SetupWizardResponse(SetupGuideResponse):
+    """Interactive or non-interactive setup-wizard payload."""
+
+    interactive: bool
+    has_private_key: bool
+    private_key_source: str
+    session_only_supported: bool = True
+    session_only_used: bool = False
+    secret_policy: str = "env_only_default_session_only_wizard_never_plaintext_config"
+
+
 class AuthShowResponse(BaseModel):
     """Current authenticated environment context."""
 

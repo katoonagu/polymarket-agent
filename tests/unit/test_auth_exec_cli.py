@@ -17,6 +17,7 @@ from pm.auth.models import (
     SetupGuideCheckpoint,
     SetupGuideEnvironmentItem,
     SetupGuideResponse,
+    SetupWizardResponse,
 )
 from pm.cli.app import app
 from pm.execution.models import (
@@ -31,6 +32,13 @@ runner = CliRunner()
 
 
 class FakeSetupAuthService:
+    def __init__(self, *args: object, **kwargs: object) -> None:
+        env_overrides = kwargs.get("env_overrides")
+        self._session_key_present = bool(
+            isinstance(env_overrides, dict)
+            and env_overrides.get("POLYMARKET_PRIVATE_KEY")
+        )
+
     def __enter__(self) -> FakeSetupAuthService:
         return self
 
@@ -40,7 +48,7 @@ class FakeSetupAuthService:
     def doctor(self) -> SetupDoctorResponse:
         return SetupDoctorResponse(
             ready=True,
-            auth=_auth_context(),
+            auth=_auth_context(private_key_present=True),
             geoblock=GeoblockStatus(checked=True, blocked=False, message="Allowed"),
             checks=[],
             errors=[],
@@ -48,7 +56,7 @@ class FakeSetupAuthService:
 
     def guide(self) -> SetupGuideResponse:
         return SetupGuideResponse(
-            auth=_auth_context(),
+            auth=_auth_context(private_key_present=True),
             doctor=self.doctor(),
             environment_items=[
                 SetupGuideEnvironmentItem(
@@ -74,6 +82,56 @@ class FakeSetupAuthService:
                 ),
             ],
             next_steps=["pm approve check --json"],
+        )
+
+    def show(self) -> AuthShowResponse:
+        return AuthShowResponse(
+            auth=_auth_context(private_key_present=self._session_key_present),
+            errors=[],
+        )
+
+    def wizard(
+        self,
+        *,
+        interactive: bool,
+        private_key_source: str,
+        session_only_used: bool = False,
+    ) -> SetupWizardResponse:
+        has_private_key = private_key_source != "missing"
+        auth = _auth_context(private_key_present=has_private_key)
+        doctor = SetupDoctorResponse(
+            ready=has_private_key,
+            auth=auth,
+            geoblock=GeoblockStatus(checked=True, blocked=False, message="Allowed"),
+            checks=[],
+            errors=[],
+        )
+        return SetupWizardResponse(
+            auth=auth,
+            doctor=doctor,
+            environment_items=[
+                SetupGuideEnvironmentItem(
+                    name="POLYMARKET_PRIVATE_KEY",
+                    required=True,
+                    present=has_private_key,
+                    safe_value="present" if has_private_key else "missing",
+                    message="Required for authenticated commands.",
+                )
+            ],
+            checkpoints=[
+                SetupGuideCheckpoint(
+                    section="geoblock",
+                    status="ready",
+                    message="Allowed",
+                    details={"checked": True, "blocked": False},
+                )
+            ],
+            next_steps=["pm setup doctor --json"],
+            interactive=interactive,
+            has_private_key=has_private_key,
+            private_key_source=private_key_source if has_private_key else "missing",
+            session_only_supported=True,
+            session_only_used=session_only_used,
         )
 
 
@@ -198,9 +256,53 @@ def test_setup_guide_human_output(monkeypatch) -> None:
     result = runner.invoke(app, ["setup", "guide"])
 
     assert result.exit_code == 0
+    assert "POLYMARKET AGENT" in result.stdout
     assert "Environment Variables" in result.stdout
     assert "Setup Checkpoints" in result.stdout
     assert "Suggested Next Commands" in result.stdout
+
+
+def test_setup_wizard_json(monkeypatch) -> None:
+    monkeypatch.setattr("pm.cli.setup.AuthService", FakeSetupAuthService)
+
+    result = runner.invoke(app, ["setup", "wizard", "--json"])
+
+    assert result.exit_code == 0
+    payload = json.loads(result.stdout)
+    assert payload["interactive"] is False
+    assert payload["private_key_source"] == "missing"
+    assert payload["secret_policy"].startswith("env_only_default")
+
+
+def test_setup_wizard_human_no_private_key(monkeypatch) -> None:
+    monkeypatch.setattr("pm.cli.setup.AuthService", FakeSetupAuthService)
+    monkeypatch.setattr("pm.cli.setup.interactive_allowed", lambda *args, **kwargs: True)
+
+    result = runner.invoke(app, ["setup", "wizard"], input="n\n")
+
+    assert result.exit_code == 0
+    assert "POLYMARKET AGENT" in result.stdout
+    assert "Private key source" in result.stdout
+    assert "missing" in result.stdout
+    assert "Wizard Summary" in result.stdout
+
+
+def test_setup_wizard_session_secret_does_not_echo(monkeypatch) -> None:
+    monkeypatch.setattr("pm.cli.setup.AuthService", FakeSetupAuthService)
+    monkeypatch.setattr("pm.cli.setup.interactive_allowed", lambda *args, **kwargs: True)
+
+    private_key = "0x" + ("1" * 64)
+    result = runner.invoke(
+        app,
+        ["setup", "wizard"],
+        input=f"y\ny\n{private_key}\n",
+    )
+
+    assert result.exit_code == 0
+    assert private_key not in result.stdout
+    assert "Private key source" in result.stdout
+    assert "session" in result.stdout
+    assert "Session-only used" in result.stdout
 
 
 def test_auth_show_and_derive_api_key_json(monkeypatch) -> None:
@@ -256,7 +358,7 @@ def test_exec_dry_run_uses_root_json_output(monkeypatch) -> None:
     assert payload["signed_order"]["signature"] == "signed-payload"
 
 
-def _auth_context() -> AuthContext:
+def _auth_context(*, private_key_present: bool = True) -> AuthContext:
     return AuthContext(
         signer_address="0x" + ("3" * 40),
         funder_address=None,
@@ -264,6 +366,6 @@ def _auth_context() -> AuthContext:
         signature_type_name="EOA",
         clob_host="https://clob.polymarket.com",
         chain_id=137,
-        private_key_present=True,
-        api_key_derivation_possible=True,
+        private_key_present=private_key_present,
+        api_key_derivation_possible=private_key_present,
     )
