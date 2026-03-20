@@ -1,6 +1,6 @@
 # polymarket-agent
 
-`polymarket-agent` is a docs-first, execution-first workspace for building a modular Polymarket system. The current branch combines a strong public intelligence stack with guarded authenticated execution, a risk-gated strategy-dispatch bridge, a local-first operator control plane, a bounded one-cycle runbook layer, the first CLI/TUI parity slice, the first interactive CLI UX polish pass, the first Arkham enrichment slice for external wallet intelligence, a portfolio truth plus reconciliation layer, and the first paper/research runtime for a market-specific BTC 15-minute strategy plus a bounded campaign runner with Binance liquidity overlays. It uses public Gamma, public CLOB, public Data API, public streams, public Binance REST market-data overlays, Arkham REST intelligence, local gitignored operator state, authenticated setup and local order-signing, guarded approval and order lifecycle paths, explicit manual dispatch from approved strategy intents into execution, workflow-session tooling for operator review, bounded runbook commands for queueing and dispatch, a bounded interactive shell, an env-only setup wizard, richer Rich-based framed terminal output for the main operator workflows, portfolio snapshots derived from public account state plus local execution linkage, and dedicated BTC15m recorder, replay, liquidity-sample, and campaign artifacts for paper research. Live behavior exists only behind explicit operator flags and is never the default.
+`polymarket-agent` is a docs-first, execution-first workspace for building a modular Polymarket system. The current branch combines a strong public intelligence stack with guarded authenticated execution, a risk-gated strategy-dispatch bridge, a local-first operator control plane, a bounded one-cycle runbook layer, the first CLI/TUI parity slice, the first interactive CLI UX polish pass, the first Arkham enrichment slice for external wallet intelligence, a portfolio truth plus reconciliation layer, and the first paper/research runtime for a market-specific BTC 15-minute strategy plus a bounded campaign runner, Binance liquidity overlays, and a dense BTC15m current-window operator terminal. It uses public Gamma, public CLOB, public Data API, public streams, public Binance REST market-data overlays, Arkham REST intelligence, local gitignored operator state, authenticated setup and local order-signing, guarded approval and order lifecycle paths, explicit manual dispatch from approved strategy intents into execution, workflow-session tooling for operator review, bounded runbook commands for queueing and dispatch, a bounded interactive shell, an env-only setup wizard, richer Rich-based framed terminal output for the main operator workflows, portfolio snapshots derived from public account state plus local execution linkage, and dedicated BTC15m recorder, replay, liquidity-sample, campaign, dashboard, auto-roll, and terminal-session artifacts for paper research. Live behavior exists only behind explicit operator flags and is never the default.
 
 ## Principles
 
@@ -132,6 +132,10 @@ Strategy evaluation is still read-only and persists candidate intents plus revie
 .venv\Scripts\pm strategy btc15m campaign run --hours 2 --json
 .venv\Scripts\pm strategy btc15m campaign run --hours 2 --slug <market-slug> --mode paper --json
 .venv\Scripts\pm strategy btc15m campaign report --json
+.venv\Scripts\pm strategy btc15m terminal --current --json
+.venv\Scripts\pm strategy btc15m terminal --current --mode paper
+.venv\Scripts\pm strategy btc15m terminal --current --mode live --confirm
+.venv\Scripts\pm strategy btc15m terminal report --json
 .venv\Scripts\pm strategy btc15m report --json
 ```
 
@@ -140,10 +144,14 @@ Rules:
 - the runtime implementation name is `btc_15m_chainlink_directional_ladder_v1`
 - this surface is paper/research only and stays outside the generic strategy review and dispatch registry in this phase
 - `--mode paper` is the default and uses live public market/oracle data with simulated fills and PnL only
-- `--mode live` is reserved and currently returns a gated operator-facing error with guidance to stay in paper mode
+- `--mode live` remains reserved on the recorder, replay, campaign, dashboard, and paper-run flows; bounded live execution exists only inside `pm strategy btc15m terminal --current --mode live --confirm`
 - `paper-run --slug <market-slug>` is the direct explicit-market paper testing path for one live window
 - `campaign next-window --slug <market-slug>` and `campaign run --slug <market-slug>` target that exact market instead of relying on recurring discovery
+- `terminal --current` is the dense bounded operator session for the current BTC15m window and reuses slug-first timing as the authoritative source
+- `terminal --json` is snapshot-only and exits immediately; it never tries to animate JSON
+- `terminal --mode live --confirm` is the only BTC15m live execution surface on this branch and still requires inline per-action confirmation before posting or cancelling any rung
 - recorder artifacts persist under `.pm/state/` as dedicated BTC15m boundary, window, replay, liquidity-sample, campaign-run, and paper-run state
+- terminal summaries now persist under `.pm/state/btc-15m-chainlink-terminal-sessions.json`, while per-refresh terminal snapshots reuse the BTC15m dashboard snapshot log with `view_kind="terminal"`
 - start and end boundaries persist the last Chainlink tick before or at the boundary and the first Chainlink tick at or after the boundary
 - `start_price_proxy_v1` and `end_price_proxy_v1` now use the first Chainlink tick at or after the relevant boundary, with bounded grace windows and explainable partial skips when the post-boundary tick is missing
 - the minute-5 directional lock uses recorded Chainlink and Binance context against the hardened Chainlink start proxy
@@ -151,7 +159,8 @@ Rules:
 - Binance REST `bookTicker`, `depth`, and closed `1m` kline reads enrich decision-time liquidity and volatility context without adding any authenticated or mutating behavior
 - anti-manipulation and thin-liquidity guards may skip paper entries when spread, visible liquidity, or underlying divergence looks poor
 - if recurring BTC 15m discovery cannot find a candidate, the BTC15m commands return a structured hint that points operators to `pm market recurring list --query btc --interval 15m` and the explicit `--slug` path
-- the paper ladder is buy-only at `0.30`, `0.20`, and `0.10`, with one fill per rung at most and no live order submission
+- the paper ladder is buy-only at `0.30`, `0.20`, and `0.10`, with one fill per rung at most
+- all non-terminal BTC15m flows remain paper-first; no daemon or unattended auto-roll live loop exists
 
 ### Operator control plane
 

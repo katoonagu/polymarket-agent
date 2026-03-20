@@ -10,8 +10,10 @@ BTC/USD stream.
 This spec now covers both the target design and the first paper/research
 runtime on the current branch. The current implementation adds bounded recorder,
 replay, paper-run, liquidity-sample, campaign, and report commands under
-`pm strategy btc15m`, but it still does not add live automation, a daemon, a
-scheduler, or any execution-side mutation.
+`pm strategy btc15m`, and now also adds a bounded current-window terminal
+session. It still does not add live automation, a daemon, or a scheduler; live
+execution is available only inside the attached terminal surface and remains
+explicitly gated behind operator confirms.
 
 ## Current Phase
 
@@ -33,7 +35,9 @@ Current branch status:
   collection, and paper evaluation
 - public Binance REST overlays are now part of the research path for
   top-of-book, depth, and short-horizon realized-volatility context
-- guarded live use is explicitly deferred
+- guarded live automation is still explicitly deferred, but the current branch
+  now also includes one bounded BTC15m current-window terminal session with a
+  paper-first default and explicitly gated live execution
 - execution remains the only module allowed to place or cancel orders
 
 This is the first planned specialization beyond the current generic
@@ -50,17 +54,26 @@ Current research commands:
 - `pm strategy btc15m campaign next-window [--slug <market_slug>] [--mode paper|live]`
 - `pm strategy btc15m campaign run --hours <n> [--slug <market_slug>] [--mode paper|live]`
 - `pm strategy btc15m campaign report`
+- `pm strategy btc15m terminal --current [--mode paper|live] [--confirm]`
+- `pm strategy btc15m terminal report`
 - `pm strategy btc15m report`
 
 Current workflow notes:
 
 - `paper` is the default mode and uses live public market plus oracle inputs
   with simulated fills and PnL only
-- `live` is a reserved gated mode in the current branch and returns an
-  operator-facing not-implemented error with a hint to use `--mode paper`
+- `live` remains reserved on the recorder, replay, campaign, dashboard, and
+  paper-run surfaces; bounded live execution now exists only inside
+  `pm strategy btc15m terminal --current --mode live --confirm`
 - `paper-run --slug` is the direct explicit-market paper testing path when
   recurring discovery is imperfect
 - `campaign run --slug` targets exactly one explicit window and then stops
+- `terminal --current` is the dense bounded operator session for the current
+  BTC15m window and uses slug-derived timing as the authoritative session clock
+- `terminal --json` is snapshot-only and exits immediately
+- `terminal --mode live --confirm` is the only BTC15m live execution surface on
+  the current branch and still requires inline per-rung and cancellation
+  confirms inside the attached terminal
 
 ## Strategy Overview and Design Goals
 
@@ -453,6 +466,8 @@ The current runtime also persists:
 - `.pm/state/btc-15m-chainlink-paper-runs.json`
 - `.pm/state/btc-15m-chainlink-liquidity-samples.jsonl`
 - `.pm/state/btc-15m-chainlink-campaign-runs.json`
+- `.pm/state/btc-15m-chainlink-dashboard-snapshots.jsonl`
+- `.pm/state/btc-15m-chainlink-terminal-sessions.json`
 
 The current branch now creates these research artifacts, but it still treats
 them as paper/research state only.

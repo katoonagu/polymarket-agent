@@ -526,10 +526,10 @@ class DryRunService:
 
 
 def normalize_outcome(value: str) -> str:
-    """Normalize a yes/no outcome token."""
+    """Normalize a yes/no or up/down outcome token."""
     normalized = value.strip().lower()
-    if normalized not in {"yes", "no"}:
-        raise ExecutionValidationError("Outcome must be one of: yes, no.")
+    if normalized not in {"yes", "no", "up", "down"}:
+        raise ExecutionValidationError("Outcome must be one of: yes, no, up, down.")
     return normalized
 
 
@@ -542,10 +542,27 @@ def normalize_side(value: str) -> str:
 
 
 def resolve_token_id(market: NormalizedMarket, outcome: str) -> str | None:
-    """Map a normalized yes/no outcome to a market token id."""
+    """Map a normalized outcome token to a market token id."""
     normalized_outcome = outcome.lower()
     for index, market_outcome in enumerate(market.outcomes):
-        if market_outcome.strip().lower() == normalized_outcome and index < len(market.token_ids):
+        market_token = market_outcome.strip().lower()
+        if market_token == normalized_outcome and index < len(market.token_ids):
+            return market.token_ids[index]
+        if normalized_outcome == "yes" and market_token in {"yes", "up"} and index < len(
+            market.token_ids
+        ):
+            return market.token_ids[index]
+        if normalized_outcome == "no" and market_token in {"no", "down"} and index < len(
+            market.token_ids
+        ):
+            return market.token_ids[index]
+        if normalized_outcome == "up" and market_token in {"up", "yes"} and index < len(
+            market.token_ids
+        ):
+            return market.token_ids[index]
+        if normalized_outcome == "down" and market_token in {"down", "no"} and index < len(
+            market.token_ids
+        ):
             return market.token_ids[index]
     return None
 

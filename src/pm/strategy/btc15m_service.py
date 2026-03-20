@@ -6,7 +6,7 @@ import asyncio
 import re
 from collections import Counter
 from collections.abc import Callable
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
 from decimal import ROUND_DOWN, Decimal, InvalidOperation
 from time import sleep as time_sleep
@@ -14,6 +14,7 @@ from typing import Any, cast
 from uuid import uuid4
 
 from pm.binance import BinanceClientError, BinanceService
+from pm.execution import ExecutionValidationError, OrderLifecycleService
 from pm.market.clob import ClobClient
 from pm.market.exceptions import ClobClientError, ClobNotFoundError
 from pm.market.gamma import GammaClient, GammaSearchCandidate
@@ -57,6 +58,12 @@ from pm.strategy.btc15m_models import (
     Btc15mResolveCurrentResponse,
     Btc15mRunMode,
     Btc15mSectionError,
+    Btc15mTerminalEventRecord,
+    Btc15mTerminalReportResponse,
+    Btc15mTerminalReportSummary,
+    Btc15mTerminalResponse,
+    Btc15mTerminalSessionRecord,
+    Btc15mTerminalState,
     Btc15mTimingControls,
     Btc15mWindowIdentity,
     Btc15mWindowRecord,
@@ -88,6 +95,9 @@ DEFAULT_LIQUIDITY_SAMPLE_CADENCE_SECONDS = 5
 DEFAULT_DASHBOARD_SECONDS = 30
 DEFAULT_DASHBOARD_REFRESH_SECONDS = 1
 DEFAULT_LIVE_TICK_CAPTURE_SECONDS = 1
+DEFAULT_TERMINAL_EVENT_LOG_LIMIT = 12
+DEFAULT_TERMINAL_SNAPSHOT_LOG_LIMIT = 8
+DEFAULT_TERMINAL_CONTEXT_REFRESH_SECONDS = 30
 DEFAULT_CAMPAIGN_WAIT_SECONDS = 15
 DEFAULT_CAMPAIGN_MAX_WAIT_SECONDS = 20 * 60
 DEFAULT_CAMPAIGN_SAMPLE_CADENCE_SECONDS = 30
@@ -161,6 +171,61 @@ class _CurrentWindowResolution:
     seconds_to_end: int | None
 
 
+@dataclass(slots=True)
+class _TerminalRungRuntime:
+    price: Decimal
+    notional_usdc: Decimal
+    quantity: Decimal
+    state: str = "armed"
+    order_id: str | None = None
+    fill_at: str | None = None
+    fill_price: str | None = None
+    cancellation_at: str | None = None
+    post_attempted: bool = False
+    cancel_attempted: bool = False
+
+
+@dataclass(slots=True)
+class _TerminalRuntime:
+    session_id: str
+    resolved: _ResolvedWindow
+    mode: Btc15mRunMode
+    started_at_dt: datetime
+    state: Btc15mTerminalState
+    stop_reason: str = "running"
+    events: list[Btc15mTerminalEventRecord] = field(default_factory=list)
+    errors: list[Btc15mSectionError] = field(default_factory=list)
+    chainlink_ticks: list[Btc15mPriceTick] = field(default_factory=list)
+    binance_ticks: list[Btc15mPriceTick] = field(default_factory=list)
+    liquidity_samples: list[Btc15mLiquiditySampleRecord] = field(default_factory=list)
+    market_samples: list[Btc15mMarketSample] = field(default_factory=list)
+    boundary_pre_start: Btc15mPriceTick | None = None
+    boundary_post_start: Btc15mPriceTick | None = None
+    boundary_pre_end: Btc15mPriceTick | None = None
+    boundary_post_end: Btc15mPriceTick | None = None
+    boundary_status: str = "pending"
+    start_price_proxy_v1: str | None = None
+    end_price_proxy_v1: str | None = None
+    selected_side: str | None = None
+    decision_at: str | None = None
+    target_token_id: str | None = None
+    target_outcome: str | None = None
+    rungs: list[_TerminalRungRuntime] = field(default_factory=list)
+    market_open_interest: str | None = None
+    market_volume: str | None = None
+    last_market_context_refresh_at: datetime | None = None
+    manipulation_flags: list[str] = field(default_factory=list)
+    skip_reasons: list[str] = field(default_factory=list)
+    reason_blocks: list[Btc15mReasonBlock] = field(default_factory=list)
+    latest_snapshot: Btc15mDashboardSnapshotRecord | None = None
+    favorable_marks: list[Btc15mPriceMark] = field(default_factory=list)
+    mfe: Decimal = Decimal("0")
+    mae: Decimal = Decimal("0")
+    max_favorable_price: str | None = None
+    time_to_peak_seconds: int | None = None
+    first_fill_at: str | None = None
+
+
 class Btc15mStrategyService:
     """Recorder, replay, and paper-evaluation service for BTC15m research."""
 
@@ -172,6 +237,7 @@ class Btc15mStrategyService:
         market_client: MarketWebSocketClient | None = None,
         crypto_client: RTDSClient | None = None,
         binance_service: BinanceService | None = None,
+        order_lifecycle: OrderLifecycleService | None = None,
         gamma_client_cls: type[GammaClient] = GammaClient,
         clob_client_cls: type[ClobClient] = ClobClient,
         now: Any | None = None,
@@ -183,6 +249,7 @@ class Btc15mStrategyService:
         self._market_client = market_client or MarketWebSocketClient()
         self._crypto_client = crypto_client or RTDSClient()
         self._binance_service = binance_service or BinanceService()
+        self._order_lifecycle = order_lifecycle or OrderLifecycleService()
         self._gamma_client_cls = gamma_client_cls
         self._clob_client_cls = clob_client_cls
         self._now = now or _utc_now
@@ -387,6 +454,132 @@ class Btc15mStrategyService:
             latest_snapshot=snapshots[-1] if snapshots else None,
             latest_evaluation=self._latest_evaluation_for_window(current.resolved.window.window_id),
             errors=errors,
+        )
+
+    def terminal_current(
+        self,
+        *,
+        mode: str = "paper",
+        confirm: bool = False,
+        snapshot_only: bool = False,
+        on_snapshot: Callable[[Btc15mDashboardSnapshotRecord], None] | None = None,
+        confirm_action: Callable[[str], bool | None] | None = None,
+    ) -> Btc15mTerminalResponse:
+        """Run one bounded BTC15m operator-terminal session or emit one snapshot."""
+        normalized_mode = _normalize_terminal_mode(mode)
+        if snapshot_only and normalized_mode is Btc15mRunMode.LIVE:
+            raise Btc15mOperatorHintError(
+                "BTC15m terminal JSON snapshots are only available in paper mode.",
+                identifier="mode",
+                hint={"next_steps": ["Run human terminal mode for live inline confirmations."]},
+            )
+        if normalized_mode is Btc15mRunMode.LIVE and not confirm:
+            raise Btc15mValidationError("BTC15m live terminal requires --mode live --confirm.")
+        if normalized_mode is Btc15mRunMode.LIVE and confirm_action is None and not snapshot_only:
+            raise Btc15mValidationError(
+                "BTC15m live terminal requires an attached interactive confirmer."
+            )
+
+        current = self._resolve_current_window()
+        session_id = _make_id("btc15m_terminal")
+        started_at_dt = self._now()
+        if snapshot_only:
+            runtime = self._create_terminal_runtime(
+                session_id=session_id,
+                resolved=current.resolved,
+                mode=normalized_mode,
+                started_at_dt=started_at_dt,
+            )
+            snapshot = self._advance_terminal_runtime(runtime)
+            self._state.append_dashboard_snapshots([snapshot])
+            return Btc15mTerminalResponse(
+                session_id=session_id,
+                started_at=_isoformat(started_at_dt),
+                ended_at=_isoformat(self._now()),
+                mode=normalized_mode,
+                stop_reason="snapshot_only",
+                window=current.resolved.window,
+                total_snapshots=1,
+                latest_snapshot=snapshot,
+                errors=snapshot.errors,
+            )
+
+        runtime = self._create_terminal_runtime(
+            session_id=session_id,
+            resolved=current.resolved,
+            mode=normalized_mode,
+            started_at_dt=started_at_dt,
+        )
+        snapshots: list[Btc15mDashboardSnapshotRecord] = []
+
+        while True:
+            iteration_started = self._now()
+            snapshot = self._advance_terminal_runtime(runtime, confirm_action=confirm_action)
+            snapshots.append(snapshot)
+            if on_snapshot is not None:
+                on_snapshot(snapshot)
+            if runtime.state in {
+                Btc15mTerminalState.RESOLVED,
+                Btc15mTerminalState.SKIPPED,
+            }:
+                break
+            remaining = DEFAULT_DASHBOARD_REFRESH_SECONDS - max(
+                0.0,
+                (self._now() - iteration_started).total_seconds(),
+            )
+            if remaining > 0:
+                self._sleep(remaining)
+
+        if snapshots:
+            self._state.append_dashboard_snapshots(snapshots)
+        session = self._finalize_terminal_session(runtime)
+        self._state.append_terminal_session(session)
+        return Btc15mTerminalResponse(
+            session_id=session_id,
+            started_at=_isoformat(started_at_dt),
+            ended_at=_isoformat(self._now()),
+            mode=normalized_mode,
+            stop_reason=session.stop_reason,
+            window=current.resolved.window,
+            total_snapshots=len(snapshots),
+            latest_snapshot=snapshots[-1] if snapshots else None,
+            session=session,
+            errors=session.errors,
+        )
+
+    def terminal_report(self) -> Btc15mTerminalReportResponse:
+        """Return persisted BTC15m terminal sessions newest-first."""
+        sessions = self._state.list_terminal_sessions()
+        total_pnl = Decimal("0")
+        resolved_count = 0
+        skipped_count = 0
+        paper_count = 0
+        live_count = 0
+        pnl_items = 0
+        for item in sessions:
+            if item.mode is Btc15mRunMode.PAPER:
+                paper_count += 1
+            else:
+                live_count += 1
+            if item.final_state is Btc15mTerminalState.RESOLVED:
+                resolved_count += 1
+            if item.final_state is Btc15mTerminalState.SKIPPED:
+                skipped_count += 1
+            if item.latest_evaluation is not None:
+                total_pnl += _decimal(item.latest_evaluation.realized_pnl_usdc)
+                pnl_items += 1
+        average_pnl = total_pnl / Decimal(pnl_items) if pnl_items else Decimal("0")
+        return Btc15mTerminalReportResponse(
+            summary=Btc15mTerminalReportSummary(
+                terminal_session_count=len(sessions),
+                paper_session_count=paper_count,
+                live_session_count=live_count,
+                resolved_session_count=resolved_count,
+                skipped_session_count=skipped_count,
+                total_realized_pnl_usdc=_decimal_text(total_pnl),
+                average_realized_pnl_usdc=_decimal_text(average_pnl),
+            ),
+            recent_sessions=list(reversed(sessions))[:10],
         )
 
     def auto_roll(
@@ -1459,6 +1652,10 @@ class Btc15mStrategyService:
                             best_ask=best_ask,
                             midpoint=midpoint,
                             spread=spread,
+                            bid_level_count=len(book.bids),
+                            ask_level_count=len(book.asks),
+                            bids=list(book.bids),
+                            asks=list(book.asks),
                             visible_liquidity_030=_decimal_text(
                                 _ask_liquidity_at_or_better(book.asks, Decimal("0.30"))
                             ),
@@ -1541,6 +1738,951 @@ class Btc15mStrategyService:
         )
         return completion_deadline <= deadline
 
+    def _create_terminal_runtime(
+        self,
+        *,
+        session_id: str,
+        resolved: _ResolvedWindow,
+        mode: Btc15mRunMode,
+        started_at_dt: datetime,
+    ) -> _TerminalRuntime:
+        latest_boundary = self._latest_boundary_decision(resolved.window.window_id)
+        latest_window = self._latest_window_record(resolved.window.window_id)
+        state = Btc15mTerminalState.PRE_START_CAPTURE
+        runtime = _TerminalRuntime(
+            session_id=session_id,
+            resolved=resolved,
+            mode=mode,
+            started_at_dt=started_at_dt,
+            state=state,
+            boundary_pre_start=latest_boundary.pre_start if latest_boundary is not None else None,
+            boundary_post_start=latest_boundary.post_start if latest_boundary is not None else None,
+            boundary_pre_end=latest_boundary.pre_end if latest_boundary is not None else None,
+            boundary_post_end=latest_boundary.post_end if latest_boundary is not None else None,
+            boundary_status=(
+                latest_boundary.status
+                if latest_boundary is not None
+                else latest_window.boundary_status
+                if latest_window is not None
+                else "pending"
+            ),
+            start_price_proxy_v1=(
+                latest_boundary.start_price_proxy_v1
+                if latest_boundary is not None
+                else latest_window.start_price_proxy_v1
+                if latest_window is not None
+                else None
+            ),
+            end_price_proxy_v1=(
+                latest_boundary.end_price_proxy_v1
+                if latest_boundary is not None
+                else latest_window.end_price_proxy_v1
+                if latest_window is not None
+                else None
+            ),
+            selected_side=(
+                latest_window.decision
+                if latest_window is not None and latest_window.decision in {"UP", "DOWN"}
+                else None
+            ),
+            decision_at=latest_window.decision_at if latest_window is not None else None,
+            market_open_interest=getattr(latest_window, "market_open_interest", None),
+            market_volume=getattr(latest_window, "market_volume", None),
+        )
+        if runtime.selected_side in {"UP", "DOWN"}:
+            target = _resolve_target_token(
+                resolved.window.token_ids,
+                resolved.window.outcomes,
+                runtime.selected_side,
+            )
+            if target is not None:
+                runtime.target_token_id, runtime.target_outcome = target
+            runtime.rungs = [
+                _TerminalRungRuntime(
+                    price=price,
+                    notional_usdc=notional,
+                    quantity=(notional / price).quantize(
+                        Decimal("0.000001"),
+                        rounding=ROUND_DOWN,
+                    ),
+                )
+                for price, notional in zip(RUNG_PRICES, RUNG_NOTIONALS, strict=True)
+            ]
+        if latest_window is not None:
+            runtime.manipulation_flags.extend(
+                flag
+                for flag in latest_window.manipulation_flags
+                if flag not in runtime.manipulation_flags
+            )
+            runtime.skip_reasons.extend(
+                reason
+                for reason in latest_window.skip_reasons
+                if reason not in runtime.skip_reasons
+            )
+            runtime.reason_blocks.extend(latest_window.reason_blocks)
+            runtime.chainlink_ticks.extend(latest_window.chainlink_ticks)
+            runtime.binance_ticks.extend(latest_window.binance_ticks)
+            runtime.market_samples.extend(latest_window.market_samples)
+            runtime.liquidity_samples.extend(latest_window.liquidity_samples)
+        latest_evaluation = self._latest_evaluation_for_window(resolved.window.window_id)
+        if latest_evaluation is not None:
+            runtime.selected_side = latest_evaluation.decision
+            runtime.decision_at = latest_evaluation.decision_at
+            runtime.target_token_id = latest_evaluation.target_token_id
+            runtime.target_outcome = latest_evaluation.target_outcome
+            runtime.favorable_marks.extend(latest_evaluation.max_favorable_path)
+            runtime.mfe = _decimal(latest_evaluation.mfe_usdc)
+            runtime.mae = _decimal(latest_evaluation.mae_usdc)
+            runtime.max_favorable_price = latest_evaluation.max_favorable_price
+            runtime.time_to_peak_seconds = latest_evaluation.time_to_peak_seconds
+            runtime.first_fill_at = latest_evaluation.first_fill_at
+            runtime.rungs = [
+                _TerminalRungRuntime(
+                    price=_decimal(rung.price),
+                    notional_usdc=_decimal(rung.notional_usdc),
+                    quantity=_decimal(rung.quantity),
+                    state=rung.status,
+                    fill_at=rung.fill_at,
+                    fill_price=rung.fill_price,
+                    cancellation_at=rung.cancellation_at,
+                )
+                for rung in latest_evaluation.rungs
+            ]
+        self._update_terminal_state(runtime, started_at_dt)
+        if runtime.state is Btc15mTerminalState.SKIPPED:
+            runtime.stop_reason = runtime.skip_reasons[-1] if runtime.skip_reasons else "skipped"
+        self._record_terminal_event(
+            runtime,
+            kind="session",
+            status="info",
+            message=f"Attached BTC15m terminal session in {mode.value} mode.",
+        )
+        return runtime
+
+    def _advance_terminal_runtime(
+        self,
+        runtime: _TerminalRuntime,
+        *,
+        confirm_action: Callable[[str], bool | None] | None = None,
+    ) -> Btc15mDashboardSnapshotRecord:
+        sampled_at_dt = self._now()
+        chainlink_tick, binance_tick, tick_errors = self._capture_current_ticks()
+        runtime.errors.extend(tick_errors)
+        if chainlink_tick is not None:
+            _append_tick_if_new(runtime.chainlink_ticks, chainlink_tick)
+        if binance_tick is not None:
+            _append_tick_if_new(runtime.binance_ticks, binance_tick)
+        self._maybe_refresh_terminal_market_context(runtime, sampled_at_dt)
+        self._update_terminal_boundaries(runtime)
+        if runtime.state is not Btc15mTerminalState.SKIPPED:
+            self._update_terminal_state(runtime, sampled_at_dt)
+        if runtime.state is not Btc15mTerminalState.SKIPPED:
+            self._maybe_apply_terminal_decision(runtime, sampled_at_dt)
+        if (
+            runtime.state is not Btc15mTerminalState.SKIPPED
+            and runtime.selected_side in {"UP", "DOWN"}
+        ):
+            if runtime.mode is Btc15mRunMode.PAPER:
+                self._apply_terminal_paper_rungs(runtime, sampled_at_dt)
+            else:
+                self._apply_terminal_live_rungs(
+                    runtime,
+                    sampled_at_dt,
+                    confirm_action=confirm_action,
+                )
+        self._update_terminal_favorable_metrics(runtime, sampled_at_dt)
+        if runtime.state is not Btc15mTerminalState.SKIPPED:
+            self._update_terminal_state(runtime, sampled_at_dt)
+        snapshot = self._build_terminal_snapshot(runtime, sampled_at_dt)
+        runtime.latest_snapshot = snapshot
+        return snapshot
+
+    def _maybe_refresh_terminal_market_context(
+        self,
+        runtime: _TerminalRuntime,
+        sampled_at_dt: datetime,
+    ) -> None:
+        refresh_due = runtime.last_market_context_refresh_at is None or (
+            sampled_at_dt - runtime.last_market_context_refresh_at
+        ).total_seconds() >= DEFAULT_TERMINAL_CONTEXT_REFRESH_SECONDS
+        if runtime.latest_snapshot is None:
+            refresh_due = True
+        if not refresh_due:
+            return
+        try:
+            sample = self._capture_liquidity_sample(
+                runtime.resolved,
+                sample_kind="terminal",
+                scheduled_at_dt=sampled_at_dt,
+            )
+        except Exception as exc:
+            runtime.errors.append(_section_error("terminal_liquidity", exc))
+            return
+        runtime.liquidity_samples.append(sample)
+        runtime.market_samples.extend(_market_samples_from_liquidity(sample))
+        runtime.market_open_interest = runtime.market_open_interest or None
+        runtime.market_volume = runtime.market_volume or _binance_volume_proxy(sample, minutes=3)
+        runtime.last_market_context_refresh_at = sampled_at_dt
+
+    def _update_terminal_boundaries(self, runtime: _TerminalRuntime) -> None:
+        resolved = runtime.resolved
+        if resolved.window_start_dt is None or resolved.window_end_dt is None:
+            self._mark_terminal_skipped(
+                runtime,
+                stop_reason="missing_window_timing",
+                message="Current BTC15m window timing could not be resolved.",
+            )
+            return
+        timing_controls = _default_timing_controls()
+        runtime.boundary_pre_start = runtime.boundary_pre_start or _latest_tick_before_or_at_within(
+            runtime.chainlink_ticks,
+            resolved.window_start_dt,
+            timing_controls.pre_start_capture_window_seconds,
+        )
+        runtime.boundary_post_start = runtime.boundary_post_start or _first_tick_at_or_after_within(
+            runtime.chainlink_ticks,
+            resolved.window_start_dt,
+            timing_controls.post_start_grace_window_seconds,
+        )
+        runtime.boundary_pre_end = runtime.boundary_pre_end or _latest_tick_before_or_at_within(
+            runtime.chainlink_ticks,
+            resolved.window_end_dt,
+            timing_controls.pre_end_capture_window_seconds,
+        )
+        runtime.boundary_post_end = runtime.boundary_post_end or _first_tick_at_or_after_within(
+            runtime.chainlink_ticks,
+            resolved.window_end_dt,
+            timing_controls.post_end_grace_window_seconds,
+        )
+        runtime.start_price_proxy_v1 = (
+            runtime.boundary_post_start.value if runtime.boundary_post_start is not None else None
+        )
+        runtime.end_price_proxy_v1 = (
+            runtime.boundary_post_end.value if runtime.boundary_post_end is not None else None
+        )
+        now = self._now()
+        post_start_deadline = resolved.window_start_dt + timedelta(
+            seconds=timing_controls.post_start_grace_window_seconds
+        )
+        post_end_deadline = resolved.window_end_dt + timedelta(
+            seconds=timing_controls.post_end_grace_window_seconds
+        )
+        if runtime.start_price_proxy_v1 is None and now > post_start_deadline:
+            self._mark_terminal_skipped(
+                runtime,
+                stop_reason="missing_start_proxy",
+                message="No Chainlink tick arrived within the post-start grace window.",
+            )
+            return
+        if runtime.end_price_proxy_v1 is None and now > post_end_deadline:
+            self._mark_terminal_skipped(
+                runtime,
+                stop_reason="missing_end_proxy",
+                message="No Chainlink tick arrived within the post-end grace window.",
+            )
+            return
+        if runtime.start_price_proxy_v1 is not None and runtime.end_price_proxy_v1 is not None:
+            runtime.boundary_status = "complete"
+        elif runtime.start_price_proxy_v1 is not None:
+            runtime.boundary_status = "partial"
+        else:
+            runtime.boundary_status = "pending"
+
+    def _update_terminal_state(
+        self,
+        runtime: _TerminalRuntime,
+        now: datetime,
+    ) -> None:
+        if runtime.state in {Btc15mTerminalState.SKIPPED, Btc15mTerminalState.RESOLVED}:
+            return
+        resolved = runtime.resolved
+        if resolved.window_start_dt is None or resolved.window_end_dt is None:
+            runtime.state = Btc15mTerminalState.SKIPPED
+            return
+        timing_controls = _default_timing_controls()
+        start_dt = resolved.window_start_dt
+        end_dt = resolved.window_end_dt
+        minute_five = start_dt + timedelta(seconds=timing_controls.direction_lock_offset_seconds)
+        minute_ten = start_dt + timedelta(seconds=timing_controls.entry_window_end_offset_seconds)
+        end_grace = end_dt + timedelta(seconds=timing_controls.post_end_grace_window_seconds)
+        if now < start_dt:
+            runtime.state = Btc15mTerminalState.PRE_START_CAPTURE
+        elif runtime.start_price_proxy_v1 is None:
+            runtime.state = Btc15mTerminalState.BOUNDARY_PENDING
+        elif runtime.selected_side is None and now < minute_five:
+            runtime.state = Btc15mTerminalState.DIRECTION_LOCK_PENDING
+        elif runtime.selected_side is None and now >= minute_five:
+            runtime.state = Btc15mTerminalState.DIRECTION_LOCK_PENDING
+        elif now < minute_ten:
+            runtime.state = Btc15mTerminalState.ENTRY_WINDOW_OPEN
+        elif now < end_grace:
+            runtime.state = Btc15mTerminalState.HOLD_TO_EXPIRY
+        elif runtime.end_price_proxy_v1 is not None:
+            runtime.state = Btc15mTerminalState.RESOLVED
+            runtime.stop_reason = "window_complete"
+        else:
+            runtime.state = Btc15mTerminalState.BOUNDARY_PENDING
+
+    def _record_terminal_event(
+        self,
+        runtime: _TerminalRuntime,
+        *,
+        kind: str,
+        status: str,
+        message: str,
+        event_at: datetime | None = None,
+    ) -> None:
+        runtime.events.append(
+            Btc15mTerminalEventRecord(
+                event_at=_isoformat(event_at or self._now()),
+                kind=kind,
+                status=status,
+                message=message,
+            )
+        )
+        if len(runtime.events) > DEFAULT_TERMINAL_EVENT_LOG_LIMIT:
+            runtime.events[:] = runtime.events[-DEFAULT_TERMINAL_EVENT_LOG_LIMIT:]
+
+    def _mark_terminal_skipped(
+        self,
+        runtime: _TerminalRuntime,
+        *,
+        stop_reason: str,
+        message: str,
+    ) -> None:
+        if stop_reason not in runtime.skip_reasons:
+            runtime.skip_reasons.append(stop_reason)
+        runtime.state = Btc15mTerminalState.SKIPPED
+        runtime.stop_reason = stop_reason
+        self._record_terminal_event(runtime, kind="skip", status="fail", message=message)
+
+    def _maybe_apply_terminal_decision(
+        self,
+        runtime: _TerminalRuntime,
+        now: datetime,
+    ) -> None:
+        if runtime.selected_side in {"UP", "DOWN"}:
+            return
+        resolved = runtime.resolved
+        if resolved.window_start_dt is None or runtime.start_price_proxy_v1 is None:
+            return
+        decision_time = resolved.window_start_dt + MINUTE_FIVE_OFFSET
+        if now < decision_time:
+            return
+        boundary_decision = self._build_terminal_boundary_decision(runtime)
+        decision, decision_at, skip_reasons, reason_blocks = self._decide_window(
+            resolved,
+            boundary_decision=boundary_decision,
+            chainlink_ticks=runtime.chainlink_ticks,
+            binance_ticks=runtime.binance_ticks,
+        )
+        runtime.decision_at = decision_at
+        runtime.reason_blocks.extend(reason_blocks)
+        for reason in skip_reasons:
+            if reason not in runtime.skip_reasons:
+                runtime.skip_reasons.append(reason)
+        if decision == "SKIP":
+            self._mark_terminal_skipped(
+                runtime,
+                stop_reason=skip_reasons[0] if skip_reasons else "direction_lock_skip",
+                message="BTC15m direction lock failed at minute 5.",
+            )
+            return
+
+        runtime.selected_side = decision
+        target = _resolve_target_token(
+            resolved.window.token_ids,
+            resolved.window.outcomes,
+            decision,
+        )
+        if target is None:
+            self._mark_terminal_skipped(
+                runtime,
+                stop_reason="unresolved_outcome_mapping",
+                message="Could not map the BTC15m direction to a target token.",
+            )
+            return
+        runtime.target_token_id, runtime.target_outcome = target
+        if not runtime.rungs:
+            runtime.rungs = [
+                _TerminalRungRuntime(
+                    price=price,
+                    notional_usdc=notional,
+                    quantity=(notional / price).quantize(
+                        Decimal("0.000001"),
+                        rounding=ROUND_DOWN,
+                    ),
+                )
+                for price, notional in zip(RUNG_PRICES, RUNG_NOTIONALS, strict=True)
+            ]
+
+        decision_record = self._build_terminal_window_record(runtime, recorded_at=now)
+        decision_sample = _select_decision_liquidity_sample(
+            decision_record.liquidity_samples,
+            decision_time,
+        )
+        if decision_sample is None:
+            self._mark_terminal_skipped(
+                runtime,
+                stop_reason="missing_decision_liquidity_sample",
+                message="No decision-time liquidity sample was available within five seconds.",
+            )
+            return
+        guard_skip_reasons, guard_reasons, manipulation_flags = _evaluate_liquidity_guards(
+            record=decision_record,
+            decision_sample=decision_sample,
+            direction=decision,
+        )
+        runtime.reason_blocks.extend(guard_reasons)
+        for flag in manipulation_flags:
+            if flag not in runtime.manipulation_flags:
+                runtime.manipulation_flags.append(flag)
+        if guard_skip_reasons:
+            for reason in guard_skip_reasons:
+                if reason not in runtime.skip_reasons:
+                    runtime.skip_reasons.append(reason)
+            self._mark_terminal_skipped(
+                runtime,
+                stop_reason=guard_skip_reasons[0],
+                message="BTC15m liquidity or manipulation guard rejected the window.",
+            )
+            return
+        self._record_terminal_event(
+            runtime,
+            kind="direction_lock",
+            status="pass",
+            message=f"Locked BTC15m direction to {decision}.",
+        )
+
+    def _apply_terminal_paper_rungs(
+        self,
+        runtime: _TerminalRuntime,
+        now: datetime,
+    ) -> None:
+        resolved = runtime.resolved
+        if resolved.window_start_dt is None or runtime.target_token_id is None:
+            return
+        minute_five = resolved.window_start_dt + MINUTE_FIVE_OFFSET
+        minute_ten = resolved.window_start_dt + MINUTE_TEN_OFFSET
+        if now < minute_five:
+            return
+        selected_level = None
+        for sample in reversed(runtime.liquidity_samples):
+            level = _polymarket_level(sample, runtime.target_token_id)
+            if level is not None:
+                selected_level = level
+                break
+        for rung in runtime.rungs:
+            if rung.state == "filled":
+                continue
+            if now >= minute_ten:
+                if rung.state != "cancelled":
+                    rung.state = "cancelled"
+                    rung.cancellation_at = _isoformat(now)
+                    self._record_terminal_event(
+                        runtime,
+                        kind="rung_cancel",
+                        status="info",
+                        message=f"Cancelled paper rung {rung.price} at entry-window close.",
+                    )
+                continue
+            if rung.state != "armed" or selected_level is None:
+                continue
+            best_ask = _decimal_optional(selected_level.best_ask)
+            visible = _ask_liquidity_at_or_better(selected_level.asks, rung.price)
+            if best_ask is None or best_ask > rung.price or visible < rung.quantity:
+                continue
+            rung.state = "filled"
+            rung.fill_at = _isoformat(now)
+            rung.fill_price = _decimal_text(rung.price)
+            if runtime.first_fill_at is None:
+                runtime.first_fill_at = rung.fill_at
+            self._record_terminal_event(
+                runtime,
+                kind="rung_fill",
+                status="pass",
+                message=f"Filled paper rung {rung.price} on live public market data.",
+            )
+
+    def _apply_terminal_live_rungs(
+        self,
+        runtime: _TerminalRuntime,
+        now: datetime,
+        *,
+        confirm_action: Callable[[str], bool | None] | None,
+    ) -> None:
+        resolved = runtime.resolved
+        if resolved.window_start_dt is None:
+            return
+        minute_five = resolved.window_start_dt + MINUTE_FIVE_OFFSET
+        minute_ten = resolved.window_start_dt + MINUTE_TEN_OFFSET
+        for rung in runtime.rungs:
+            if rung.state == "posted" and rung.order_id is not None:
+                self._poll_live_rung_orders(runtime, rung)
+        if now < minute_five:
+            return
+        if now >= minute_ten:
+            for rung in runtime.rungs:
+                if rung.state == "armed" and rung.cancellation_at is None:
+                    rung.state = "cancelled"
+                    rung.cancellation_at = _isoformat(now)
+            remaining_posted = [item for item in runtime.rungs if item.state == "posted"]
+            if remaining_posted and not any(item.cancel_attempted for item in remaining_posted):
+                self._attempt_live_cancel(runtime, now, confirm_action=confirm_action)
+            return
+        for rung in runtime.rungs:
+            if rung.state != "armed" or rung.post_attempted:
+                continue
+            rung.post_attempted = True
+            prompt = (
+                f"Post BTC15m {runtime.selected_side} rung at {rung.price} "
+                f"for {rung.quantity} shares?"
+            )
+            decision = confirm_action(prompt) if confirm_action is not None else None
+            if decision is not True:
+                rung.state = "cancelled"
+                rung.cancellation_at = _isoformat(now)
+                self._record_terminal_event(
+                    runtime,
+                    kind="confirm",
+                    status="skip",
+                    message=f"Operator declined live rung {rung.price}.",
+                )
+                continue
+            self._attempt_live_rung_post(runtime, rung, now)
+
+    def _attempt_live_rung_post(
+        self,
+        runtime: _TerminalRuntime,
+        rung: _TerminalRungRuntime,
+        now: datetime,
+    ) -> None:
+        market_ref = runtime.resolved.window.condition_id or runtime.resolved.window.market_slug
+        try:
+            response = self._order_lifecycle.post(
+                market_ref=market_ref,
+                outcome=(runtime.selected_side or "").lower(),
+                side="buy",
+                price=_decimal_text(rung.price),
+                size=_decimal_text(rung.quantity),
+                live=True,
+                confirm=True,
+            )
+        except (ExecutionValidationError, Exception) as exc:
+            runtime.errors.append(_section_error("terminal_live_post", exc))
+            rung.state = "cancelled"
+            rung.cancellation_at = _isoformat(now)
+            self._record_terminal_event(
+                runtime,
+                kind="rung_post",
+                status="fail",
+                message=f"Live rung {rung.price} failed: {exc}",
+            )
+            return
+        order_id = _extract_live_order_id(response.live_response)
+        if response.decision == "POSTED" and order_id is not None:
+            rung.state = "posted"
+            rung.order_id = order_id
+            self._record_terminal_event(
+                runtime,
+                kind="rung_post",
+                status="pass",
+                message=f"Posted live rung {rung.price} as order {order_id}.",
+            )
+            return
+        rung.state = "cancelled"
+        rung.cancellation_at = _isoformat(now)
+        self._record_terminal_event(
+            runtime,
+            kind="rung_post",
+            status="fail",
+            message=f"Live rung {rung.price} was not accepted for posting.",
+        )
+
+    def _poll_live_rung_orders(
+        self,
+        runtime: _TerminalRuntime,
+        rung: _TerminalRungRuntime,
+    ) -> None:
+        if rung.order_id is None:
+            return
+        try:
+            order_response = self._order_lifecycle.order_get(order_id=rung.order_id)
+        except (ExecutionValidationError, Exception) as exc:
+            runtime.errors.append(_section_error("terminal_live_order_get", exc))
+            return
+        order = order_response.order
+        status = (order.status or "").strip().lower()
+        remaining = order.remaining_size
+        if _order_status_is_filled(status, remaining):
+            if rung.state != "filled":
+                rung.state = "filled"
+                rung.fill_at = order.created_at or _isoformat(self._now())
+                rung.fill_price = _decimal_text(rung.price)
+                if runtime.first_fill_at is None:
+                    runtime.first_fill_at = rung.fill_at
+                self._record_terminal_event(
+                    runtime,
+                    kind="rung_fill",
+                    status="pass",
+                    message=f"Live rung {rung.price} filled.",
+                )
+        elif _order_status_is_cancelled(status):
+            if rung.state != "cancelled":
+                rung.state = "cancelled"
+                rung.cancellation_at = order.created_at or _isoformat(self._now())
+                self._record_terminal_event(
+                    runtime,
+                    kind="rung_cancel",
+                    status="info",
+                    message=f"Live rung {rung.price} was cancelled.",
+                )
+
+    def _attempt_live_cancel(
+        self,
+        runtime: _TerminalRuntime,
+        now: datetime,
+        *,
+        confirm_action: Callable[[str], bool | None] | None,
+    ) -> None:
+        remaining_posted = [item for item in runtime.rungs if item.state == "posted"]
+        if not remaining_posted:
+            return
+        for item in remaining_posted:
+            item.cancel_attempted = True
+        decision = (
+            confirm_action("Cancel remaining open BTC15m live rungs at minute 10?")
+            if confirm_action is not None
+            else None
+        )
+        if decision is not True:
+            self._record_terminal_event(
+                runtime,
+                kind="confirm",
+                status="skip",
+                message="Operator declined live BTC15m cancel at minute 10.",
+            )
+            runtime.stop_reason = "operator_declined_cancel"
+            return
+        market_ref = runtime.resolved.window.condition_id or runtime.resolved.window.market_slug
+        try:
+            response = self._order_lifecycle.cancel_market(
+                market=market_ref,
+                token_id=runtime.target_token_id,
+                live=True,
+                confirm=True,
+            )
+        except (ExecutionValidationError, Exception) as exc:
+            runtime.errors.append(_section_error("terminal_live_cancel", exc))
+            self._record_terminal_event(
+                runtime,
+                kind="rung_cancel",
+                status="fail",
+                message=f"Live cancel failed: {exc}",
+            )
+            return
+        if response.decision == "CANCELLED":
+            for item in remaining_posted:
+                item.state = "cancelled"
+                item.cancellation_at = _isoformat(now)
+            self._record_terminal_event(
+                runtime,
+                kind="rung_cancel",
+                status="pass",
+                message="Cancelled remaining BTC15m live rung orders.",
+            )
+
+    def _update_terminal_favorable_metrics(
+        self,
+        runtime: _TerminalRuntime,
+        now: datetime,
+    ) -> None:
+        if runtime.first_fill_at is None:
+            return
+        total_quantity, total_cost, _ = _terminal_position_summary(runtime.rungs)
+        if total_quantity <= 0:
+            return
+        midpoint = None
+        if runtime.target_token_id is not None:
+            for sample in reversed(runtime.market_samples):
+                if sample.token_id == runtime.target_token_id and sample.midpoint is not None:
+                    midpoint = _decimal_optional(sample.midpoint)
+                    if midpoint is not None:
+                        break
+        if midpoint is None:
+            return
+        pnl = (total_quantity * midpoint) - total_cost
+        runtime.favorable_marks.append(
+            Btc15mPriceMark(
+                observed_at=_isoformat(now),
+                midpoint=_decimal_text(midpoint),
+                pnl_usdc=_decimal_text(pnl),
+            )
+        )
+        if len(runtime.favorable_marks) > DEFAULT_TERMINAL_SNAPSHOT_LOG_LIMIT:
+            runtime.favorable_marks[:] = runtime.favorable_marks[
+                -DEFAULT_TERMINAL_SNAPSHOT_LOG_LIMIT :
+            ]
+        if len(runtime.favorable_marks) == 1 or pnl > runtime.mfe:
+            runtime.mfe = pnl
+            runtime.max_favorable_price = _decimal_text(midpoint)
+            first_fill_dt = _parse_iso_timestamp(runtime.first_fill_at)
+            runtime.time_to_peak_seconds = int((now - first_fill_dt).total_seconds())
+        if len(runtime.favorable_marks) == 1 or pnl < runtime.mae:
+            runtime.mae = pnl
+
+    def _build_terminal_snapshot(
+        self,
+        runtime: _TerminalRuntime,
+        sampled_at_dt: datetime,
+    ) -> Btc15mDashboardSnapshotRecord:
+        selected_level = None
+        if runtime.target_token_id is not None:
+            for sample in reversed(runtime.liquidity_samples):
+                selected_level = _polymarket_level(sample, runtime.target_token_id)
+                if selected_level is not None:
+                    break
+        total_quantity, total_cost, avg_entry = _terminal_position_summary(runtime.rungs)
+        countdown = _terminal_countdown_seconds(runtime, sampled_at_dt)
+        latest_liquidity = runtime.liquidity_samples[-1] if runtime.liquidity_samples else None
+        binance = latest_liquidity.binance if latest_liquidity is not None else None
+        current_chainlink_price = (
+            runtime.chainlink_ticks[-1].value if runtime.chainlink_ticks else None
+        )
+        current_binance_price = (
+            runtime.binance_ticks[-1].value if runtime.binance_ticks else None
+        )
+        return Btc15mDashboardSnapshotRecord(
+            snapshot_id=_make_id("btc15m_terminal_snapshot"),
+            session_id=runtime.session_id,
+            window_id=runtime.resolved.window.window_id,
+            market_slug=runtime.resolved.window.market_slug,
+            sampled_at=_isoformat(sampled_at_dt),
+            view_kind="terminal",
+            mode=runtime.mode,
+            window_status=runtime.state.value,
+            boundary_status=runtime.boundary_status,
+            window_start_at=runtime.resolved.window.window_start_at,
+            window_end_at=runtime.resolved.window.window_end_at,
+            countdown_seconds=countdown,
+            selected_side=runtime.selected_side,
+            current_chainlink_price=current_chainlink_price,
+            current_binance_price=current_binance_price,
+            start_price_proxy_v1=runtime.start_price_proxy_v1,
+            direction_lock_status=(
+                runtime.selected_side if runtime.selected_side is not None else runtime.state.value
+            ),
+            target_token_id=runtime.target_token_id,
+            target_outcome=runtime.target_outcome,
+            avg_entry_price=avg_entry,
+            exposure_quantity=_decimal_text(total_quantity) if total_quantity > 0 else None,
+            exposure_notional_usdc=_decimal_text(total_cost) if total_cost > 0 else None,
+            current_midpoint=selected_level.midpoint if selected_level is not None else None,
+            current_spread=selected_level.spread if selected_level is not None else None,
+            market_open_interest=runtime.market_open_interest,
+            market_volume=runtime.market_volume,
+            binance_best_bid=binance.book_ticker.bid_price if binance is not None else None,
+            binance_best_ask=binance.book_ticker.ask_price if binance is not None else None,
+            binance_near_touch_bid_depth=(
+                binance.near_touch_bid_depth if binance is not None else None
+            ),
+            binance_near_touch_ask_depth=(
+                binance.near_touch_ask_depth if binance is not None else None
+            ),
+            binance_realized_vol_1m_bps=(
+                binance.realized_vol_1m_bps if binance is not None else None
+            ),
+            binance_realized_vol_3m_bps=(
+                binance.realized_vol_3m_bps if binance is not None else None
+            ),
+            binance_volume_1m=_binance_volume_proxy(latest_liquidity, minutes=1),
+            binance_volume_3m=_binance_volume_proxy(latest_liquidity, minutes=3),
+            visible_liquidity_030=(
+                selected_level.visible_liquidity_030 if selected_level is not None else None
+            ),
+            visible_liquidity_020=(
+                selected_level.visible_liquidity_020 if selected_level is not None else None
+            ),
+            visible_liquidity_010=(
+                selected_level.visible_liquidity_010 if selected_level is not None else None
+            ),
+            manipulation_flags=sorted(set(runtime.manipulation_flags + runtime.skip_reasons)),
+            polymarket_levels=(latest_liquidity.polymarket if latest_liquidity is not None else []),
+            rungs=[
+                Btc15mDashboardRungState(
+                    price=_decimal_text(item.price),
+                    state=item.state,
+                    notional_usdc=_decimal_text(item.notional_usdc),
+                    quantity=_decimal_text(item.quantity),
+                    visible_liquidity=(
+                        _terminal_rung_visible_liquidity(selected_level, item.price)
+                        if selected_level is not None
+                        else None
+                    ),
+                    order_id=item.order_id,
+                    fill_at=item.fill_at,
+                    fill_price=item.fill_price,
+                    cancellation_at=item.cancellation_at,
+                )
+                for item in runtime.rungs
+            ],
+            latest_events=list(runtime.events),
+            mfe_usdc=_decimal_text(runtime.mfe) if runtime.favorable_marks else None,
+            mae_usdc=_decimal_text(runtime.mae) if runtime.favorable_marks else None,
+            max_favorable_price=runtime.max_favorable_price,
+            time_to_peak_seconds=runtime.time_to_peak_seconds,
+            errors=list(runtime.errors)
+            + (latest_liquidity.errors if latest_liquidity is not None else []),
+        )
+
+    def _build_terminal_boundary_decision(
+        self,
+        runtime: _TerminalRuntime,
+    ) -> Btc15mBoundaryDecisionRecord:
+        notes: list[str] = []
+        if runtime.start_price_proxy_v1 is None:
+            notes.append("Missing post-start Chainlink boundary tick.")
+        if runtime.end_price_proxy_v1 is None:
+            notes.append("Missing post-end Chainlink boundary tick.")
+        return Btc15mBoundaryDecisionRecord(
+            window_id=runtime.resolved.window.window_id,
+            condition_id=runtime.resolved.window.condition_id,
+            market_slug=runtime.resolved.window.market_slug,
+            created_at=_isoformat(self._now()),
+            status=runtime.boundary_status,
+            pre_start=runtime.boundary_pre_start,
+            post_start=runtime.boundary_post_start,
+            pre_end=runtime.boundary_pre_end,
+            post_end=runtime.boundary_post_end,
+            timing_source=runtime.resolved.window.timing_source,
+            timing_controls=_default_timing_controls(),
+            start_price_proxy_v1=runtime.start_price_proxy_v1,
+            end_price_proxy_v1=runtime.end_price_proxy_v1,
+            notes=notes,
+        )
+
+    def _build_terminal_window_record(
+        self,
+        runtime: _TerminalRuntime,
+        *,
+        recorded_at: datetime,
+    ) -> Btc15mWindowRecord:
+        resolution_result = "PENDING"
+        if runtime.start_price_proxy_v1 is not None and runtime.end_price_proxy_v1 is not None:
+            resolution_result = self._resolve_market_outcome(
+                self._build_terminal_boundary_decision(runtime)
+            )
+        decision = "PENDING"
+        if runtime.selected_side in {"UP", "DOWN"}:
+            decision = runtime.selected_side
+        elif runtime.state is Btc15mTerminalState.SKIPPED:
+            decision = "SKIP"
+        return Btc15mWindowRecord(
+            window=runtime.resolved.window,
+            recorded_at=_isoformat(recorded_at),
+            recorder_session_id=runtime.session_id,
+            status=(
+                "complete"
+                if runtime.boundary_status == "complete"
+                and runtime.state in {Btc15mTerminalState.RESOLVED, Btc15mTerminalState.SKIPPED}
+                else "partial"
+            ),
+            mode=runtime.mode,
+            target_slug=runtime.resolved.target_slug,
+            selection_source=runtime.resolved.selection_source,
+            chainlink_ticks=list(runtime.chainlink_ticks),
+            binance_ticks=list(runtime.binance_ticks),
+            market_samples=list(runtime.market_samples),
+            liquidity_samples=list(runtime.liquidity_samples),
+            boundary_status=runtime.boundary_status,
+            timing_controls=_default_timing_controls(),
+            start_price_proxy_v1=runtime.start_price_proxy_v1,
+            end_price_proxy_v1=runtime.end_price_proxy_v1,
+            decision=decision,
+            decision_at=runtime.decision_at,
+            resolution_result=resolution_result,
+            manipulation_flags=list(runtime.manipulation_flags),
+            skip_reasons=list(runtime.skip_reasons),
+            reason_blocks=list(runtime.reason_blocks),
+            errors=list(runtime.errors),
+        )
+
+    def _finalize_terminal_session(
+        self,
+        runtime: _TerminalRuntime,
+    ) -> Btc15mTerminalSessionRecord:
+        finalized_at = self._now()
+        boundary_decision = self._build_terminal_boundary_decision(runtime)
+        self._state.append_boundary_observations(_terminal_boundary_observations(runtime))
+        self._state.append_boundary_decision(boundary_decision)
+        if runtime.liquidity_samples:
+            self._state.append_liquidity_samples(runtime.liquidity_samples)
+        window_record = self._build_terminal_window_record(runtime, recorded_at=finalized_at)
+        self._state.append_windows([window_record])
+        evaluation = None
+        if window_record.decision in {"UP", "DOWN", "SKIP"}:
+            evaluation = self._evaluate_window(window_record, source_kind="terminal")
+            if runtime.mode is Btc15mRunMode.PAPER:
+                self._state.append_paper_run(
+                    Btc15mPaperRunRecord(
+                        run_id=_make_id("btc15m_paper_run"),
+                        created_at=_isoformat(finalized_at),
+                        limit=1,
+                        mode=runtime.mode,
+                        target_slug=runtime.resolved.target_slug,
+                        selection_source=runtime.resolved.selection_source,
+                        source_kind="terminal",
+                        items=[evaluation],
+                        total_considered=1,
+                        total_evaluated=1,
+                        total_skipped=1 if evaluation.decision == "SKIP" else 0,
+                        total_realized_pnl_usdc=evaluation.realized_pnl_usdc,
+                    )
+                )
+        total_quantity, total_cost, avg_entry = _terminal_position_summary(runtime.rungs)
+        return Btc15mTerminalSessionRecord(
+            session_id=runtime.session_id,
+            created_at=_isoformat(finalized_at),
+            started_at=_isoformat(runtime.started_at_dt),
+            ended_at=_isoformat(finalized_at),
+            mode=runtime.mode,
+            stop_reason=runtime.stop_reason,
+            final_state=runtime.state,
+            window=runtime.resolved.window,
+            boundary_status=runtime.boundary_status,
+            selected_side=runtime.selected_side,
+            target_token_id=runtime.target_token_id,
+            target_outcome=runtime.target_outcome,
+            start_price_proxy_v1=runtime.start_price_proxy_v1,
+            end_price_proxy_v1=runtime.end_price_proxy_v1,
+            avg_entry_price=avg_entry,
+            exposure_quantity=_decimal_text(total_quantity) if total_quantity > 0 else None,
+            exposure_notional_usdc=_decimal_text(total_cost) if total_cost > 0 else None,
+            filled_rung_count=sum(1 for item in runtime.rungs if item.state == "filled"),
+            posted_rung_count=sum(1 for item in runtime.rungs if item.state == "posted"),
+            cancelled_rung_count=sum(1 for item in runtime.rungs if item.state == "cancelled"),
+            market_open_interest=runtime.market_open_interest,
+            market_volume=runtime.market_volume,
+            manipulation_flags=sorted(set(runtime.manipulation_flags + runtime.skip_reasons)),
+            latest_snapshot=runtime.latest_snapshot,
+            latest_evaluation=evaluation,
+            rungs=[
+                Btc15mDashboardRungState(
+                    price=_decimal_text(item.price),
+                    state=item.state,
+                    notional_usdc=_decimal_text(item.notional_usdc),
+                    quantity=_decimal_text(item.quantity),
+                    order_id=item.order_id,
+                    fill_at=item.fill_at,
+                    fill_price=item.fill_price,
+                    cancellation_at=item.cancellation_at,
+                )
+                for item in runtime.rungs
+            ],
+            operator_events=list(runtime.events),
+            errors=list(runtime.errors),
+        )
+
     def _build_dashboard_snapshot(
         self,
         resolved: _ResolvedWindow,
@@ -1619,6 +2761,20 @@ class Btc15mStrategyService:
             for flag in _derive_manipulation_flags([liquidity_sample]):
                 if flag not in manipulation_flags:
                     manipulation_flags.append(flag)
+        total_quantity = Decimal("0")
+        total_cost = Decimal("0")
+        avg_entry = None
+        if latest_evaluation is not None:
+            for rung in latest_evaluation.rungs:
+                if rung.status != "filled":
+                    continue
+                quantity = _decimal(rung.quantity)
+                fill_price = _decimal(rung.fill_price or rung.price)
+                total_quantity += quantity
+                total_cost += quantity * fill_price
+            if total_quantity > 0:
+                avg_entry = _decimal_text(total_cost / total_quantity)
+        latest_liquidity = liquidity_sample.binance if liquidity_sample is not None else None
 
         return Btc15mDashboardSnapshotRecord(
             snapshot_id=_make_id("btc15m_dashboard_snapshot"),
@@ -1626,11 +2782,27 @@ class Btc15mStrategyService:
             window_id=resolved.window.window_id,
             market_slug=resolved.window.market_slug,
             sampled_at=_isoformat(sampled_at_dt),
+            view_kind="dashboard",
+            mode=Btc15mRunMode.PAPER,
             window_status=(
                 latest_window.status if latest_window is not None else "current_monitor"
             ),
+            boundary_status=(
+                latest_window.boundary_status if latest_window is not None else "pending"
+            ),
             window_start_at=resolved.window.window_start_at,
             window_end_at=resolved.window.window_end_at,
+            countdown_seconds=_terminal_countdown_seconds(
+                _TerminalRuntime(
+                    session_id=session_id,
+                    resolved=resolved,
+                    mode=Btc15mRunMode.PAPER,
+                    started_at_dt=sampled_at_dt,
+                    state=Btc15mTerminalState.DIRECTION_LOCK_PENDING,
+                ),
+                sampled_at_dt,
+            ),
+            selected_side=direction_status if direction_status in {"UP", "DOWN"} else None,
             current_chainlink_price=(
                 current_chainlink_tick.value if current_chainlink_tick else None
             ),
@@ -1639,8 +2811,29 @@ class Btc15mStrategyService:
             direction_lock_status=direction_status,
             target_token_id=target_token_id,
             target_outcome=target_outcome,
+            avg_entry_price=avg_entry,
+            exposure_quantity=_decimal_text(total_quantity) if total_quantity > 0 else None,
+            exposure_notional_usdc=_decimal_text(total_cost) if total_cost > 0 else None,
             current_midpoint=selected_level.midpoint if selected_level is not None else None,
             current_spread=selected_level.spread if selected_level is not None else None,
+            market_open_interest=getattr(latest_window, "market_open_interest", None),
+            market_volume=getattr(latest_window, "market_volume", None),
+            binance_best_bid=latest_liquidity.book_ticker.bid_price if latest_liquidity else None,
+            binance_best_ask=latest_liquidity.book_ticker.ask_price if latest_liquidity else None,
+            binance_near_touch_bid_depth=(
+                latest_liquidity.near_touch_bid_depth if latest_liquidity else None
+            ),
+            binance_near_touch_ask_depth=(
+                latest_liquidity.near_touch_ask_depth if latest_liquidity else None
+            ),
+            binance_realized_vol_1m_bps=(
+                latest_liquidity.realized_vol_1m_bps if latest_liquidity else None
+            ),
+            binance_realized_vol_3m_bps=(
+                latest_liquidity.realized_vol_3m_bps if latest_liquidity else None
+            ),
+            binance_volume_1m=_binance_volume_proxy(liquidity_sample, minutes=1),
+            binance_volume_3m=_binance_volume_proxy(liquidity_sample, minutes=3),
             visible_liquidity_030=(
                 selected_level.visible_liquidity_030 if selected_level is not None else None
             ),
@@ -1653,6 +2846,7 @@ class Btc15mStrategyService:
             manipulation_flags=sorted(manipulation_flags),
             polymarket_levels=liquidity_sample.polymarket if liquidity_sample is not None else [],
             rungs=rung_states,
+            latest_events=[],
             mfe_usdc=latest_evaluation.mfe_usdc if latest_evaluation is not None else None,
             mae_usdc=latest_evaluation.mae_usdc if latest_evaluation is not None else None,
             max_favorable_price=(
@@ -2936,6 +4130,15 @@ def _normalize_optional_slug(slug: str | None) -> str | None:
     return normalized or None
 
 
+def _normalize_terminal_mode(mode: str | Btc15mRunMode) -> Btc15mRunMode:
+    normalized = str(mode).strip().lower()
+    if normalized == Btc15mRunMode.PAPER.value:
+        return Btc15mRunMode.PAPER
+    if normalized == Btc15mRunMode.LIVE.value:
+        return Btc15mRunMode.LIVE
+    raise Btc15mValidationError("BTC15m mode must be one of: paper, live.")
+
+
 def _require_paper_mode(mode: str | Btc15mRunMode) -> Btc15mRunMode:
     normalized = str(mode).strip().lower()
     if normalized == Btc15mRunMode.PAPER.value:
@@ -2960,6 +4163,181 @@ def _default_timing_controls() -> Btc15mTimingControls:
         entry_window_end_offset_seconds=int(MINUTE_TEN_OFFSET.total_seconds()),
         cancel_open_entries_offset_seconds=int(MINUTE_TEN_OFFSET.total_seconds()),
     )
+
+
+def _append_tick_if_new(items: list[Btc15mPriceTick], tick: Btc15mPriceTick) -> None:
+    if any(
+        item.source == tick.source
+        and item.observed_at == tick.observed_at
+        and item.value == tick.value
+        for item in items
+    ):
+        return
+    items.append(tick)
+    items.sort(key=lambda item: item.observed_at)
+
+
+def _market_samples_from_liquidity(
+    sample: Btc15mLiquiditySampleRecord,
+) -> list[Btc15mMarketSample]:
+    items: list[Btc15mMarketSample] = []
+    for level in sample.polymarket:
+        items.append(
+            Btc15mMarketSample(
+                token_id=level.token_id,
+                outcome=level.outcome,
+                event_type=f"{sample.sample_kind}_liquidity",
+                source="terminal_liquidity",
+                captured_at=sample.sampled_at,
+                observed_at=sample.sampled_at,
+                best_bid=level.best_bid,
+                best_ask=level.best_ask,
+                midpoint=level.midpoint,
+                spread=level.spread,
+                bids=list(level.bids),
+                asks=list(level.asks),
+            )
+        )
+    return items
+
+
+def _terminal_position_summary(
+    rungs: list[_TerminalRungRuntime],
+) -> tuple[Decimal, Decimal, str | None]:
+    total_quantity = Decimal("0")
+    total_cost = Decimal("0")
+    for rung in rungs:
+        if rung.state != "filled":
+            continue
+        fill_price = _decimal(rung.fill_price) if rung.fill_price is not None else rung.price
+        total_quantity += rung.quantity
+        total_cost += rung.quantity * fill_price
+    if total_quantity <= 0:
+        return Decimal("0"), Decimal("0"), None
+    avg_entry = total_cost / total_quantity
+    return total_quantity, total_cost, _decimal_text(avg_entry)
+
+
+def _terminal_countdown_seconds(runtime: _TerminalRuntime, now: datetime) -> int | None:
+    resolved = runtime.resolved
+    if resolved.window_start_dt is None or resolved.window_end_dt is None:
+        return None
+    if runtime.state is Btc15mTerminalState.PRE_START_CAPTURE:
+        return max(0, int((resolved.window_start_dt - now).total_seconds()))
+    if runtime.state in {
+        Btc15mTerminalState.BOUNDARY_PENDING,
+        Btc15mTerminalState.DIRECTION_LOCK_PENDING,
+    }:
+        return max(0, int(((resolved.window_start_dt + MINUTE_FIVE_OFFSET) - now).total_seconds()))
+    return max(0, int((resolved.window_end_dt - now).total_seconds()))
+
+
+def _terminal_rung_visible_liquidity(
+    level: Btc15mPolymarketLiquidityLevel | None,
+    price: Decimal,
+) -> str | None:
+    if level is None:
+        return None
+    return _decimal_text(_ask_liquidity_at_or_better(level.asks, price))
+
+
+def _binance_volume_proxy(
+    sample: Btc15mLiquiditySampleRecord | None,
+    *,
+    minutes: int,
+) -> str | None:
+    if sample is None:
+        return None
+    total = Decimal("0")
+    count = 0
+    for kline in reversed(sample.binance.klines):
+        if not kline.is_closed:
+            continue
+        volume = _decimal_optional(kline.volume)
+        if volume is None:
+            continue
+        total += volume
+        count += 1
+        if count >= minutes:
+            break
+    return _decimal_text(total) if count else None
+
+
+def _extract_live_order_id(live_response: dict[str, Any] | None) -> str | None:
+    if not isinstance(live_response, dict):
+        return None
+    order_payload = live_response.get("order")
+    if isinstance(order_payload, dict):
+        order_id = order_payload.get("order_id") or order_payload.get("id")
+        if isinstance(order_id, str) and order_id.strip():
+            return order_id.strip()
+    post_payload = live_response.get("post_result")
+    if isinstance(post_payload, dict):
+        order_id = (
+            post_payload.get("orderID")
+            or post_payload.get("orderId")
+            or post_payload.get("id")
+        )
+        if isinstance(order_id, str) and order_id.strip():
+            return order_id.strip()
+    return None
+
+
+def _order_status_is_cancelled(status: str | None) -> bool:
+    normalized = (status or "").lower()
+    return "cancel" in normalized
+
+
+def _order_status_is_filled(status: str | None, remaining_size: str | None) -> bool:
+    normalized = (status or "").lower()
+    if any(marker in normalized for marker in ("filled", "matched", "executed")):
+        return True
+    remaining = _decimal_optional(remaining_size)
+    return remaining is not None and remaining <= 0
+
+
+def _terminal_boundary_observations(
+    runtime: _TerminalRuntime,
+) -> list[Btc15mBoundaryObservationRecord]:
+    window = runtime.resolved.window
+    return [
+        _boundary_observation(
+            window,
+            boundary_kind="start",
+            tick=runtime.boundary_pre_start,
+            session_id=runtime.session_id,
+            selection_status="selected_pre_start"
+            if runtime.boundary_pre_start is not None
+            else "missing_pre_start_capture_window",
+        ),
+        _boundary_observation(
+            window,
+            boundary_kind="start",
+            tick=runtime.boundary_post_start,
+            session_id=runtime.session_id,
+            selection_status="selected_post_start"
+            if runtime.boundary_post_start is not None
+            else "missing_post_start_grace_expired",
+        ),
+        _boundary_observation(
+            window,
+            boundary_kind="end",
+            tick=runtime.boundary_pre_end,
+            session_id=runtime.session_id,
+            selection_status="selected_pre_end"
+            if runtime.boundary_pre_end is not None
+            else "missing_pre_end_capture_window",
+        ),
+        _boundary_observation(
+            window,
+            boundary_kind="end",
+            tick=runtime.boundary_post_end,
+            session_id=runtime.session_id,
+            selection_status="selected_post_end"
+            if runtime.boundary_post_end is not None
+            else "missing_post_end_grace_expired",
+        ),
+    ]
 
 
 def _gamma_candidate_recency(candidate: GammaSearchCandidate) -> tuple[str | None, datetime | None]:

@@ -31,14 +31,18 @@ from pm.strategy import (
     LIQUIDITY_SAMPLES_FILENAME,
     PAPER_RUNS_FILENAME,
     REPLAYS_FILENAME,
+    TERMINAL_SESSIONS_FILENAME,
     WINDOWS_FILENAME,
     Btc15mBoundaryDecisionRecord,
     Btc15mLiquiditySampleRecord,
     Btc15mPaperRunRecord,
     Btc15mPolymarketLiquidityLevel,
+    Btc15mRunMode,
     Btc15mStateError,
     Btc15mStateService,
     Btc15mStrategyService,
+    Btc15mTerminalSessionRecord,
+    Btc15mTerminalState,
     Btc15mWindowRecord,
 )
 from pm.stream.models import (
@@ -246,6 +250,83 @@ class FakeBinanceService:
         )
 
 
+class FakeOrderLifecycle:
+    def __init__(self) -> None:
+        self.posts: list[dict[str, str]] = []
+        self.cancels: list[dict[str, str | None]] = []
+        self.order_statuses: dict[str, dict[str, str | None]] = {}
+        self.next_order_id = 1
+
+    def post(
+        self,
+        *,
+        market_ref: str,
+        outcome: str,
+        side: str,
+        price: str,
+        size: str,
+        live: bool = False,
+        confirm: bool = False,
+        **_: object,
+    ):
+        self.posts.append(
+            {
+                "market_ref": market_ref,
+                "outcome": outcome,
+                "side": side,
+                "price": price,
+                "size": size,
+                "mode": "live" if live else "paper",
+                "confirm": str(confirm),
+            }
+        )
+        order_id = f"order-{self.next_order_id}"
+        self.next_order_id += 1
+        self.order_statuses[order_id] = {
+            "order_id": order_id,
+            "status": "LIVE",
+            "remaining_size": size,
+            "created_at": "2026-03-20T10:35:00Z",
+        }
+        return type(
+            "FakePostOrderResponse",
+            (),
+            {
+                "decision": "POSTED",
+                "live_response": {
+                    "order": {"order_id": order_id},
+                    "post_result": {"orderID": order_id},
+                },
+            },
+        )()
+
+    def order_get(self, *, order_id: str):
+        payload = self.order_statuses[order_id]
+        order = type("FakeOrder", (), payload)()
+        return type("FakeOrderGetResponse", (), {"order": order})()
+
+    def cancel_market(
+        self,
+        *,
+        market: str,
+        token_id: str | None = None,
+        live: bool = False,
+        confirm: bool = False,
+    ):
+        self.cancels.append(
+            {
+                "market": market,
+                "token_id": token_id,
+                "mode": "live" if live else "paper",
+                "confirm": str(confirm),
+            }
+        )
+        for payload in self.order_statuses.values():
+            payload["status"] = "CANCELLED"
+            payload["remaining_size"] = "0"
+        return type("FakeCancelResponse", (), {"decision": "CANCELLED"})()
+
+
 async def _noop_async_sleep(seconds: float) -> None:
     _ = seconds
 
@@ -273,6 +354,7 @@ def _service(
     chainlink_events: list[CapturedStreamEvent] | None = None,
     binance_events: list[CapturedStreamEvent] | None = None,
     market_intel_candidate: RecurringMarketCandidate | None | object = ...,
+    order_lifecycle: FakeOrderLifecycle | None = None,
 ) -> Btc15mStrategyService:
     candidate = candidate or _candidate(COND_1, "btc-15m-up-down-1")
     FakeGammaClient.candidate = search_candidate or _search_candidate(candidate)
@@ -293,6 +375,7 @@ def _service(
             campaign_runs_path=tmp_path / CAMPAIGN_RUNS_FILENAME,
             dashboard_snapshots_path=tmp_path / DASHBOARD_SNAPSHOTS_FILENAME,
             auto_roll_runs_path=tmp_path / AUTO_ROLL_RUNS_FILENAME,
+            terminal_sessions_path=tmp_path / TERMINAL_SESSIONS_FILENAME,
         ),
         market_intel_service=FakeMarketIntelService(resolved_market_intel_candidate),
         market_client=FakeMarketClient(_market_events()),
@@ -301,6 +384,7 @@ def _service(
             binance_events=binance_events or _binance_events(),
         ),
         binance_service=FakeBinanceService(),
+        order_lifecycle=order_lifecycle or FakeOrderLifecycle(),
         gamma_client_cls=FakeGammaClient,
         clob_client_cls=FakeClobClient,
         now=clock.now if clock is not None else None,
@@ -586,6 +670,139 @@ def test_dashboard_current_persists_snapshot(tmp_path) -> None:
     assert len(service._state.list_dashboard_snapshots()) == 1  # type: ignore[attr-defined]
 
 
+def test_terminal_snapshot_only_returns_terminal_view(tmp_path) -> None:
+    candidate = _candidate(COND_1, "btc-updown-15m-1774002600")
+    service = _service(
+        tmp_path,
+        now=_dt("2026-03-20T10:39:00Z"),
+        candidate=candidate,
+        chainlink_events=[_crypto_event("chainlink", "2026-03-20T10:39:00Z", 101)],
+        binance_events=[_crypto_event("binance", "2026-03-20T10:39:00Z", 101)],
+    )
+    service._state.append_boundary_decision(  # type: ignore[attr-defined]
+        Btc15mBoundaryDecisionRecord(
+            window_id="btc15m:" + COND_1,
+            condition_id=COND_1,
+            market_slug=candidate.market_slug,
+            created_at="2026-03-20T10:30:01Z",
+            status="partial",
+            post_start=_price_tick("chainlink", "2026-03-20T10:30:00Z", "100"),
+            timing_source="slug_timestamp",
+            start_price_proxy_v1="100",
+        )
+    )
+
+    result = service.terminal_current(snapshot_only=True)
+
+    assert result.total_snapshots == 1
+    assert result.latest_snapshot is not None
+    assert result.latest_snapshot.view_kind == "terminal"
+    assert result.latest_snapshot.start_price_proxy_v1 == "100"
+
+
+def test_terminal_snapshot_skips_when_post_start_boundary_is_missing(tmp_path) -> None:
+    candidate = _candidate(COND_1, "btc-updown-15m-1774002600")
+    service = _service(
+        tmp_path,
+        now=_dt("2026-03-20T10:31:05Z"),
+        candidate=candidate,
+        chainlink_events=[_crypto_event("chainlink", "2026-03-20T10:31:05Z", 101)],
+        binance_events=[_crypto_event("binance", "2026-03-20T10:31:05Z", 101)],
+    )
+
+    result = service.terminal_current(snapshot_only=True)
+
+    assert result.latest_snapshot is not None
+    assert result.latest_snapshot.window_status == Btc15mTerminalState.SKIPPED
+    assert "missing_start_proxy" in result.latest_snapshot.manipulation_flags
+
+
+def test_terminal_live_mode_requires_confirm(tmp_path) -> None:
+    candidate = _candidate(COND_1, "btc-updown-15m-1774002600")
+    service = _service(tmp_path, now=_dt("2026-03-20T10:39:00Z"), candidate=candidate)
+
+    with pytest.raises(Exception, match="requires --mode live --confirm"):
+        service.terminal_current(mode="live")
+
+
+def test_terminal_live_declined_post_records_session(tmp_path) -> None:
+    candidate = _candidate(COND_1, "btc-updown-15m-1774002600")
+    lifecycle = FakeOrderLifecycle()
+    service = _service(
+        tmp_path,
+        now=_dt("2026-03-20T10:39:58Z"),
+        candidate=candidate,
+        order_lifecycle=lifecycle,
+        chainlink_events=[_crypto_event("chainlink", "2026-03-20T10:39:58Z", 101)],
+        binance_events=[_crypto_event("binance", "2026-03-20T10:39:58Z", 101)],
+    )
+    service._state.append_boundary_decision(  # type: ignore[attr-defined]
+        Btc15mBoundaryDecisionRecord(
+            window_id="btc15m:" + COND_1,
+            condition_id=COND_1,
+            market_slug=candidate.market_slug,
+            created_at="2026-03-20T10:30:01Z",
+            status="partial",
+            post_start=_price_tick("chainlink", "2026-03-20T10:30:00Z", "100"),
+            timing_source="slug_timestamp",
+            start_price_proxy_v1="100",
+        )
+    )
+    service._state.append_windows(  # type: ignore[attr-defined]
+        [
+            _window_record(
+                COND_1,
+                candidate.market_slug,
+                "2026-03-20T10:30:00Z",
+                decision="UP",
+            )
+        ]
+    )
+
+    result = service.terminal_current(
+        mode="live",
+        confirm=True,
+        confirm_action=lambda _: False,
+    )
+
+    assert result.session is not None
+    assert result.session.mode == Btc15mRunMode.LIVE
+    assert result.session.final_state in {
+        Btc15mTerminalState.HOLD_TO_EXPIRY,
+        Btc15mTerminalState.RESOLVED,
+        Btc15mTerminalState.SKIPPED,
+    }
+    assert lifecycle.posts == []
+    assert any(event.kind == "confirm" for event in result.session.operator_events)
+    assert service._state.list_terminal_sessions()[-1].session_id == result.session_id  # type: ignore[attr-defined]
+
+
+def test_terminal_report_aggregates_sessions(tmp_path) -> None:
+    service = _service(tmp_path, now=_dt("2026-03-20T10:36:00Z"))
+    service._state.append_terminal_session(  # type: ignore[attr-defined]
+        Btc15mTerminalSessionRecord(
+            session_id="terminal-1",
+            created_at="2026-03-20T10:45:00Z",
+            started_at="2026-03-20T10:30:00Z",
+            ended_at="2026-03-20T10:45:00Z",
+            mode=Btc15mRunMode.PAPER,
+            stop_reason="window_complete",
+            final_state=Btc15mTerminalState.RESOLVED,
+            window=_window_record(
+                COND_1,
+                "btc-updown-15m-1774002600",
+                "2026-03-20T10:30:00Z",
+            ).window,
+        )
+    )
+
+    result = service.terminal_report()
+
+    assert result.summary.terminal_session_count == 1
+    assert result.summary.paper_session_count == 1
+    assert result.summary.resolved_session_count == 1
+
+
 def test_auto_roll_returns_insufficient_remaining_time(tmp_path) -> None:
     candidate = _candidate(COND_1, "btc-updown-15m-1774002600")
     service = _service(
@@ -827,6 +1044,17 @@ def _window_record(
         ],
         market_samples=_market_events_to_samples(),
         liquidity_samples=[_liquidity_sample("btc15m:" + condition_id, market_slug)],
+    )
+
+
+def _price_tick(source: str, observed_at: str, value: str):
+    from pm.strategy import Btc15mPriceTick
+
+    return Btc15mPriceTick(
+        source=source,
+        captured_at=observed_at,
+        observed_at=observed_at,
+        value=value,
     )
 
 

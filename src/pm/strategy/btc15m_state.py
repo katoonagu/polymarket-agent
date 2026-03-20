@@ -24,6 +24,8 @@ from pm.strategy.btc15m_models import (
     Btc15mPaperRunsFile,
     Btc15mReplayRecord,
     Btc15mReplaysFile,
+    Btc15mTerminalSessionRecord,
+    Btc15mTerminalSessionsFile,
     Btc15mWindowRecord,
 )
 from pm.strategy.registry import get_strategy_state_dir
@@ -37,6 +39,7 @@ LIQUIDITY_SAMPLES_FILENAME = "btc-15m-chainlink-liquidity-samples.jsonl"
 CAMPAIGN_RUNS_FILENAME = "btc-15m-chainlink-campaign-runs.json"
 DASHBOARD_SNAPSHOTS_FILENAME = "btc-15m-chainlink-dashboard-snapshots.jsonl"
 AUTO_ROLL_RUNS_FILENAME = "btc-15m-chainlink-auto-roll-runs.json"
+TERMINAL_SESSIONS_FILENAME = "btc-15m-chainlink-terminal-sessions.json"
 
 DocumentT = TypeVar(
     "DocumentT",
@@ -45,6 +48,7 @@ DocumentT = TypeVar(
     Btc15mAutoRollRunsFile,
     Btc15mReplaysFile,
     Btc15mPaperRunsFile,
+    Btc15mTerminalSessionsFile,
 )
 
 
@@ -67,6 +71,7 @@ class Btc15mStateService:
         campaign_runs_path: Path | None = None,
         dashboard_snapshots_path: Path | None = None,
         auto_roll_runs_path: Path | None = None,
+        terminal_sessions_path: Path | None = None,
     ) -> None:
         state_dir = get_strategy_state_dir()
         self._boundary_observations_path = boundary_observations_path or (
@@ -87,6 +92,9 @@ class Btc15mStateService:
         )
         self._auto_roll_runs_path = auto_roll_runs_path or (
             state_dir / AUTO_ROLL_RUNS_FILENAME
+        )
+        self._terminal_sessions_path = terminal_sessions_path or (
+            state_dir / TERMINAL_SESSIONS_FILENAME
         )
 
     def list_boundary_observations(self) -> list[Btc15mBoundaryObservationRecord]:
@@ -187,6 +195,17 @@ class Btc15mStateService:
         document = self._load_document(self._auto_roll_runs_path, Btc15mAutoRollRunsFile)
         document.items.append(record)
         self._write_document(self._auto_roll_runs_path, document)
+
+    def list_terminal_sessions(self) -> list[Btc15mTerminalSessionRecord]:
+        """Return persisted terminal sessions in append order."""
+        document = self._load_document(self._terminal_sessions_path, Btc15mTerminalSessionsFile)
+        return document.items
+
+    def append_terminal_session(self, record: Btc15mTerminalSessionRecord) -> None:
+        """Append one terminal session summary."""
+        document = self._load_document(self._terminal_sessions_path, Btc15mTerminalSessionsFile)
+        document.items.append(record)
+        self._write_document(self._terminal_sessions_path, document)
 
     @property
     def windows_path(self) -> Path:

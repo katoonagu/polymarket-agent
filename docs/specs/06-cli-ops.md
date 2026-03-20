@@ -585,6 +585,14 @@ The current branch already includes `pm setup doctor`, `pm setup guide`, `pm set
 - `pm wallet show`
 - fuller TUI-style operator workflows beyond the bounded shell
 
+One strategy-specific exception now exists on the current branch:
+
+- `pm strategy btc15m terminal --current`
+- `pm strategy btc15m terminal report`
+
+This BTC15m surface is a bounded attached terminal for one current recurring
+window, not a generic daemonized shell replacement.
+
 Intended direction:
 
 - broader `pm setup`: guided onboarding over future local config, wallet readiness, and approval checks
@@ -607,6 +615,8 @@ Richer human-readable tables are now implemented for selected operator commands 
 - JSON output stays normalized and stable instead of exposing raw upstream payloads as the public contract
 - live order and approval writes remain explicitly gated behind `--live --confirm`
 - `pm shell` is bounded and operator-invoked, not a daemonized or full-screen terminal process
+- `pm strategy btc15m terminal` is also bounded to one current window; it is a
+  strategy-specific operator terminal, not a generic unattended TUI loop
 - intelligence, strategy, ops, and execution remain separate modules; execution alone may place or cancel orders
 
 ## Operational Direction

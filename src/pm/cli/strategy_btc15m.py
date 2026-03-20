@@ -4,9 +4,12 @@ from __future__ import annotations
 
 import typer
 from rich.console import Console, RenderableType
+from rich.layout import Layout
 from rich.live import Live
+from rich.panel import Panel
 
 from pm.cli.support import LOCAL_JSON_OPTION, emit_command_error, emit_command_output
+from pm.common.output import prompt_yes_no
 from pm.common.tables import empty_message, render_group, row_table, section_panel, summary_table
 from pm.strategy import (
     Btc15mAutoRollResponse,
@@ -25,6 +28,8 @@ from pm.strategy import (
     Btc15mResolveCurrentResponse,
     Btc15mStateError,
     Btc15mStrategyService,
+    Btc15mTerminalReportResponse,
+    Btc15mTerminalResponse,
     Btc15mValidationError,
 )
 
@@ -47,6 +52,12 @@ liquidity_app = typer.Typer(
     add_completion=False,
     help="BTC15m liquidity sampling commands.",
     no_args_is_help=True,
+)
+terminal_app = typer.Typer(
+    add_completion=False,
+    help="Dense BTC15m operator terminal commands.",
+    invoke_without_command=True,
+    no_args_is_help=False,
 )
 
 SECONDS_OPTION = typer.Option(
@@ -100,6 +111,11 @@ CURRENT_OPTION = typer.Option(
     False,
     "--current",
     help="Target the current BTC15m recurring window.",
+)
+CONFIRM_OPTION = typer.Option(
+    False,
+    "--confirm",
+    help="Required for BTC15m live terminal mode.",
 )
 JSON_OPTION = LOCAL_JSON_OPTION
 
@@ -276,6 +292,111 @@ def dashboard_current(
         result.model_dump(mode="json"),
         text=_format_dashboard_response(result),
         renderable=_render_dashboard_response(result),
+        local_json_output=json_output,
+    )
+
+
+@terminal_app.callback(invoke_without_command=True)
+def terminal_current(
+    ctx: typer.Context,
+    current: bool = CURRENT_OPTION,
+    mode: str = MODE_OPTION,
+    confirm: bool = CONFIRM_OPTION,
+    json_output: bool = JSON_OPTION,
+) -> None:
+    """Run one dense BTC15m operator terminal session for the current window."""
+    if ctx.invoked_subcommand is not None:
+        return
+    if not current:
+        emit_command_error(
+            ctx,
+            code="invalid_argument",
+            message="BTC15m terminal requires --current in this bounded session step.",
+            resource="btc15m",
+            identifier="current",
+            local_json_output=json_output,
+        )
+        raise typer.Exit(1)
+    if json_output and mode.strip().lower() == "live":
+        emit_command_error(
+            ctx,
+            code="invalid_argument",
+            message="BTC15m terminal JSON mode is only available in paper mode.",
+            resource="btc15m",
+            identifier="mode",
+            local_json_output=json_output,
+            hint={"next_steps": ["Run human terminal mode for live inline confirmations."]},
+        )
+        raise typer.Exit(1)
+    if mode.strip().lower() == "live" and not confirm:
+        emit_command_error(
+            ctx,
+            code="invalid_argument",
+            message="BTC15m live terminal requires --mode live --confirm.",
+            resource="btc15m",
+            identifier="confirm",
+            local_json_output=json_output,
+        )
+        raise typer.Exit(1)
+    try:
+        if json_output:
+            result = Btc15mStrategyService().terminal_current(
+                mode=mode,
+                confirm=confirm,
+                snapshot_only=True,
+            )
+        else:
+            console = Console()
+            latest_snapshot: Btc15mDashboardSnapshotRecord | None = None
+
+            def _confirm_action(message: str) -> bool | None:
+                return prompt_yes_no(message, default=False)
+
+            with Live(empty_message("Starting BTC15m terminal..."), console=console) as live_view:
+
+                def _on_snapshot(snapshot: Btc15mDashboardSnapshotRecord) -> None:
+                    nonlocal latest_snapshot
+                    latest_snapshot = snapshot
+                    live_view.update(_render_terminal_snapshot(snapshot))
+
+                result = Btc15mStrategyService().terminal_current(
+                    mode=mode,
+                    confirm=confirm,
+                    on_snapshot=_on_snapshot,
+                    confirm_action=_confirm_action if mode.strip().lower() == "live" else None,
+                )
+                if latest_snapshot is None and result.latest_snapshot is not None:
+                    live_view.update(_render_terminal_snapshot(result.latest_snapshot))
+    except (Btc15mValidationError, Btc15mStateError) as exc:
+        _emit_btc15m_error(ctx, exc=exc, json_output=json_output)
+        raise typer.Exit(1) from exc
+
+    emit_command_output(
+        ctx,
+        result.model_dump(mode="json"),
+        text=_format_terminal_response(result),
+        renderable=_render_terminal_response(result),
+        local_json_output=json_output,
+    )
+
+
+@terminal_app.command("report")
+def terminal_report(
+    ctx: typer.Context,
+    json_output: bool = JSON_OPTION,
+) -> None:
+    """Show aggregate BTC15m terminal-session history."""
+    try:
+        result = Btc15mStrategyService().terminal_report()
+    except Btc15mStateError as exc:
+        _emit_btc15m_error(ctx, exc=exc, json_output=json_output)
+        raise typer.Exit(1) from exc
+
+    emit_command_output(
+        ctx,
+        result.model_dump(mode="json"),
+        text=_format_terminal_report_response(result),
+        renderable=_render_terminal_report_response(result),
         local_json_output=json_output,
     )
 
@@ -802,6 +923,267 @@ def _render_dashboard_response(response: Btc15mDashboardResponse) -> RenderableT
     )
 
 
+def _format_terminal_response(response: Btc15mTerminalResponse) -> str:
+    state = response.session.final_state if response.session is not None else "-"
+    return "\n".join(
+        [
+            f"Terminal session: {response.session_id}",
+            f"Mode: {response.mode}",
+            f"Stop reason: {response.stop_reason}",
+            f"Final state: {state}",
+            f"Market: {response.window.market_slug if response.window is not None else '-'}",
+        ]
+    )
+
+
+def _render_terminal_snapshot(snapshot: Btc15mDashboardSnapshotRecord) -> RenderableType:
+    target_bid = next(
+        (
+            level.best_bid
+            for level in snapshot.polymarket_levels
+            if level.token_id == snapshot.target_token_id
+        ),
+        None,
+    )
+    target_ask = next(
+        (
+            level.best_ask
+            for level in snapshot.polymarket_levels
+            if level.token_id == snapshot.target_token_id
+        ),
+        None,
+    )
+    header = summary_table(
+        title="Window",
+        rows=[
+            ("Market", snapshot.market_slug),
+            ("Mode", str(snapshot.mode)),
+            ("State", snapshot.window_status),
+            ("Countdown", str(snapshot.countdown_seconds or 0)),
+            ("Window", f"{snapshot.window_start_at or '-'} -> {snapshot.window_end_at or '-'}"),
+        ],
+    )
+    oracle = summary_table(
+        title="Boundary / Oracle",
+        rows=[
+            ("Boundary status", snapshot.boundary_status),
+            ("Start proxy", snapshot.start_price_proxy_v1 or "-"),
+            ("Chainlink", snapshot.current_chainlink_price or "-"),
+            ("Binance", snapshot.current_binance_price or "-"),
+            ("Direction", snapshot.direction_lock_status),
+            ("Selected side", snapshot.selected_side or "-"),
+        ],
+    )
+    strategy = row_table(
+        title="Ladder",
+        columns=("Price", "State", "Qty", "Order", "Fill", "Visible"),
+        rows=[
+            (
+                rung.price,
+                rung.state,
+                rung.quantity or "-",
+                rung.order_id or "-",
+                rung.fill_at or rung.cancellation_at or "-",
+                rung.visible_liquidity or "-",
+            )
+            for rung in snapshot.rungs
+        ],
+    )
+    exposure = summary_table(
+        title="Exposure / PnL",
+        rows=[
+            ("Avg entry", snapshot.avg_entry_price or "-"),
+            ("Exposure qty", snapshot.exposure_quantity or "-"),
+            ("Exposure USDC", snapshot.exposure_notional_usdc or "-"),
+            ("MFE", snapshot.mfe_usdc or "-"),
+            ("MAE", snapshot.mae_usdc or "-"),
+            ("Peak price", snapshot.max_favorable_price or "-"),
+            ("Time to peak", str(snapshot.time_to_peak_seconds or 0)),
+        ],
+    )
+    polymarket = summary_table(
+        title="Polymarket",
+        rows=[
+            ("Bid", target_bid or "-"),
+            ("Ask", target_ask or "-"),
+            ("Midpoint", snapshot.current_midpoint or "-"),
+            ("Spread", snapshot.current_spread or "-"),
+            ("Visible @0.30", snapshot.visible_liquidity_030 or "-"),
+            ("Visible @0.20", snapshot.visible_liquidity_020 or "-"),
+            ("Visible @0.10", snapshot.visible_liquidity_010 or "-"),
+            ("Open interest", snapshot.market_open_interest or "-"),
+            ("Volume", snapshot.market_volume or "-"),
+        ],
+    )
+    binance = summary_table(
+        title="Binance",
+        rows=[
+            ("Best bid", snapshot.binance_best_bid or "-"),
+            ("Best ask", snapshot.binance_best_ask or "-"),
+            ("Near-touch bid", snapshot.binance_near_touch_bid_depth or "-"),
+            ("Near-touch ask", snapshot.binance_near_touch_ask_depth or "-"),
+            ("Vol 1m bps", snapshot.binance_realized_vol_1m_bps or "-"),
+            ("Vol 3m bps", snapshot.binance_realized_vol_3m_bps or "-"),
+            ("Volume 1m", snapshot.binance_volume_1m or "-"),
+            ("Volume 3m", snapshot.binance_volume_3m or "-"),
+        ],
+    )
+    flags = summary_table(
+        title="Flags",
+        rows=[
+            ("Flags", ", ".join(snapshot.manipulation_flags) or "-"),
+            ("Errors", str(len(snapshot.errors))),
+        ],
+    )
+    events = row_table(
+        title="Event Log",
+        columns=("At", "Kind", "Status", "Message"),
+        rows=[
+            (event.event_at, event.kind, event.status, event.message)
+            for event in snapshot.latest_events
+        ],
+    ) if snapshot.latest_events else empty_message("No terminal events yet.")
+    layout = Layout()
+    layout.split_column(
+        Layout(Panel(header, title="BTC15m Terminal"), size=8),
+        Layout(name="body"),
+        Layout(Panel(events, title="Event Log"), size=10),
+    )
+    layout["body"].split_row(
+        Layout(
+            render_group(
+                Panel(oracle, title="Oracle"),
+                Panel(exposure, title="Exposure"),
+            ),
+            name="left",
+        ),
+        Layout(
+            render_group(
+                Panel(strategy, title="Strategy"),
+                Panel(flags, title="Flags"),
+            ),
+            name="center",
+        ),
+        Layout(
+            render_group(
+                Panel(polymarket, title="Polymarket"),
+                Panel(binance, title="Binance"),
+            ),
+            name="right",
+        ),
+    )
+    return layout
+
+
+def _render_terminal_response(response: Btc15mTerminalResponse) -> RenderableType:
+    if response.latest_snapshot is None:
+        return section_panel("BTC15m Terminal", empty_message("No terminal snapshot."))
+    summary = summary_table(
+        title="Terminal Summary",
+        rows=[
+            ("Session", response.session_id),
+            ("Mode", str(response.mode)),
+            ("Stop reason", response.stop_reason),
+            ("Snapshots", str(response.total_snapshots)),
+            ("Market", response.window.market_slug if response.window is not None else "-"),
+        ],
+    )
+    final_summary = (
+        summary_table(
+            title="Final Session",
+            rows=[
+                ("Final state", response.session.final_state),
+                ("Side", response.session.selected_side or "-"),
+                ("Boundary", response.session.boundary_status),
+                (
+                    "Filled / posted / cancelled",
+                    (
+                        f"{response.session.filled_rung_count} / "
+                        f"{response.session.posted_rung_count} / "
+                        f"{response.session.cancelled_rung_count}"
+                    ),
+                ),
+                ("Exposure", response.session.exposure_notional_usdc or "-"),
+                (
+                    "Realized PnL",
+                    (
+                        response.session.latest_evaluation.realized_pnl_usdc
+                        if response.session
+                        and response.session.latest_evaluation is not None
+                        else "-"
+                    ),
+                ),
+            ],
+        )
+        if response.session is not None
+        else empty_message("No final session summary.")
+    )
+    return section_panel(
+        "BTC15m Terminal",
+        render_group(summary, final_summary, _render_terminal_snapshot(response.latest_snapshot)),
+    )
+
+
+def _format_terminal_report_response(response: Btc15mTerminalReportResponse) -> str:
+    return "\n".join(
+        [
+            f"Terminal sessions: {response.summary.terminal_session_count}",
+            f"Paper sessions: {response.summary.paper_session_count}",
+            f"Live sessions: {response.summary.live_session_count}",
+            f"Resolved sessions: {response.summary.resolved_session_count}",
+            f"Skipped sessions: {response.summary.skipped_session_count}",
+        ]
+    )
+
+
+def _render_terminal_report_response(
+    response: Btc15mTerminalReportResponse,
+) -> RenderableType:
+    summary = summary_table(
+        title="Terminal Summary",
+        rows=[
+            ("Sessions", str(response.summary.terminal_session_count)),
+            (
+                "Paper / live",
+                (
+                    f"{response.summary.paper_session_count} / "
+                    f"{response.summary.live_session_count}"
+                ),
+            ),
+            (
+                "Resolved / skipped",
+                (
+                    f"{response.summary.resolved_session_count} / "
+                    f"{response.summary.skipped_session_count}"
+                ),
+            ),
+            ("Total PnL", response.summary.total_realized_pnl_usdc),
+            ("Average PnL", response.summary.average_realized_pnl_usdc),
+        ],
+    )
+    recent = (
+        row_table(
+            title="Recent Sessions",
+            columns=("Market", "Mode", "State", "Side", "PnL"),
+            rows=[
+                (
+                    item.window.market_slug if item.window is not None else "-",
+                    item.mode,
+                    item.final_state,
+                    item.selected_side or "-",
+                    item.latest_evaluation.realized_pnl_usdc
+                    if item.latest_evaluation is not None
+                    else "-",
+                )
+                for item in response.recent_sessions
+            ],
+        )
+        if response.recent_sessions
+        else empty_message("No terminal sessions yet.")
+    )
+    return section_panel("BTC15m Terminal Report", render_group(summary, recent))
+
+
 def _format_campaign_next_window_response(response: Btc15mCampaignNextWindowResponse) -> str:
     if response.window is None:
         return "No campaign window became available before the wait limit."
@@ -1078,3 +1460,4 @@ def _render_report(response: Btc15mReportResponse) -> RenderableType:
 app.add_typer(record_app, name="record")
 app.add_typer(campaign_app, name="campaign")
 app.add_typer(liquidity_app, name="liquidity")
+app.add_typer(terminal_app, name="terminal")

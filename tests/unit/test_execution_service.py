@@ -93,6 +93,8 @@ class FakeAuthService:
 
 class FakeGammaClient:
     def get_market_by_slug(self, slug: str) -> NormalizedMarket:
+        if slug == "btc-up-down":
+            return _up_down_market()
         return _market()
 
     def get_market_by_condition_id(self, condition_id: str) -> NormalizedMarket:
@@ -227,6 +229,46 @@ def test_dry_run_rejects_invalid_outcome_argument() -> None:
         raise AssertionError("Expected ExecutionValidationError")
 
 
+def test_dry_run_maps_up_outcome_to_up_down_market() -> None:
+    service = DryRunService(
+        auth_service=FakeAuthService(),
+        gamma_client=FakeGammaClient(),
+        clob_client=FakeClobClient(),
+    )
+
+    result = service.dry_run(
+        market_ref="btc-up-down",
+        outcome="up",
+        side="buy",
+        price="0.55",
+        size="10",
+    )
+
+    assert result.decision == "WOULD_POST"
+    assert result.market is not None
+    assert result.market.token_id == "100"
+
+
+def test_dry_run_maps_down_outcome_to_up_down_market() -> None:
+    service = DryRunService(
+        auth_service=FakeAuthService(),
+        gamma_client=FakeGammaClient(),
+        clob_client=FakeClobClient(),
+    )
+
+    result = service.dry_run(
+        market_ref="btc-up-down",
+        outcome="down",
+        side="buy",
+        price="0.55",
+        size="10",
+    )
+
+    assert result.decision == "WOULD_POST"
+    assert result.market is not None
+    assert result.market.token_id == "101"
+
+
 def _market() -> NormalizedMarket:
     return NormalizedMarket(
         market_slug="btc-above-100k",
@@ -239,6 +281,23 @@ def _market() -> NormalizedMarket:
         condition_id=CONDITION_ID,
         token_ids=["100", "101"],
         outcomes=["Yes", "No"],
+        min_tick=0.01,
+        min_order_size=5,
+    )
+
+
+def _up_down_market() -> NormalizedMarket:
+    return NormalizedMarket(
+        market_slug="btc-up-down",
+        event_slug="btc-event",
+        question="Will BTC be up or down?",
+        event_title="Bitcoin event",
+        active=True,
+        closed=False,
+        enable_order_book=True,
+        condition_id=CONDITION_ID,
+        token_ids=["100", "101"],
+        outcomes=["Up", "Down"],
         min_tick=0.01,
         min_order_size=5,
     )

@@ -213,11 +213,16 @@ Define and validate the first market-specific recurring strategy track for BTC
   - bounded campaign runner for sequential full-window paper research
   - Binance REST overlay for `bookTicker`, `depth`, and closed `1m` klines
   - decision-time liquidity and anti-manipulation guards for paper evaluation
+  - dense BTC15m terminal session at `pm strategy btc15m terminal --current`
+  - bounded terminal-session history and report surface for current-window review
+  - guarded `Up/Down` execution normalization so the BTC15m live terminal can
+    reuse the shared execution safety model
 - Still pending:
   - multi-day evidence collection over live recurring windows using the bounded
     campaign runner
   - replay-driven parameter tuning
-  - later guarded-live design only after paper evidence exists
+  - evidence-based validation of the bounded live terminal workflow
+  - later guarded-live automation design only after paper evidence exists
 
 **Non-goals**
 
@@ -234,6 +239,8 @@ Define and validate the first market-specific recurring strategy track for BTC
   triggers for recorded windows
 - Campaign artifacts can summarize liquidity context, anti-manipulation skips,
   and per-window paper outcomes without running forever
+- The current BTC15m window can be monitored from an attached terminal session
+  with dense live metrics and a final bounded session summary
 - Paper evaluation is explainable enough to judge whether guarded live work is
   justified
 - Any future live work remains explicitly deferred behind validation and policy

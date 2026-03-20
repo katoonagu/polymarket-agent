@@ -33,6 +33,18 @@ class Btc15mRunMode(StrEnum):
     LIVE = "live"
 
 
+class Btc15mTerminalState(StrEnum):
+    """Explicit operator-terminal session states."""
+
+    PRE_START_CAPTURE = "PRE_START_CAPTURE"
+    BOUNDARY_PENDING = "BOUNDARY_PENDING"
+    DIRECTION_LOCK_PENDING = "DIRECTION_LOCK_PENDING"
+    ENTRY_WINDOW_OPEN = "ENTRY_WINDOW_OPEN"
+    HOLD_TO_EXPIRY = "HOLD_TO_EXPIRY"
+    RESOLVED = "RESOLVED"
+    SKIPPED = "SKIPPED"
+
+
 class Btc15mTimingControls(BaseModel):
     """Explicit per-window timing controls for BTC15m evaluation."""
 
@@ -98,6 +110,10 @@ class Btc15mPolymarketLiquidityLevel(BaseModel):
     best_ask: str | None = None
     midpoint: str | None = None
     spread: str | None = None
+    bid_level_count: int = 0
+    ask_level_count: int = 0
+    bids: list[NormalizedBookLevel] = Field(default_factory=list)
+    asks: list[NormalizedBookLevel] = Field(default_factory=list)
     visible_liquidity_030: str = "0"
     visible_liquidity_020: str = "0"
     visible_liquidity_010: str = "0"
@@ -346,9 +362,22 @@ class Btc15mDashboardRungState(BaseModel):
 
     price: str
     state: str
+    notional_usdc: str | None = None
+    quantity: str | None = None
     visible_liquidity: str | None = None
+    order_id: str | None = None
     fill_at: str | None = None
     fill_price: str | None = None
+    cancellation_at: str | None = None
+
+
+class Btc15mTerminalEventRecord(BaseModel):
+    """Compact terminal-session event record."""
+
+    event_at: str
+    kind: str
+    status: str
+    message: str
 
 
 class Btc15mDashboardSnapshotRecord(BaseModel):
@@ -359,28 +388,88 @@ class Btc15mDashboardSnapshotRecord(BaseModel):
     window_id: str
     market_slug: str
     sampled_at: str
+    view_kind: str = "dashboard"
+    mode: Btc15mRunMode = Btc15mRunMode.PAPER
     window_status: str
+    boundary_status: str = "pending"
     window_start_at: str | None = None
     window_end_at: str | None = None
+    countdown_seconds: int | None = None
+    selected_side: str | None = None
     current_chainlink_price: str | None = None
     current_binance_price: str | None = None
     start_price_proxy_v1: str | None = None
     direction_lock_status: str = "pending"
     target_token_id: str | None = None
     target_outcome: str | None = None
+    avg_entry_price: str | None = None
+    exposure_quantity: str | None = None
+    exposure_notional_usdc: str | None = None
     current_midpoint: str | None = None
     current_spread: str | None = None
+    market_open_interest: str | None = None
+    market_volume: str | None = None
+    binance_best_bid: str | None = None
+    binance_best_ask: str | None = None
+    binance_near_touch_bid_depth: str | None = None
+    binance_near_touch_ask_depth: str | None = None
+    binance_realized_vol_1m_bps: str | None = None
+    binance_realized_vol_3m_bps: str | None = None
+    binance_volume_1m: str | None = None
+    binance_volume_3m: str | None = None
     visible_liquidity_030: str | None = None
     visible_liquidity_020: str | None = None
     visible_liquidity_010: str | None = None
     manipulation_flags: list[str] = Field(default_factory=list)
     polymarket_levels: list[Btc15mPolymarketLiquidityLevel] = Field(default_factory=list)
     rungs: list[Btc15mDashboardRungState] = Field(default_factory=list)
+    latest_events: list[Btc15mTerminalEventRecord] = Field(default_factory=list)
     mfe_usdc: str | None = None
     mae_usdc: str | None = None
     max_favorable_price: str | None = None
     time_to_peak_seconds: int | None = None
     errors: list[Btc15mSectionError] = Field(default_factory=list)
+
+
+class Btc15mTerminalSessionRecord(BaseModel):
+    """Append-only bounded BTC15m terminal session summary."""
+
+    session_id: str
+    created_at: str
+    started_at: str
+    ended_at: str
+    mode: Btc15mRunMode = Btc15mRunMode.PAPER
+    stop_reason: str
+    final_state: Btc15mTerminalState
+    current_requested: bool = True
+    window: Btc15mWindowIdentity | None = None
+    boundary_status: str = "pending"
+    selected_side: str | None = None
+    target_token_id: str | None = None
+    target_outcome: str | None = None
+    start_price_proxy_v1: str | None = None
+    end_price_proxy_v1: str | None = None
+    avg_entry_price: str | None = None
+    exposure_quantity: str | None = None
+    exposure_notional_usdc: str | None = None
+    filled_rung_count: int = 0
+    posted_rung_count: int = 0
+    cancelled_rung_count: int = 0
+    market_open_interest: str | None = None
+    market_volume: str | None = None
+    manipulation_flags: list[str] = Field(default_factory=list)
+    latest_snapshot: Btc15mDashboardSnapshotRecord | None = None
+    latest_evaluation: Btc15mPaperEvaluation | None = None
+    rungs: list[Btc15mDashboardRungState] = Field(default_factory=list)
+    operator_events: list[Btc15mTerminalEventRecord] = Field(default_factory=list)
+    errors: list[Btc15mSectionError] = Field(default_factory=list)
+
+
+class Btc15mTerminalSessionsFile(BaseModel):
+    """Versioned state document for persisted terminal sessions."""
+
+    version: int = 1
+    items: list[Btc15mTerminalSessionRecord] = Field(default_factory=list)
 
 
 class Btc15mAutoRollRunRecord(BaseModel):
@@ -506,6 +595,41 @@ class Btc15mAutoRollResponse(BaseModel):
     """Bounded auto-roll response."""
 
     run: Btc15mAutoRollRunRecord
+
+
+class Btc15mTerminalResponse(BaseModel):
+    """BTC15m operator-terminal response."""
+
+    session_id: str
+    started_at: str
+    ended_at: str
+    mode: Btc15mRunMode = Btc15mRunMode.PAPER
+    stop_reason: str
+    window: Btc15mWindowIdentity | None = None
+    total_snapshots: int = 0
+    latest_snapshot: Btc15mDashboardSnapshotRecord | None = None
+    session: Btc15mTerminalSessionRecord | None = None
+    errors: list[Btc15mSectionError] = Field(default_factory=list)
+
+
+class Btc15mTerminalReportSummary(BaseModel):
+    """Aggregate terminal-session summary."""
+
+    terminal_session_count: int = 0
+    paper_session_count: int = 0
+    live_session_count: int = 0
+    resolved_session_count: int = 0
+    skipped_session_count: int = 0
+    total_realized_pnl_usdc: str = "0"
+    average_realized_pnl_usdc: str = "0"
+
+
+class Btc15mTerminalReportResponse(BaseModel):
+    """Aggregate terminal-session report."""
+
+    summary: Btc15mTerminalReportSummary
+    recent_sessions: list[Btc15mTerminalSessionRecord] = Field(default_factory=list)
+    errors: list[Btc15mSectionError] = Field(default_factory=list)
 
 
 class Btc15mCampaignReportSummary(BaseModel):
