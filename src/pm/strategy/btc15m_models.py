@@ -55,6 +55,9 @@ class Btc15mWindowIdentity(BaseModel):
     market_slug: str
     token_ids: list[str] = Field(default_factory=list)
     outcomes: list[str] = Field(default_factory=list)
+    slug_start_unix: int | None = None
+    timing_source: str = "fallback"
+    timing_notes: list[str] = Field(default_factory=list)
     window_start_at: str | None = None
     window_end_at: str | None = None
     market_open_time: str | None = None
@@ -146,6 +149,7 @@ class Btc15mBoundaryDecisionRecord(BaseModel):
     post_start: Btc15mPriceTick | None = None
     pre_end: Btc15mPriceTick | None = None
     post_end: Btc15mPriceTick | None = None
+    timing_source: str = "fallback"
     timing_controls: Btc15mTimingControls = Field(default_factory=Btc15mTimingControls)
     start_price_proxy_v1: str | None = None
     end_price_proxy_v1: str | None = None
@@ -337,6 +341,72 @@ class Btc15mCampaignRunsFile(BaseModel):
     items: list[Btc15mCampaignRunRecord] = Field(default_factory=list)
 
 
+class Btc15mDashboardRungState(BaseModel):
+    """One ladder rung state rendered in a BTC15m dashboard snapshot."""
+
+    price: str
+    state: str
+    visible_liquidity: str | None = None
+    fill_at: str | None = None
+    fill_price: str | None = None
+
+
+class Btc15mDashboardSnapshotRecord(BaseModel):
+    """One persisted BTC15m dashboard snapshot."""
+
+    snapshot_id: str
+    session_id: str
+    window_id: str
+    market_slug: str
+    sampled_at: str
+    window_status: str
+    window_start_at: str | None = None
+    window_end_at: str | None = None
+    current_chainlink_price: str | None = None
+    current_binance_price: str | None = None
+    start_price_proxy_v1: str | None = None
+    direction_lock_status: str = "pending"
+    target_token_id: str | None = None
+    target_outcome: str | None = None
+    current_midpoint: str | None = None
+    current_spread: str | None = None
+    visible_liquidity_030: str | None = None
+    visible_liquidity_020: str | None = None
+    visible_liquidity_010: str | None = None
+    manipulation_flags: list[str] = Field(default_factory=list)
+    polymarket_levels: list[Btc15mPolymarketLiquidityLevel] = Field(default_factory=list)
+    rungs: list[Btc15mDashboardRungState] = Field(default_factory=list)
+    mfe_usdc: str | None = None
+    mae_usdc: str | None = None
+    max_favorable_price: str | None = None
+    time_to_peak_seconds: int | None = None
+    errors: list[Btc15mSectionError] = Field(default_factory=list)
+
+
+class Btc15mAutoRollRunRecord(BaseModel):
+    """Append-only bounded BTC15m auto-roll session record."""
+
+    run_id: str
+    created_at: str
+    started_at: str
+    ended_at: str
+    requested_hours: str
+    mode: Btc15mRunMode = Btc15mRunMode.PAPER
+    stop_reason: str
+    items: list[Btc15mPaperEvaluation] = Field(default_factory=list)
+    total_windows: int = 0
+    total_skipped: int = 0
+    total_realized_pnl_usdc: str = "0"
+    errors: list[Btc15mSectionError] = Field(default_factory=list)
+
+
+class Btc15mAutoRollRunsFile(BaseModel):
+    """Versioned state document for persisted auto-roll sessions."""
+
+    version: int = 1
+    items: list[Btc15mAutoRollRunRecord] = Field(default_factory=list)
+
+
 class Btc15mRecordStartResponse(Btc15mWindowsIndexResponse):
     """Bounded recorder-start response."""
 
@@ -353,10 +423,37 @@ class Btc15mReplayResponse(BaseModel):
     replay: Btc15mReplayRecord
 
 
+class Btc15mResolveCurrentResponse(BaseModel):
+    """Current BTC15m window resolution response."""
+
+    checked_at: str
+    timing_source: str = "fallback"
+    selection_source: str = "current_exact"
+    status: str
+    seconds_to_start: int | None = None
+    seconds_to_end: int | None = None
+    window: Btc15mWindowIdentity | None = None
+    errors: list[Btc15mSectionError] = Field(default_factory=list)
+
+
 class Btc15mPaperRunResponse(BaseModel):
     """Paper-run command response payload."""
 
     run: Btc15mPaperRunRecord
+
+
+class Btc15mLiveResponse(BaseModel):
+    """Bounded live-data paper run response."""
+
+    run_id: str
+    started_at: str
+    ended_at: str
+    mode: Btc15mRunMode = Btc15mRunMode.PAPER
+    requested_hours: str | None = None
+    stop_reason: str
+    window: Btc15mWindowIdentity | None = None
+    evaluation: Btc15mPaperEvaluation | None = None
+    errors: list[Btc15mSectionError] = Field(default_factory=list)
 
 
 class Btc15mLiquiditySampleResponse(BaseModel):
@@ -368,6 +465,20 @@ class Btc15mLiquiditySampleResponse(BaseModel):
     requested_seconds: int
     items: list[Btc15mLiquiditySampleRecord] = Field(default_factory=list)
     total: int = 0
+    errors: list[Btc15mSectionError] = Field(default_factory=list)
+
+
+class Btc15mDashboardResponse(BaseModel):
+    """Bounded dashboard session response."""
+
+    session_id: str
+    started_at: str
+    ended_at: str
+    requested_seconds: int
+    window: Btc15mWindowIdentity | None = None
+    total_snapshots: int = 0
+    latest_snapshot: Btc15mDashboardSnapshotRecord | None = None
+    latest_evaluation: Btc15mPaperEvaluation | None = None
     errors: list[Btc15mSectionError] = Field(default_factory=list)
 
 
@@ -389,6 +500,12 @@ class Btc15mCampaignRunResponse(BaseModel):
     """Bounded campaign-run response."""
 
     campaign: Btc15mCampaignRunRecord
+
+
+class Btc15mAutoRollResponse(BaseModel):
+    """Bounded auto-roll response."""
+
+    run: Btc15mAutoRollRunRecord
 
 
 class Btc15mCampaignReportSummary(BaseModel):

@@ -11,11 +11,14 @@ from typing import TypeVar
 from pydantic import BaseModel, ValidationError
 
 from pm.strategy.btc15m_models import (
+    Btc15mAutoRollRunRecord,
+    Btc15mAutoRollRunsFile,
     Btc15mBoundaryDecisionRecord,
     Btc15mBoundaryDecisionsFile,
     Btc15mBoundaryObservationRecord,
     Btc15mCampaignRunRecord,
     Btc15mCampaignRunsFile,
+    Btc15mDashboardSnapshotRecord,
     Btc15mLiquiditySampleRecord,
     Btc15mPaperRunRecord,
     Btc15mPaperRunsFile,
@@ -32,11 +35,14 @@ REPLAYS_FILENAME = "btc-15m-chainlink-replays.json"
 PAPER_RUNS_FILENAME = "btc-15m-chainlink-paper-runs.json"
 LIQUIDITY_SAMPLES_FILENAME = "btc-15m-chainlink-liquidity-samples.jsonl"
 CAMPAIGN_RUNS_FILENAME = "btc-15m-chainlink-campaign-runs.json"
+DASHBOARD_SNAPSHOTS_FILENAME = "btc-15m-chainlink-dashboard-snapshots.jsonl"
+AUTO_ROLL_RUNS_FILENAME = "btc-15m-chainlink-auto-roll-runs.json"
 
 DocumentT = TypeVar(
     "DocumentT",
     Btc15mBoundaryDecisionsFile,
     Btc15mCampaignRunsFile,
+    Btc15mAutoRollRunsFile,
     Btc15mReplaysFile,
     Btc15mPaperRunsFile,
 )
@@ -59,6 +65,8 @@ class Btc15mStateService:
         paper_runs_path: Path | None = None,
         liquidity_samples_path: Path | None = None,
         campaign_runs_path: Path | None = None,
+        dashboard_snapshots_path: Path | None = None,
+        auto_roll_runs_path: Path | None = None,
     ) -> None:
         state_dir = get_strategy_state_dir()
         self._boundary_observations_path = boundary_observations_path or (
@@ -74,6 +82,12 @@ class Btc15mStateService:
             state_dir / LIQUIDITY_SAMPLES_FILENAME
         )
         self._campaign_runs_path = campaign_runs_path or (state_dir / CAMPAIGN_RUNS_FILENAME)
+        self._dashboard_snapshots_path = dashboard_snapshots_path or (
+            state_dir / DASHBOARD_SNAPSHOTS_FILENAME
+        )
+        self._auto_roll_runs_path = auto_roll_runs_path or (
+            state_dir / AUTO_ROLL_RUNS_FILENAME
+        )
 
     def list_boundary_observations(self) -> list[Btc15mBoundaryObservationRecord]:
         """Return raw boundary observations in append order."""
@@ -122,6 +136,14 @@ class Btc15mStateService:
         """Append one or more BTC15m liquidity sample records."""
         self._append_jsonl(self._liquidity_samples_path, records)
 
+    def list_dashboard_snapshots(self) -> list[Btc15mDashboardSnapshotRecord]:
+        """Return persisted BTC15m dashboard snapshots in append order."""
+        return self._read_jsonl(self._dashboard_snapshots_path, Btc15mDashboardSnapshotRecord)
+
+    def append_dashboard_snapshots(self, records: list[Btc15mDashboardSnapshotRecord]) -> None:
+        """Append one or more BTC15m dashboard snapshot records."""
+        self._append_jsonl(self._dashboard_snapshots_path, records)
+
     def list_replays(self) -> list[Btc15mReplayRecord]:
         """Return persisted replay batches in append order."""
         document = self._load_document(self._replays_path, Btc15mReplaysFile)
@@ -154,6 +176,17 @@ class Btc15mStateService:
         document = self._load_document(self._campaign_runs_path, Btc15mCampaignRunsFile)
         document.items.append(record)
         self._write_document(self._campaign_runs_path, document)
+
+    def list_auto_roll_runs(self) -> list[Btc15mAutoRollRunRecord]:
+        """Return persisted auto-roll batches in append order."""
+        document = self._load_document(self._auto_roll_runs_path, Btc15mAutoRollRunsFile)
+        return document.items
+
+    def append_auto_roll_run(self, record: Btc15mAutoRollRunRecord) -> None:
+        """Append one auto-roll batch."""
+        document = self._load_document(self._auto_roll_runs_path, Btc15mAutoRollRunsFile)
+        document.items.append(record)
+        self._write_document(self._auto_roll_runs_path, document)
 
     @property
     def windows_path(self) -> Path:
