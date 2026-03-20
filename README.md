@@ -125,9 +125,12 @@ Strategy evaluation is still read-only and persists candidate intents plus revie
 .venv\Scripts\pm strategy btc15m record window --slug <market-slug> --json
 .venv\Scripts\pm strategy btc15m replay --from 2026-03-19T00:00:00Z --to 2026-03-20T00:00:00Z --json
 .venv\Scripts\pm strategy btc15m paper-run --limit 20 --json
+.venv\Scripts\pm strategy btc15m paper-run --slug <market-slug> --mode paper --json
 .venv\Scripts\pm strategy btc15m liquidity sample --seconds 30 --json
 .venv\Scripts\pm strategy btc15m campaign next-window --json
+.venv\Scripts\pm strategy btc15m campaign next-window --slug <market-slug> --mode paper --json
 .venv\Scripts\pm strategy btc15m campaign run --hours 2 --json
+.venv\Scripts\pm strategy btc15m campaign run --hours 2 --slug <market-slug> --mode paper --json
 .venv\Scripts\pm strategy btc15m campaign report --json
 .venv\Scripts\pm strategy btc15m report --json
 ```
@@ -136,11 +139,18 @@ Rules:
 
 - the runtime implementation name is `btc_15m_chainlink_directional_ladder_v1`
 - this surface is paper/research only and stays outside the generic strategy review and dispatch registry in this phase
+- `--mode paper` is the default and uses live public market/oracle data with simulated fills and PnL only
+- `--mode live` is reserved and currently returns a gated operator-facing error with guidance to stay in paper mode
+- `paper-run --slug <market-slug>` is the direct explicit-market paper testing path for one live window
+- `campaign next-window --slug <market-slug>` and `campaign run --slug <market-slug>` target that exact market instead of relying on recurring discovery
 - recorder artifacts persist under `.pm/state/` as dedicated BTC15m boundary, window, replay, liquidity-sample, campaign-run, and paper-run state
-- the minute-5 directional lock uses recorded Chainlink and Binance context against a Chainlink-derived start proxy
+- start and end boundaries persist the last Chainlink tick before or at the boundary and the first Chainlink tick at or after the boundary
+- `start_price_proxy_v1` and `end_price_proxy_v1` now use the first Chainlink tick at or after the relevant boundary, with bounded grace windows and explainable partial skips when the post-boundary tick is missing
+- the minute-5 directional lock uses recorded Chainlink and Binance context against the hardened Chainlink start proxy
 - bounded campaigns record exactly one recurring BTC 15m window at a time and stop cleanly when no additional full window fits inside the requested duration
 - Binance REST `bookTicker`, `depth`, and closed `1m` kline reads enrich decision-time liquidity and volatility context without adding any authenticated or mutating behavior
 - anti-manipulation and thin-liquidity guards may skip paper entries when spread, visible liquidity, or underlying divergence looks poor
+- if recurring BTC 15m discovery cannot find a candidate, the BTC15m commands return a structured hint that points operators to `pm market recurring list --query btc --interval 15m` and the explicit `--slug` path
 - the paper ladder is buy-only at `0.30`, `0.20`, and `0.10`, with one fill per rung at most and no live order submission
 
 ### Operator control plane

@@ -45,11 +45,22 @@ Current research commands:
 - `pm strategy btc15m record window --slug <market_slug>`
 - `pm strategy btc15m replay --from <iso> --to <iso>`
 - `pm strategy btc15m paper-run --limit <n>`
+- `pm strategy btc15m paper-run --slug <market_slug> [--mode paper|live]`
 - `pm strategy btc15m liquidity sample [--seconds <n>]`
-- `pm strategy btc15m campaign next-window`
-- `pm strategy btc15m campaign run --hours <n>`
+- `pm strategy btc15m campaign next-window [--slug <market_slug>] [--mode paper|live]`
+- `pm strategy btc15m campaign run --hours <n> [--slug <market_slug>] [--mode paper|live]`
 - `pm strategy btc15m campaign report`
 - `pm strategy btc15m report`
+
+Current workflow notes:
+
+- `paper` is the default mode and uses live public market plus oracle inputs
+  with simulated fills and PnL only
+- `live` is a reserved gated mode in the current branch and returns an
+  operator-facing not-implemented error with a hint to use `--mode paper`
+- `paper-run --slug` is the direct explicit-market paper testing path when
+  recurring discovery is imperfect
+- `campaign run --slug` targets exactly one explicit window and then stops
 
 ## Strategy Overview and Design Goals
 
@@ -129,9 +140,9 @@ For every candidate market window, the future recorder must capture four
 boundary observations from the Chainlink RTDS stream:
 
 - last accepted Chainlink tick at or before the scheduled start
-- first accepted Chainlink tick after the scheduled start
+- first accepted Chainlink tick at or after the scheduled start
 - last accepted Chainlink tick at or before the scheduled end
-- first accepted Chainlink tick after the scheduled end
+- first accepted Chainlink tick at or after the scheduled end
 
 These observations must be stored even when the window is later skipped.
 
@@ -140,23 +151,40 @@ These observations must be stored even when the window is later skipped.
 The v1 operational start anchor is:
 
 - `start_price_proxy_v1`
-- defined as the arithmetic midpoint of the selected pre-start and post-start
-  Chainlink ticks
+- defined as the first accepted Chainlink tick at or after the scheduled start
 
 The v1 replay and reconciliation end anchor is:
 
 - `end_price_proxy_v1`
-- defined as the arithmetic midpoint of the selected pre-end and post-end
-  Chainlink ticks
+- defined as the first accepted Chainlink tick at or after the scheduled end
 
 Rules:
 
-- if either required start-side Chainlink tick is missing, the window is
-  skipped
-- if either required start-side Chainlink tick is stale beyond configured
-  tolerance, the window is skipped
+- pre-start and pre-end observations are still persisted for audit and replay
+  even when the post-boundary observation is missing
+- if the required post-start Chainlink tick does not arrive within the bounded
+  post-start grace window, the window is marked partial and evaluation skips
+- if the required post-end Chainlink tick does not arrive within the bounded
+  post-end grace window, the window is marked partial and replay or final
+  evaluation remains pending or skipped
+- stale post-boundary ticks beyond the configured grace window are treated as
+  missing for the operational proxy
 - `end_price_proxy_v1` is required for replay, post-window evaluation, and
   reconciliation, not for minute-5 side selection
+
+### Persisted timing controls
+
+The current runtime persists explicit timing controls with each canonical
+boundary decision and each recorded window:
+
+- `pre_start_capture_window_seconds = 60`
+- `post_start_grace_window_seconds = 60`
+- `pre_end_capture_window_seconds = 60`
+- `post_end_grace_window_seconds = 60`
+- `direction_lock_offset_seconds = 300`
+- `entry_window_start_offset_seconds = 300`
+- `entry_window_end_offset_seconds = 600`
+- `cancel_open_entries_offset_seconds = 600`
 
 ### Planned boundary persistence
 
@@ -191,6 +219,7 @@ Each canonical decision should summarize:
 - selected pre-end and post-end ticks
 - `start_price_proxy_v1`
 - `end_price_proxy_v1`
+- persisted timing controls
 - selection rationale
 - ambiguity or fallback notes
 
@@ -258,8 +287,8 @@ Definitions at the minute-5 decision point:
 
 - `chainlink_decision_price` = latest accepted Chainlink BTC/USD value
 - `binance_decision_price` = latest accepted Binance BTC price value
-- `start_price_proxy_v1` = midpoint of the selected pre-start and post-start
-  Chainlink ticks
+- `start_price_proxy_v1` = first accepted Chainlink tick at or after the
+  scheduled start
 
 Direction rule:
 

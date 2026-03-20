@@ -63,7 +63,7 @@ class _RecurringResponse:
 
 
 class FakeMarketIntelService:
-    def __init__(self, candidate: RecurringMarketCandidate) -> None:
+    def __init__(self, candidate: RecurringMarketCandidate | None) -> None:
         self._candidate = candidate
 
     def recurring_latest(self, query: str, *, interval: str) -> _RecurringResponse:
@@ -91,7 +91,8 @@ class FakeGammaClient:
     def search_market_candidates(self, query: str, limit: int) -> list[GammaSearchCandidate]:
         _ = query
         _ = limit
-        assert self.candidate is not None
+        if self.candidate is None:
+            return []
         return [self.candidate]
 
     def get_market_by_slug(self, slug: str) -> NormalizedMarket:
@@ -261,11 +262,24 @@ class _Clock:
         self.current += timedelta(seconds=seconds)
 
 
-def _service(tmp_path, *, now: datetime | None = None) -> Btc15mStrategyService:
-    candidate = _candidate(COND_1, "btc-15m-up-down-1")
-    FakeGammaClient.candidate = _search_candidate(candidate)
+def _service(
+    tmp_path,
+    *,
+    now: datetime | None = None,
+    candidate: RecurringMarketCandidate | None = None,
+    search_candidate: GammaSearchCandidate | None = None,
+    chainlink_events: list[CapturedStreamEvent] | None = None,
+    binance_events: list[CapturedStreamEvent] | None = None,
+    market_intel_candidate: RecurringMarketCandidate | None | object = ...,
+) -> Btc15mStrategyService:
+    candidate = candidate or _candidate(COND_1, "btc-15m-up-down-1")
+    FakeGammaClient.candidate = search_candidate or _search_candidate(candidate)
     FakeGammaClient.market = _normalized_market(candidate)
     clock = _Clock(now) if now is not None else None
+    if market_intel_candidate is ...:
+        resolved_market_intel_candidate = candidate
+    else:
+        resolved_market_intel_candidate = market_intel_candidate
     return Btc15mStrategyService(
         state=Btc15mStateService(
             boundary_observations_path=tmp_path / BOUNDARY_OBSERVATIONS_FILENAME,
@@ -276,11 +290,11 @@ def _service(tmp_path, *, now: datetime | None = None) -> Btc15mStrategyService:
             liquidity_samples_path=tmp_path / LIQUIDITY_SAMPLES_FILENAME,
             campaign_runs_path=tmp_path / CAMPAIGN_RUNS_FILENAME,
         ),
-        market_intel_service=FakeMarketIntelService(candidate),
+        market_intel_service=FakeMarketIntelService(resolved_market_intel_candidate),
         market_client=FakeMarketClient(_market_events()),
         crypto_client=FakeCryptoClient(
-            chainlink_events=_chainlink_events(),
-            binance_events=_binance_events(),
+            chainlink_events=chainlink_events or _chainlink_events(),
+            binance_events=binance_events or _binance_events(),
         ),
         binance_service=FakeBinanceService(),
         gamma_client_cls=FakeGammaClient,
@@ -316,8 +330,13 @@ def test_record_start_persists_complete_window_and_boundaries(tmp_path) -> None:
     assert result.items[0].status == "complete"
     assert result.items[0].boundary_status == "complete"
     assert result.items[0].decision == "UP"
+    assert result.items[0].timing_controls.post_start_grace_window_seconds == 60
     assert len(service._state.list_boundary_observations()) == 4  # type: ignore[attr-defined]
     assert service._state.list_boundary_decisions()[0].start_price_proxy_v1 == "100"  # type: ignore[attr-defined]
+    assert (
+        service._state.list_boundary_decisions()[0].timing_controls.post_end_grace_window_seconds
+        == 60
+    )  # type: ignore[attr-defined]
     assert len(service._state.list_liquidity_samples()) >= 2  # type: ignore[attr-defined]
 
 
@@ -361,6 +380,25 @@ def test_paper_run_uses_oldest_completed_unevaluated_window(tmp_path) -> None:
     assert first.run.items[0].filled_rung_count == 3
     assert second.run.total_evaluated == 1
     assert second.run.items[0].window_id == "btc15m:" + COND_2
+
+
+def test_paper_run_slug_records_and_evaluates_target_window(tmp_path) -> None:
+    service = _service(tmp_path, now=_dt("2026-03-19T00:00:00Z"))
+
+    result = service.paper_run(slug="btc-15m-up-down-1", mode="paper")
+
+    assert result.run.mode == "paper"
+    assert result.run.target_slug == "btc-15m-up-down-1"
+    assert result.run.selection_source == "slug"
+    assert result.run.total_evaluated == 1
+    assert result.run.items[0].market_slug == "btc-15m-up-down-1"
+
+
+def test_paper_run_live_mode_is_rejected(tmp_path) -> None:
+    service = _service(tmp_path, now=_dt("2026-03-19T00:00:00Z"))
+
+    with pytest.raises(Exception, match="paper-first step"):
+        service.paper_run(slug="btc-15m-up-down-1", mode="live")
 
 
 def test_replay_filters_range_and_report_aggregates(tmp_path) -> None:
@@ -416,6 +454,86 @@ def test_campaign_run_persists_campaign_and_campaign_report(tmp_path) -> None:
     assert service._state.list_campaign_runs()[0].run_id == result.campaign.run_id  # type: ignore[attr-defined]
     assert report.summary.campaign_run_count == 1
     assert report.summary.evaluated_window_count == 1
+
+
+def test_campaign_slug_path_targets_single_window(tmp_path) -> None:
+    service = _service(tmp_path, now=_dt("2026-03-19T00:00:00Z"))
+
+    next_window = service.campaign_next_window(slug="btc-15m-up-down-1", mode="paper")
+    result = service.campaign_run(hours="0.3", slug="btc-15m-up-down-1", mode="paper")
+
+    assert next_window.mode == "paper"
+    assert next_window.target_slug == "btc-15m-up-down-1"
+    assert next_window.selection_source == "slug"
+    assert result.campaign.target_slug == "btc-15m-up-down-1"
+    assert result.campaign.selection_source == "slug"
+    assert result.campaign.stop_reason == "completed_target_window"
+    assert result.campaign.total_windows == 1
+
+
+def test_boundary_capture_uses_first_tick_at_or_after_t0(tmp_path) -> None:
+    chainlink_events = [
+        _crypto_event("chainlink", "2026-03-18T23:59:59Z", 99),
+        _crypto_event("chainlink", "2026-03-19T00:00:00Z", 100),
+        _crypto_event("chainlink", "2026-03-19T00:05:00Z", 101),
+        _crypto_event("chainlink", "2026-03-19T00:14:59Z", 102),
+        _crypto_event("chainlink", "2026-03-19T00:15:00Z", 103),
+    ]
+    service = _service(
+        tmp_path,
+        now=_dt("2026-03-19T00:00:00Z"),
+        chainlink_events=chainlink_events,
+    )
+
+    result = service.record_start(seconds=60)
+
+    assert result.items[0].start_price_proxy_v1 == "100"
+    assert result.items[0].end_price_proxy_v1 == "103"
+
+
+def test_missing_post_start_tick_within_grace_yields_partial_skip(tmp_path) -> None:
+    chainlink_events = [
+        _crypto_event("chainlink", "2026-03-18T23:59:59Z", 100),
+        _crypto_event("chainlink", "2026-03-19T00:05:00Z", 101),
+        _crypto_event("chainlink", "2026-03-19T00:15:01Z", 102),
+    ]
+    service = _service(
+        tmp_path,
+        now=_dt("2026-03-19T00:00:00Z"),
+        chainlink_events=chainlink_events,
+    )
+
+    result = service.paper_run(slug="btc-15m-up-down-1", mode="paper")
+
+    assert result.run.total_evaluated == 1
+    assert result.run.items[0].decision == "SKIP"
+    assert "missing_start_proxy" in result.run.items[0].skip_reasons
+    latest_window = service._state.list_windows()[-1]  # type: ignore[attr-defined]
+    assert latest_window.boundary_status == "partial"
+    assert latest_window.start_price_proxy_v1 is None
+
+
+def test_recurring_resolution_falls_back_to_tolerant_gamma_search(tmp_path) -> None:
+    candidate = _candidate(COND_1, "bitcoin-up-or-down-15-min")
+    candidate = candidate.model_copy(
+        update={
+            "question": "Bitcoin up or down in 15 minutes?",
+            "event_title": "Bitcoin recurring ladder market",
+        }
+    )
+    search_candidate = _search_candidate(candidate)
+    service = _service(
+        tmp_path,
+        now=_dt("2026-03-19T00:00:00Z"),
+        candidate=candidate,
+        search_candidate=search_candidate,
+        market_intel_candidate=None,
+    )
+
+    result = service.record_start(seconds=60)
+
+    assert result.total == 1
+    assert result.items[0].window.market_slug == "bitcoin-up-or-down-15-min"
 
 
 def test_evaluate_window_skips_on_wide_spread_and_thin_liquidity(tmp_path) -> None:

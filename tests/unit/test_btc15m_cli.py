@@ -26,6 +26,7 @@ from pm.strategy import (
     Btc15mWindowIdentity,
     Btc15mWindowRecord,
 )
+from pm.strategy.btc15m_service import Btc15mOperatorHintError
 
 runner = CliRunner()
 
@@ -70,12 +71,21 @@ class FakeBtc15mStrategyService:
             )
         )
 
-    def paper_run(self, *, limit: int = 20) -> Btc15mPaperRunResponse:
+    def paper_run(
+        self,
+        *,
+        limit: int = 20,
+        slug: str | None = None,
+        mode: str = "paper",
+    ) -> Btc15mPaperRunResponse:
         return Btc15mPaperRunResponse(
             run=Btc15mPaperRunRecord(
                 run_id="run-1",
                 created_at="2026-03-19T01:00:00Z",
                 limit=limit,
+                mode=mode,
+                target_slug=slug,
+                selection_source="slug" if slug is not None else "recorded",
                 source_kind="manual",
                 items=[_evaluation()],
                 total_considered=1,
@@ -97,9 +107,17 @@ class FakeBtc15mStrategyService:
             errors=[],
         )
 
-    def campaign_next_window(self) -> Btc15mCampaignNextWindowResponse:
+    def campaign_next_window(
+        self,
+        *,
+        slug: str | None = None,
+        mode: str = "paper",
+    ) -> Btc15mCampaignNextWindowResponse:
         return Btc15mCampaignNextWindowResponse(
             checked_at="2026-03-19T00:00:00Z",
+            mode=mode,
+            target_slug=slug,
+            selection_source="slug" if slug is not None else "recurring",
             waited_seconds=0,
             timed_out=False,
             poll_count=0,
@@ -107,7 +125,13 @@ class FakeBtc15mStrategyService:
             errors=[],
         )
 
-    def campaign_run(self, *, hours: str) -> Btc15mCampaignRunResponse:
+    def campaign_run(
+        self,
+        *,
+        hours: str,
+        slug: str | None = None,
+        mode: str = "paper",
+    ) -> Btc15mCampaignRunResponse:
         _ = hours
         return Btc15mCampaignRunResponse(
             campaign=Btc15mCampaignRunRecord(
@@ -116,6 +140,10 @@ class FakeBtc15mStrategyService:
                 started_at="2026-03-19T00:00:00Z",
                 ended_at="2026-03-19T02:00:00Z",
                 requested_hours="2",
+                mode=mode,
+                target_slug=slug,
+                selection_source="slug" if slug is not None else "recurring",
+                stop_reason="completed_target_window" if slug is not None else "deadline_reached",
                 items=[_evaluation()],
                 total_windows=1,
                 total_skipped=0,
@@ -193,16 +221,52 @@ def test_btc15m_json_commands(monkeypatch) -> None:
             "--json",
         ],
     )
-    paper_result = runner.invoke(app, ["strategy", "btc15m", "paper-run", "--limit", "5", "--json"])
+    paper_result = runner.invoke(
+        app,
+        [
+            "strategy",
+            "btc15m",
+            "paper-run",
+            "--slug",
+            "btc-15m-up-down-1",
+            "--mode",
+            "paper",
+            "--json",
+        ],
+    )
     report_result = runner.invoke(app, ["strategy", "btc15m", "report", "--json"])
     liquidity_result = runner.invoke(
         app, ["strategy", "btc15m", "liquidity", "sample", "--json"]
     )
     campaign_next_result = runner.invoke(
-        app, ["strategy", "btc15m", "campaign", "next-window", "--json"]
+        app,
+        [
+            "strategy",
+            "btc15m",
+            "campaign",
+            "next-window",
+            "--slug",
+            "btc-15m-up-down-1",
+            "--mode",
+            "paper",
+            "--json",
+        ],
     )
     campaign_run_result = runner.invoke(
-        app, ["strategy", "btc15m", "campaign", "run", "--hours", "2", "--json"]
+        app,
+        [
+            "strategy",
+            "btc15m",
+            "campaign",
+            "run",
+            "--hours",
+            "2",
+            "--slug",
+            "btc-15m-up-down-1",
+            "--mode",
+            "paper",
+            "--json",
+        ],
     )
     campaign_report_result = runner.invoke(
         app, ["strategy", "btc15m", "campaign", "report", "--json"]
@@ -213,6 +277,7 @@ def test_btc15m_json_commands(monkeypatch) -> None:
     assert replay_result.exit_code == 0
     assert json.loads(replay_result.stdout)["replay"]["total"] == 1
     assert paper_result.exit_code == 0
+    assert json.loads(paper_result.stdout)["run"]["target_slug"] == "btc-15m-up-down-1"
     assert json.loads(paper_result.stdout)["run"]["total_evaluated"] == 1
     assert report_result.exit_code == 0
     assert json.loads(report_result.stdout)["summary"]["recorded_window_count"] == 1
@@ -220,10 +285,104 @@ def test_btc15m_json_commands(monkeypatch) -> None:
     assert json.loads(liquidity_result.stdout)["total"] == 0
     assert campaign_next_result.exit_code == 0
     assert json.loads(campaign_next_result.stdout)["window"]["market_slug"] == "btc-15m-up-down-1"
+    assert json.loads(campaign_next_result.stdout)["target_slug"] == "btc-15m-up-down-1"
     assert campaign_run_result.exit_code == 0
+    assert json.loads(campaign_run_result.stdout)["campaign"]["target_slug"] == "btc-15m-up-down-1"
     assert json.loads(campaign_run_result.stdout)["campaign"]["total_windows"] == 1
     assert campaign_report_result.exit_code == 0
     assert json.loads(campaign_report_result.stdout)["summary"]["campaign_run_count"] == 1
+
+
+def test_btc15m_slug_limit_conflict_returns_error(monkeypatch) -> None:
+    monkeypatch.setattr("pm.cli.strategy_btc15m.Btc15mStrategyService", FakeBtc15mStrategyService)
+
+    result = runner.invoke(
+        app,
+        [
+            "strategy",
+            "btc15m",
+            "paper-run",
+            "--slug",
+            "btc-15m-up-down-1",
+            "--limit",
+            "2",
+            "--json",
+        ],
+    )
+
+    assert result.exit_code == 1
+    payload = json.loads(result.stdout)
+    assert payload["error"]["identifier"] == "limit"
+
+
+def test_btc15m_live_mode_returns_hint(monkeypatch) -> None:
+    class LiveModeService(FakeBtc15mStrategyService):
+        def paper_run(
+            self,
+            *,
+            limit: int = 20,
+            slug: str | None = None,
+            mode: str = "paper",
+        ) -> Btc15mPaperRunResponse:
+            _ = limit
+            _ = slug
+            _ = mode
+            raise Btc15mOperatorHintError(
+                "BTC15m live mode is reserved and not implemented in this paper-first step.",
+                identifier="mode",
+                hint={"next_steps": ["Use --mode paper for live-data paper testing."]},
+            )
+
+    monkeypatch.setattr("pm.cli.strategy_btc15m.Btc15mStrategyService", LiveModeService)
+
+    result = runner.invoke(
+        app,
+        [
+            "strategy",
+            "btc15m",
+            "paper-run",
+            "--slug",
+            "btc-15m-up-down-1",
+            "--mode",
+            "live",
+            "--json",
+        ],
+    )
+
+    assert result.exit_code == 1
+    payload = json.loads(result.stdout)
+    assert payload["error"]["identifier"] == "mode"
+    assert payload["hint"]["next_steps"] == ["Use --mode paper for live-data paper testing."]
+
+
+def test_btc15m_no_candidate_error_includes_hint(monkeypatch) -> None:
+    class NoCandidateService(FakeBtc15mStrategyService):
+        def campaign_next_window(
+            self,
+            *,
+            slug: str | None = None,
+            mode: str = "paper",
+        ) -> Btc15mCampaignNextWindowResponse:
+            _ = slug
+            _ = mode
+            raise Btc15mOperatorHintError(
+                "No recurring BTC 15m market candidate was found.",
+                hint={
+                    "next_steps": [
+                        "pm market recurring list --query btc --interval 15m",
+                        "pm strategy btc15m paper-run --slug <market_slug> --mode paper",
+                    ]
+                },
+            )
+
+    monkeypatch.setattr("pm.cli.strategy_btc15m.Btc15mStrategyService", NoCandidateService)
+
+    result = runner.invoke(app, ["strategy", "btc15m", "campaign", "next-window", "--json"])
+
+    assert result.exit_code == 1
+    payload = json.loads(result.stdout)
+    assert payload["error"]["message"] == "No recurring BTC 15m market candidate was found."
+    assert payload["hint"]["next_steps"][0] == "pm market recurring list --query btc --interval 15m"
 
 
 def test_btc15m_root_output_json(monkeypatch) -> None:

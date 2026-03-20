@@ -13,6 +13,7 @@ from pm.cli.app import app
 pytest.importorskip("websockets")
 
 RUN_SMOKE = os.getenv("PM_RUN_BTC15M_STRATEGY_SMOKE") == "1"
+TARGET_SLUG = os.getenv("PM_BTC15M_STRATEGY_SMOKE_SLUG")
 runner = CliRunner()
 
 
@@ -55,3 +56,32 @@ def test_btc15m_liquidity_sample_smoke(tmp_path) -> None:
     payload = json.loads(result.stdout)
     assert payload["requested_seconds"] == 5
     assert payload["total"] >= 1
+
+
+@pytest.mark.skipif(not RUN_SMOKE, reason="set PM_RUN_BTC15M_STRATEGY_SMOKE=1")
+def test_btc15m_explicit_slug_paper_run_smoke(tmp_path) -> None:
+    if not TARGET_SLUG:
+        pytest.skip("set PM_BTC15M_STRATEGY_SMOKE_SLUG to run explicit-slug BTC15m smoke")
+
+    env = os.environ.copy()
+    env["PM_STRATEGY_STATE_DIR"] = str(tmp_path)
+
+    result = runner.invoke(
+        app,
+        [
+            "strategy",
+            "btc15m",
+            "paper-run",
+            "--slug",
+            TARGET_SLUG,
+            "--mode",
+            "paper",
+            "--json",
+        ],
+        env=env,
+    )
+
+    assert result.exit_code == 0
+    payload = json.loads(result.stdout)
+    assert payload["run"]["mode"] == "paper"
+    assert payload["run"]["target_slug"] == TARGET_SLUG

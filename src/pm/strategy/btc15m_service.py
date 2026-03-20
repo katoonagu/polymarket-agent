@@ -16,8 +16,12 @@ from pm.binance import BinanceClientError, BinanceService
 from pm.market.clob import ClobClient
 from pm.market.exceptions import ClobClientError, ClobNotFoundError
 from pm.market.gamma import GammaClient, GammaSearchCandidate
-from pm.market.models import NormalizedBookLevel, RecurringMarketCandidate
-from pm.market.service import MarketIntelService, MarketValidationError, validate_recurring_interval
+from pm.market.models import NormalizedBookLevel, NormalizedMarket, RecurringMarketCandidate
+from pm.market.service import (
+    MarketIntelService,
+    MarketValidationError,
+    validate_recurring_interval,
+)
 from pm.strategy.btc15m_models import (
     Btc15mBoundaryDecisionRecord,
     Btc15mBoundaryObservationRecord,
@@ -43,7 +47,9 @@ from pm.strategy.btc15m_models import (
     Btc15mReplayResponse,
     Btc15mReportResponse,
     Btc15mReportSummary,
+    Btc15mRunMode,
     Btc15mSectionError,
+    Btc15mTimingControls,
     Btc15mWindowIdentity,
     Btc15mWindowRecord,
 )
@@ -62,6 +68,10 @@ DEFAULT_RECORD_SECONDS = 60
 DEFAULT_RECORD_QUERY = "btc"
 DEFAULT_RECORD_INTERVAL = "15m"
 DEFAULT_POST_END_WAIT_SECONDS = 60
+DEFAULT_PRE_START_CAPTURE_WINDOW_SECONDS = 60
+DEFAULT_POST_START_GRACE_WINDOW_SECONDS = 60
+DEFAULT_PRE_END_CAPTURE_WINDOW_SECONDS = 60
+DEFAULT_POST_END_GRACE_WINDOW_SECONDS = 60
 DEFAULT_DECISION_STALE_SECONDS = 15
 DEFAULT_MARKET_STALE_SECONDS = 5
 DEFAULT_PAPER_RUN_LIMIT = 20
@@ -70,6 +80,11 @@ DEFAULT_LIQUIDITY_SAMPLE_CADENCE_SECONDS = 5
 DEFAULT_CAMPAIGN_WAIT_SECONDS = 15
 DEFAULT_CAMPAIGN_MAX_WAIT_SECONDS = 20 * 60
 DEFAULT_CAMPAIGN_SAMPLE_CADENCE_SECONDS = 30
+DEFAULT_FALLBACK_SEARCH_LIMIT = 60
+BTC15M_FALLBACK_QUERIES = ("btc", "bitcoin", "btc 15m")
+BTC15M_INTERVAL_ALIASES = ("15m", "15 min", "15 minute", "15 minutes")
+BTC15M_BTC_MARKERS = ("btc", "bitcoin")
+BTC15M_DIRECTION_MARKERS = ("up", "down")
 WINDOW_DURATION = timedelta(minutes=15)
 MINUTE_FIVE_OFFSET = timedelta(minutes=5)
 MINUTE_TEN_OFFSET = timedelta(minutes=10)
@@ -95,12 +110,29 @@ class Btc15mValidationError(RuntimeError):
     """Raised when BTC15m CLI or service inputs are invalid."""
 
 
+class Btc15mOperatorHintError(Btc15mValidationError):
+    """Validation error with structured operator guidance."""
+
+    def __init__(
+        self,
+        message: str,
+        *,
+        identifier: str | None = None,
+        hint: dict[str, object] | None = None,
+    ) -> None:
+        super().__init__(message)
+        self.identifier = identifier
+        self.hint = hint
+
+
 @dataclass(slots=True)
 class _ResolvedWindow:
     candidate: RecurringMarketCandidate
     window: Btc15mWindowIdentity
     window_start_dt: datetime | None
     window_end_dt: datetime | None
+    selection_source: str
+    target_slug: str | None = None
 
 
 @dataclass(slots=True)
@@ -192,12 +224,7 @@ class Btc15mStrategyService:
         session_id = _make_id("btc15m_record")
         started_at = _isoformat(self._now())
         resolved = self._resolve_window_by_slug(normalized_slug)
-        now = self._now()
-        if resolved.window_end_dt is not None:
-            timeout_at = resolved.window_end_dt + timedelta(seconds=DEFAULT_POST_END_WAIT_SECONDS)
-            seconds = max(1, int((timeout_at - now).total_seconds()))
-        else:
-            seconds = DEFAULT_RECORD_SECONDS
+        seconds = self._targeted_record_seconds(resolved)
         record = self._record_resolved_window(
             resolved,
             seconds=seconds,
@@ -283,10 +310,45 @@ class Btc15mStrategyService:
             errors=errors,
         )
 
-    def paper_run(self, *, limit: int = DEFAULT_PAPER_RUN_LIMIT) -> Btc15mPaperRunResponse:
-        """Evaluate oldest completed, unevaluated recorded windows chronologically."""
+    def paper_run(
+        self,
+        *,
+        limit: int = DEFAULT_PAPER_RUN_LIMIT,
+        slug: str | None = None,
+        mode: str = "paper",
+    ) -> Btc15mPaperRunResponse:
+        """Evaluate recorded windows or run one explicit live-data paper window."""
+        normalized_mode = _require_paper_mode(mode)
+        normalized_slug = _normalize_optional_slug(slug)
         if limit <= 0:
             raise Btc15mValidationError("Paper-run limit must be greater than zero.")
+
+        if normalized_slug is not None:
+            resolved = self._resolve_window_by_slug(normalized_slug)
+            evaluation, errors = self._run_targeted_paper_window(
+                resolved,
+                recorder_session_id=_make_id("btc15m_record"),
+                source_kind="manual",
+            )
+            items = [evaluation] if evaluation is not None else []
+            total_pnl = sum((_decimal(item.realized_pnl_usdc) for item in items), Decimal("0"))
+            run = Btc15mPaperRunRecord(
+                run_id=_make_id("btc15m_paper_run"),
+                created_at=_isoformat(self._now()),
+                limit=1,
+                mode=normalized_mode,
+                target_slug=normalized_slug,
+                selection_source=resolved.selection_source,
+                source_kind="manual",
+                items=items,
+                total_considered=1,
+                total_evaluated=len(items),
+                total_skipped=1 if not items or items[0].decision == "SKIP" else 0,
+                total_realized_pnl_usdc=_decimal_text(total_pnl),
+                errors=errors,
+            )
+            self._state.append_paper_run(run)
+            return Btc15mPaperRunResponse(run=run)
 
         evaluated_ids = {
             item.window_id for run in self._state.list_paper_runs() for item in run.items
@@ -306,6 +368,9 @@ class Btc15mStrategyService:
             run_id=_make_id("btc15m_paper_run"),
             created_at=_isoformat(self._now()),
             limit=limit,
+            mode=normalized_mode,
+            target_slug=None,
+            selection_source="recorded",
             source_kind="manual",
             items=items,
             total_considered=len(candidates),
@@ -320,12 +385,43 @@ class Btc15mStrategyService:
         self,
         *,
         previous_condition_id: str | None = None,
+        slug: str | None = None,
+        mode: str = "paper",
         max_wait_seconds: int = DEFAULT_CAMPAIGN_MAX_WAIT_SECONDS,
     ) -> Btc15mCampaignNextWindowResponse:
         """Return the current unresolved BTC15m window or wait for the next distinct one."""
+        normalized_mode = _require_paper_mode(mode)
+        normalized_slug = _normalize_optional_slug(slug)
         checked_at = _isoformat(self._now())
         wait_started = self._now()
         poll_count = 0
+        if normalized_slug is not None:
+            resolved = self._resolve_window_by_slug(normalized_slug)
+            if resolved.window_end_dt is not None and self._now() > resolved.window_end_dt:
+                raise Btc15mOperatorHintError(
+                    (
+                        "The targeted BTC15m market window is already expired. "
+                        "Use a current market slug or run a bounded paper record first."
+                    ),
+                    identifier=normalized_slug,
+                    hint={
+                        "next_steps": [
+                            "pm market recurring list --query btc --interval 15m",
+                            "pm strategy btc15m paper-run --slug <market_slug> --mode paper",
+                        ]
+                    },
+                )
+            return Btc15mCampaignNextWindowResponse(
+                checked_at=checked_at,
+                mode=normalized_mode,
+                target_slug=normalized_slug,
+                selection_source=resolved.selection_source,
+                waited_seconds=0,
+                timed_out=False,
+                poll_count=poll_count,
+                window=resolved.window,
+            )
+
         current = self._resolve_latest_window()
         if (
             self._is_unresolved_window(current)
@@ -333,6 +429,9 @@ class Btc15mStrategyService:
         ):
             return Btc15mCampaignNextWindowResponse(
                 checked_at=checked_at,
+                mode=normalized_mode,
+                target_slug=None,
+                selection_source=current.selection_source,
                 waited_seconds=0,
                 timed_out=False,
                 poll_count=poll_count,
@@ -351,6 +450,9 @@ class Btc15mStrategyService:
                 continue
             return Btc15mCampaignNextWindowResponse(
                 checked_at=_isoformat(self._now()),
+                mode=normalized_mode,
+                target_slug=None,
+                selection_source=current.selection_source,
                 waited_seconds=int((self._now() - wait_started).total_seconds()),
                 timed_out=False,
                 poll_count=poll_count,
@@ -359,6 +461,9 @@ class Btc15mStrategyService:
 
         return Btc15mCampaignNextWindowResponse(
             checked_at=_isoformat(self._now()),
+            mode=normalized_mode,
+            target_slug=None,
+            selection_source="recurring",
             waited_seconds=int((self._now() - wait_started).total_seconds()),
             timed_out=True,
             poll_count=poll_count,
@@ -374,8 +479,16 @@ class Btc15mStrategyService:
             ],
         )
 
-    def campaign_run(self, *, hours: str) -> Btc15mCampaignRunResponse:
+    def campaign_run(
+        self,
+        *,
+        hours: str,
+        slug: str | None = None,
+        mode: str = "paper",
+    ) -> Btc15mCampaignRunResponse:
         """Run a bounded sequential BTC15m campaign."""
+        normalized_mode = _require_paper_mode(mode)
+        normalized_slug = _normalize_optional_slug(slug)
         requested_hours = _decimal(hours)
         if requested_hours <= 0:
             raise Btc15mValidationError("Campaign hours must be greater than zero.")
@@ -386,17 +499,22 @@ class Btc15mStrategyService:
         items: list[Btc15mPaperEvaluation] = []
         errors: list[Btc15mSectionError] = []
         previous_condition_id: str | None = None
+        stop_reason = "deadline_reached"
 
         while True:
             remaining_seconds = int((deadline - self._now()).total_seconds())
             if remaining_seconds <= 0:
+                stop_reason = "deadline_reached"
                 break
             next_window = self.campaign_next_window(
                 previous_condition_id=previous_condition_id,
+                slug=normalized_slug,
+                mode=normalized_mode,
                 max_wait_seconds=min(DEFAULT_CAMPAIGN_MAX_WAIT_SECONDS, remaining_seconds),
             )
             errors.extend(next_window.errors)
             if next_window.window is None:
+                stop_reason = "no_candidate"
                 break
             resolved = self._resolve_window_by_slug(next_window.window.market_slug)
             if resolved.window_end_dt is None:
@@ -407,9 +525,11 @@ class Btc15mStrategyService:
                         message="Could not resolve the campaign window end time.",
                     )
                 )
+                stop_reason = "missing_timing"
                 break
             required_end = resolved.window_end_dt + timedelta(seconds=DEFAULT_POST_END_WAIT_SECONDS)
             if required_end > deadline:
+                stop_reason = "insufficient_remaining_time"
                 break
 
             artifacts = self._record_and_evaluate_window(
@@ -423,6 +543,12 @@ class Btc15mStrategyService:
             previous_condition_id = artifacts.record.window.condition_id
             if artifacts.evaluation is not None:
                 items.append(artifacts.evaluation)
+            if normalized_slug is not None:
+                stop_reason = "completed_target_window"
+                break
+
+        if not items and normalized_slug is not None and stop_reason == "deadline_reached":
+            stop_reason = "insufficient_remaining_time"
 
         total_pnl = sum((_decimal(item.realized_pnl_usdc) for item in items), Decimal("0"))
         campaign = Btc15mCampaignRunRecord(
@@ -431,6 +557,10 @@ class Btc15mStrategyService:
             started_at=_isoformat(started_at_dt),
             ended_at=_isoformat(self._now()),
             requested_hours=_decimal_text(requested_hours),
+            mode=normalized_mode,
+            target_slug=normalized_slug,
+            selection_source="slug" if normalized_slug is not None else "recurring",
+            stop_reason=stop_reason,
             items=items,
             total_windows=len(items),
             total_skipped=sum(1 for item in items if item.decision == "SKIP"),
@@ -519,9 +649,21 @@ class Btc15mStrategyService:
         except MarketValidationError as exc:
             raise Btc15mValidationError(str(exc)) from exc
 
-        if latest.item is None:
-            raise Btc15mValidationError("No recurring BTC 15m market candidate was found.")
-        return self._resolve_window_from_candidate(latest.item)
+        if latest.item is not None:
+            return self._resolve_window_from_candidate(latest.item, selection_source="recurring")
+
+        fallback = self._resolve_fallback_latest_candidate()
+        if fallback is not None:
+            return self._resolve_window_from_candidate(fallback, selection_source="recurring")
+        raise Btc15mOperatorHintError(
+            "No recurring BTC 15m market candidate was found.",
+            hint={
+                "next_steps": [
+                    "pm market recurring list --query btc --interval 15m",
+                    "pm strategy btc15m paper-run --slug <market_slug> --mode paper",
+                ]
+            },
+        )
 
     def _resolve_window_by_slug(self, slug: str) -> _ResolvedWindow:
         with self._gamma_client_cls() as gamma_client:
@@ -544,12 +686,20 @@ class Btc15mStrategyService:
             min_tick=market.min_tick,
             min_order_size=market.min_order_size,
         )
-        return self._resolve_window_from_candidate(candidate)
+        return self._resolve_window_from_candidate(
+            candidate,
+            selection_source="slug",
+            target_slug=slug,
+        )
 
     def _resolve_window_from_candidate(
-        self, candidate: RecurringMarketCandidate
+        self,
+        candidate: RecurringMarketCandidate,
+        *,
+        selection_source: str,
+        target_slug: str | None = None,
     ) -> _ResolvedWindow:
-        matched_search = self._find_search_candidate(candidate.market_slug)
+        matched_search = self._find_search_candidate(candidate)
         start_dt = _parse_iso_optional(matched_search.start_date) if matched_search else None
         end_dt = _parse_iso_optional(matched_search.end_date) if matched_search else None
         if start_dt is None and end_dt is not None:
@@ -575,15 +725,83 @@ class Btc15mStrategyService:
             window=window,
             window_start_dt=start_dt,
             window_end_dt=end_dt,
+            selection_source=selection_source,
+            target_slug=target_slug,
         )
 
-    def _find_search_candidate(self, market_slug: str) -> GammaSearchCandidate | None:
-        with self._gamma_client_cls() as gamma_client:
-            candidates = gamma_client.search_market_candidates(DEFAULT_RECORD_QUERY, limit=60)
-        for candidate in candidates:
-            if candidate.market.market_slug == market_slug:
-                return candidate
+    def _find_search_candidate(
+        self,
+        candidate: RecurringMarketCandidate,
+    ) -> GammaSearchCandidate | None:
+        condition_id = candidate.condition_id
+        for search_candidate in self._search_btc15m_candidates():
+            market = search_candidate.market
+            if market.market_slug == candidate.market_slug:
+                return search_candidate
+            if condition_id is not None and market.condition_id == condition_id:
+                return search_candidate
         return None
+
+    def _search_btc15m_candidates(self) -> list[GammaSearchCandidate]:
+        seen: set[str] = set()
+        items: list[GammaSearchCandidate] = []
+        with self._gamma_client_cls() as gamma_client:
+            for query in BTC15M_FALLBACK_QUERIES:
+                for candidate in gamma_client.search_market_candidates(
+                    query,
+                    limit=DEFAULT_FALLBACK_SEARCH_LIMIT,
+                ):
+                    slug = candidate.market.market_slug
+                    if slug in seen:
+                        continue
+                    seen.add(slug)
+                    items.append(candidate)
+        return items
+
+    def _resolve_fallback_latest_candidate(self) -> RecurringMarketCandidate | None:
+        ranked: list[tuple[RecurringMarketCandidate, tuple[object, ...]]] = []
+        for search_candidate in self._search_btc15m_candidates():
+            market = search_candidate.market
+            interval_strength = _btc15m_interval_match_strength(market)
+            btc_score = _btc15m_btc_identity_score(market)
+            direction_score = _btc15m_direction_score(market)
+            if interval_strength == 0 or btc_score == 0 or direction_score == 0:
+                continue
+            recency_source, recency_value = _gamma_candidate_recency(search_candidate)
+            recurring_candidate = RecurringMarketCandidate(
+                rank=0,
+                match_score=(interval_strength * 100) + (btc_score * 10) + direction_score,
+                matched_interval=validate_recurring_interval(DEFAULT_RECORD_INTERVAL),
+                recency_source=recency_source,
+                **market.model_dump(mode="json"),
+            )
+            sort_key = (
+                not market.active,
+                market.closed,
+                -interval_strength,
+                -btc_score,
+                -direction_score,
+                recency_value is None,
+                -recency_value.timestamp() if recency_value is not None else float("inf"),
+                search_candidate.search_index if recency_value is None else 0,
+                market.market_slug,
+            )
+            ranked.append((recurring_candidate, sort_key))
+        if not ranked:
+            return None
+        ranked.sort(key=lambda item: item[1])
+        return ranked[0][0]
+
+    def _targeted_record_seconds(self, resolved: _ResolvedWindow) -> int:
+        now = self._now()
+        if resolved.window_end_dt is not None:
+            timeout_at = resolved.window_end_dt + timedelta(seconds=DEFAULT_POST_END_WAIT_SECONDS)
+            return max(1, int((timeout_at - now).total_seconds()))
+        if resolved.window_start_dt is not None:
+            window_open = resolved.window_start_dt + WINDOW_DURATION
+            timeout_at = window_open + timedelta(seconds=DEFAULT_POST_END_WAIT_SECONDS)
+            return max(1, int((timeout_at - now).total_seconds()))
+        return DEFAULT_RECORD_SECONDS
 
     def _record_resolved_window(
         self,
@@ -591,17 +809,23 @@ class Btc15mStrategyService:
         *,
         seconds: int,
         recorder_session_id: str,
+        mode: Btc15mRunMode = Btc15mRunMode.PAPER,
     ) -> Btc15mWindowRecord:
         errors: list[Btc15mSectionError] = []
         initial_samples = self._build_initial_market_samples(resolved, errors=errors)
+        timing_controls = _default_timing_controls()
         if resolved.window_start_dt is None or resolved.window_end_dt is None:
             record = Btc15mWindowRecord(
                 window=resolved.window,
                 recorded_at=_isoformat(self._now()),
                 recorder_session_id=recorder_session_id,
                 status="partial",
+                mode=mode,
+                target_slug=resolved.target_slug,
+                selection_source=resolved.selection_source,
                 market_samples=initial_samples,
                 boundary_status="missing_timing",
+                timing_controls=timing_controls,
                 reason_blocks=[
                     Btc15mReasonBlock(
                         section="window_timing",
@@ -655,18 +879,38 @@ class Btc15mStrategyService:
             recorded_at=_isoformat(self._now()),
             recorder_session_id=recorder_session_id,
             status="complete" if boundary_decision.status == "complete" else "partial",
+            mode=mode,
+            target_slug=resolved.target_slug,
+            selection_source=resolved.selection_source,
             market_source_session_id=run_result["market_session_id"],
             chainlink_source_session_id=run_result["chainlink_session_id"],
             binance_source_session_id=run_result["binance_session_id"],
             chainlink_ticks=chainlink_ticks,
             binance_ticks=binance_ticks,
-            binance_pre_start_tick=_latest_tick_before(binance_ticks, resolved.window_start_dt),
-            binance_post_start_tick=_first_tick_after(binance_ticks, resolved.window_start_dt),
-            binance_pre_end_tick=_latest_tick_before(binance_ticks, resolved.window_end_dt),
-            binance_post_end_tick=_first_tick_after(binance_ticks, resolved.window_end_dt),
+            binance_pre_start_tick=_latest_tick_before_or_at_within(
+                binance_ticks,
+                resolved.window_start_dt,
+                timing_controls.pre_start_capture_window_seconds,
+            ),
+            binance_post_start_tick=_first_tick_at_or_after_within(
+                binance_ticks,
+                resolved.window_start_dt,
+                timing_controls.post_start_grace_window_seconds,
+            ),
+            binance_pre_end_tick=_latest_tick_before_or_at_within(
+                binance_ticks,
+                resolved.window_end_dt,
+                timing_controls.pre_end_capture_window_seconds,
+            ),
+            binance_post_end_tick=_first_tick_at_or_after_within(
+                binance_ticks,
+                resolved.window_end_dt,
+                timing_controls.post_end_grace_window_seconds,
+            ),
             market_samples=market_samples,
             liquidity_samples=liquidity_samples,
             boundary_status=boundary_decision.status,
+            timing_controls=timing_controls,
             start_price_proxy_v1=boundary_decision.start_price_proxy_v1,
             end_price_proxy_v1=boundary_decision.end_price_proxy_v1,
             decision=decision,
@@ -689,15 +933,14 @@ class Btc15mStrategyService:
         evaluation_source_kind: str,
         campaign_run_id: str | None = None,
         persist_paper_run: bool,
+        mode: Btc15mRunMode = Btc15mRunMode.PAPER,
     ) -> _RecordedWindowArtifacts:
         record = self._record_resolved_window(
             resolved,
             seconds=seconds,
             recorder_session_id=recorder_session_id,
+            mode=mode,
         )
-        if record.status != "complete":
-            return _RecordedWindowArtifacts(record=record, evaluation=None)
-
         evaluation = self._evaluate_window(
             record,
             source_kind=evaluation_source_kind,
@@ -708,6 +951,9 @@ class Btc15mStrategyService:
                 run_id=_make_id("btc15m_paper_run"),
                 created_at=_isoformat(self._now()),
                 limit=1,
+                mode=mode,
+                target_slug=resolved.target_slug,
+                selection_source=resolved.selection_source,
                 source_kind=evaluation_source_kind,
                 campaign_run_id=campaign_run_id,
                 items=[evaluation],
@@ -718,6 +964,24 @@ class Btc15mStrategyService:
             )
             self._state.append_paper_run(paper_run)
         return _RecordedWindowArtifacts(record=record, evaluation=evaluation)
+
+    def _run_targeted_paper_window(
+        self,
+        resolved: _ResolvedWindow,
+        *,
+        recorder_session_id: str,
+        source_kind: str,
+    ) -> tuple[Btc15mPaperEvaluation | None, list[Btc15mSectionError]]:
+        seconds = self._targeted_record_seconds(resolved)
+        record = self._record_resolved_window(
+            resolved,
+            seconds=seconds,
+            recorder_session_id=recorder_session_id,
+            mode=Btc15mRunMode.PAPER,
+        )
+        evaluation = self._evaluate_window(record, source_kind=source_kind)
+        errors = list(record.errors)
+        return evaluation, errors
 
     async def _stream_window(self, resolved: _ResolvedWindow, *, seconds: int) -> dict[str, Any]:
         errors: list[Btc15mSectionError] = []
@@ -903,11 +1167,24 @@ class Btc15mStrategyService:
         return items
 
     def _liquidity_checkpoints(self, resolved: _ResolvedWindow) -> list[tuple[str, datetime]]:
+        timing_controls = _default_timing_controls()
         checkpoints: list[tuple[str, datetime]] = []
         if resolved.window_start_dt is not None:
             checkpoints.append(("start_boundary", resolved.window_start_dt))
-            checkpoints.append(("minute_five", resolved.window_start_dt + MINUTE_FIVE_OFFSET))
-            checkpoints.append(("minute_ten", resolved.window_start_dt + MINUTE_TEN_OFFSET))
+            checkpoints.append(
+                (
+                    "minute_five",
+                    resolved.window_start_dt
+                    + timedelta(seconds=timing_controls.direction_lock_offset_seconds),
+                )
+            )
+            checkpoints.append(
+                (
+                    "minute_ten",
+                    resolved.window_start_dt
+                    + timedelta(seconds=timing_controls.entry_window_end_offset_seconds),
+                )
+            )
         if resolved.window_end_dt is not None:
             checkpoints.append(("end_boundary", resolved.window_end_dt))
         return checkpoints
@@ -1078,10 +1355,27 @@ class Btc15mStrategyService:
     ) -> tuple[list[Btc15mBoundaryObservationRecord], Btc15mBoundaryDecisionRecord]:
         assert resolved.window_start_dt is not None
         assert resolved.window_end_dt is not None
-        pre_start = _latest_tick_before(chainlink_ticks, resolved.window_start_dt)
-        post_start = _first_tick_after(chainlink_ticks, resolved.window_start_dt)
-        pre_end = _latest_tick_before(chainlink_ticks, resolved.window_end_dt)
-        post_end = _first_tick_after(chainlink_ticks, resolved.window_end_dt)
+        timing_controls = _default_timing_controls()
+        pre_start = _latest_tick_before_or_at_within(
+            chainlink_ticks,
+            resolved.window_start_dt,
+            timing_controls.pre_start_capture_window_seconds,
+        )
+        post_start = _first_tick_at_or_after_within(
+            chainlink_ticks,
+            resolved.window_start_dt,
+            timing_controls.post_start_grace_window_seconds,
+        )
+        pre_end = _latest_tick_before_or_at_within(
+            chainlink_ticks,
+            resolved.window_end_dt,
+            timing_controls.pre_end_capture_window_seconds,
+        )
+        post_end = _first_tick_at_or_after_within(
+            chainlink_ticks,
+            resolved.window_end_dt,
+            timing_controls.post_end_grace_window_seconds,
+        )
 
         observations = [
             _boundary_observation(
@@ -1091,7 +1385,7 @@ class Btc15mStrategyService:
                 session_id=recorder_session_id,
                 selection_status="selected_pre_start"
                 if pre_start is not None
-                else "missing_pre_start",
+                else "missing_pre_start_capture_window",
             ),
             _boundary_observation(
                 resolved.window,
@@ -1100,14 +1394,16 @@ class Btc15mStrategyService:
                 session_id=recorder_session_id,
                 selection_status="selected_post_start"
                 if post_start is not None
-                else "missing_post_start",
+                else "missing_post_start_grace_expired",
             ),
             _boundary_observation(
                 resolved.window,
                 boundary_kind="end",
                 tick=pre_end,
                 session_id=recorder_session_id,
-                selection_status="selected_pre_end" if pre_end is not None else "missing_pre_end",
+                selection_status="selected_pre_end"
+                if pre_end is not None
+                else "missing_pre_end_capture_window",
             ),
             _boundary_observation(
                 resolved.window,
@@ -1116,19 +1412,23 @@ class Btc15mStrategyService:
                 session_id=recorder_session_id,
                 selection_status="selected_post_end"
                 if post_end is not None
-                else "missing_post_end",
+                else "missing_post_end_grace_expired",
             ),
         ]
 
         notes: list[str] = []
-        start_proxy = (
-            _midpoint_text(pre_start.value, post_start.value) if pre_start and post_start else None
-        )
-        end_proxy = _midpoint_text(pre_end.value, post_end.value) if pre_end and post_end else None
+        start_proxy = post_start.value if post_start is not None else None
+        end_proxy = post_end.value if post_end is not None else None
         if start_proxy is None:
-            notes.append("Could not compute start_price_proxy_v1.")
+            notes.append(
+                "Could not compute start_price_proxy_v1 because no "
+                "Chainlink tick arrived within the post-start grace window."
+            )
         if end_proxy is None:
-            notes.append("Could not compute end_price_proxy_v1.")
+            notes.append(
+                "Could not compute end_price_proxy_v1 because no "
+                "Chainlink tick arrived within the post-end grace window."
+            )
         decision = Btc15mBoundaryDecisionRecord(
             window_id=resolved.window.window_id,
             condition_id=resolved.window.condition_id,
@@ -1139,6 +1439,7 @@ class Btc15mStrategyService:
             post_start=post_start,
             pre_end=pre_end,
             post_end=post_end,
+            timing_controls=timing_controls,
             start_price_proxy_v1=start_proxy,
             end_price_proxy_v1=end_proxy,
             notes=notes,
@@ -1154,7 +1455,9 @@ class Btc15mStrategyService:
         binance_ticks: list[Btc15mPriceTick],
     ) -> tuple[str, str | None, list[str], list[Btc15mReasonBlock]]:
         assert resolved.window_start_dt is not None
-        decision_time = resolved.window_start_dt + MINUTE_FIVE_OFFSET
+        decision_time = resolved.window_start_dt + timedelta(
+            seconds=boundary_decision.timing_controls.direction_lock_offset_seconds
+        )
         decision_at = _isoformat(decision_time)
         reasons: list[Btc15mReasonBlock] = []
         skip_reasons: list[str] = []
@@ -1328,8 +1631,12 @@ class Btc15mStrategyService:
                 campaign_run_id=campaign_run_id,
             )
 
-        activation_at = window_start + MINUTE_FIVE_OFFSET
-        cancellation_at = window_start + MINUTE_TEN_OFFSET
+        activation_at = window_start + timedelta(
+            seconds=record.timing_controls.entry_window_start_offset_seconds
+        )
+        cancellation_at = window_start + timedelta(
+            seconds=record.timing_controls.cancel_open_entries_offset_seconds
+        )
         decision_sample = _select_decision_liquidity_sample(record.liquidity_samples, activation_at)
         if decision_sample is None:
             return _skip_evaluation(
@@ -1689,8 +1996,33 @@ def _latest_tick_before(items: list[Btc15mPriceTick], when: datetime) -> Btc15mP
     return max(matching, key=lambda item: item.observed_at)
 
 
-def _first_tick_after(items: list[Btc15mPriceTick], when: datetime) -> Btc15mPriceTick | None:
-    matching = [item for item in items if _parse_iso_timestamp(item.observed_at) > when]
+def _latest_tick_before_or_at_within(
+    items: list[Btc15mPriceTick],
+    when: datetime,
+    capture_window_seconds: int,
+) -> Btc15mPriceTick | None:
+    lower_bound = when - timedelta(seconds=capture_window_seconds)
+    matching = [
+        item
+        for item in items
+        if lower_bound <= _parse_iso_timestamp(item.observed_at) <= when
+    ]
+    if not matching:
+        return None
+    return max(matching, key=lambda item: item.observed_at)
+
+
+def _first_tick_at_or_after_within(
+    items: list[Btc15mPriceTick],
+    when: datetime,
+    grace_window_seconds: int,
+) -> Btc15mPriceTick | None:
+    upper_bound = when + timedelta(seconds=grace_window_seconds)
+    matching = [
+        item
+        for item in items
+        if when <= _parse_iso_timestamp(item.observed_at) <= upper_bound
+    ]
     if not matching:
         return None
     return min(matching, key=lambda item: item.observed_at)
@@ -1946,6 +2278,84 @@ def _build_liquidity_schedule(
             items.append((sample_kind, effective))
     items.sort(key=lambda item: (item[1], item[0]))
     return items
+
+
+def _normalize_optional_slug(slug: str | None) -> str | None:
+    if slug is None:
+        return None
+    normalized = slug.strip()
+    return normalized or None
+
+
+def _require_paper_mode(mode: str | Btc15mRunMode) -> Btc15mRunMode:
+    normalized = str(mode).strip().lower()
+    if normalized == Btc15mRunMode.PAPER.value:
+        return Btc15mRunMode.PAPER
+    if normalized == Btc15mRunMode.LIVE.value:
+        raise Btc15mOperatorHintError(
+            "BTC15m live mode is reserved and not implemented in this paper-first step.",
+            identifier="mode",
+            hint={"next_steps": ["Use --mode paper for live-data paper testing."]},
+        )
+    raise Btc15mValidationError("BTC15m mode must be one of: paper, live.")
+
+
+def _default_timing_controls() -> Btc15mTimingControls:
+    return Btc15mTimingControls(
+        pre_start_capture_window_seconds=DEFAULT_PRE_START_CAPTURE_WINDOW_SECONDS,
+        post_start_grace_window_seconds=DEFAULT_POST_START_GRACE_WINDOW_SECONDS,
+        pre_end_capture_window_seconds=DEFAULT_PRE_END_CAPTURE_WINDOW_SECONDS,
+        post_end_grace_window_seconds=DEFAULT_POST_END_GRACE_WINDOW_SECONDS,
+        direction_lock_offset_seconds=int(MINUTE_FIVE_OFFSET.total_seconds()),
+        entry_window_start_offset_seconds=int(MINUTE_FIVE_OFFSET.total_seconds()),
+        entry_window_end_offset_seconds=int(MINUTE_TEN_OFFSET.total_seconds()),
+        cancel_open_entries_offset_seconds=int(MINUTE_TEN_OFFSET.total_seconds()),
+    )
+
+
+def _gamma_candidate_recency(candidate: GammaSearchCandidate) -> tuple[str | None, datetime | None]:
+    for field_name, value in (
+        ("endDate", candidate.end_date),
+        ("resolutionDate", candidate.resolution_date),
+        ("startDate", candidate.start_date),
+    ):
+        parsed = _parse_iso_optional(value)
+        if parsed is not None:
+            return field_name, parsed
+    return None, None
+
+
+def _btc15m_interval_match_strength(candidate: NormalizedMarket) -> int:
+    haystack = _btc15m_search_haystack(candidate)
+    if DEFAULT_RECORD_INTERVAL in haystack:
+        return 2
+    for alias in BTC15M_INTERVAL_ALIASES:
+        if alias in haystack:
+            return 1
+    return 0
+
+
+def _btc15m_btc_identity_score(candidate: NormalizedMarket) -> int:
+    haystack = _btc15m_search_haystack(candidate)
+    return sum(1 for marker in BTC15M_BTC_MARKERS if marker in haystack)
+
+
+def _btc15m_direction_score(candidate: NormalizedMarket) -> int:
+    haystack = _btc15m_search_haystack(candidate)
+    if "up/down" in haystack or "up or down" in haystack:
+        return 3
+    return sum(1 for marker in BTC15M_DIRECTION_MARKERS if marker in haystack)
+
+
+def _btc15m_search_haystack(candidate: NormalizedMarket) -> str:
+    return " ".join(
+        [
+            candidate.question,
+            candidate.event_title or "",
+            candidate.market_slug,
+            candidate.event_slug or "",
+        ]
+    ).lower()
 
 
 def _decimal(value: str | Decimal) -> Decimal:

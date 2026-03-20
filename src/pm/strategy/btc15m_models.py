@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from enum import StrEnum
+
 from pydantic import BaseModel, Field
 
 from pm.binance.models import BinanceLiquiditySnapshot
@@ -22,6 +24,26 @@ class Btc15mReasonBlock(BaseModel):
     section: str
     status: str
     message: str
+
+
+class Btc15mRunMode(StrEnum):
+    """Supported BTC15m run modes."""
+
+    PAPER = "paper"
+    LIVE = "live"
+
+
+class Btc15mTimingControls(BaseModel):
+    """Explicit per-window timing controls for BTC15m evaluation."""
+
+    pre_start_capture_window_seconds: int = 60
+    post_start_grace_window_seconds: int = 60
+    pre_end_capture_window_seconds: int = 60
+    post_end_grace_window_seconds: int = 60
+    direction_lock_offset_seconds: int = 300
+    entry_window_start_offset_seconds: int = 300
+    entry_window_end_offset_seconds: int = 600
+    cancel_open_entries_offset_seconds: int = 600
 
 
 class Btc15mWindowIdentity(BaseModel):
@@ -124,6 +146,7 @@ class Btc15mBoundaryDecisionRecord(BaseModel):
     post_start: Btc15mPriceTick | None = None
     pre_end: Btc15mPriceTick | None = None
     post_end: Btc15mPriceTick | None = None
+    timing_controls: Btc15mTimingControls = Field(default_factory=Btc15mTimingControls)
     start_price_proxy_v1: str | None = None
     end_price_proxy_v1: str | None = None
     notes: list[str] = Field(default_factory=list)
@@ -136,6 +159,9 @@ class Btc15mWindowRecord(BaseModel):
     recorded_at: str
     recorder_session_id: str
     status: str
+    mode: Btc15mRunMode = Btc15mRunMode.PAPER
+    target_slug: str | None = None
+    selection_source: str = "recurring"
     market_source_session_id: str | None = None
     chainlink_source_session_id: str | None = None
     binance_source_session_id: str | None = None
@@ -148,6 +174,7 @@ class Btc15mWindowRecord(BaseModel):
     market_samples: list[Btc15mMarketSample] = Field(default_factory=list)
     liquidity_samples: list[Btc15mLiquiditySampleRecord] = Field(default_factory=list)
     boundary_status: str
+    timing_controls: Btc15mTimingControls = Field(default_factory=Btc15mTimingControls)
     start_price_proxy_v1: str | None = None
     end_price_proxy_v1: str | None = None
     decision: str = "PENDING"
@@ -250,6 +277,9 @@ class Btc15mPaperRunRecord(BaseModel):
     run_id: str
     created_at: str
     limit: int
+    mode: Btc15mRunMode = Btc15mRunMode.PAPER
+    target_slug: str | None = None
+    selection_source: str = "recorded"
     source_kind: str = "manual"
     campaign_run_id: str | None = None
     items: list[Btc15mPaperEvaluation] = Field(default_factory=list)
@@ -268,6 +298,10 @@ class Btc15mCampaignRunRecord(BaseModel):
     started_at: str
     ended_at: str
     requested_hours: str
+    mode: Btc15mRunMode = Btc15mRunMode.PAPER
+    target_slug: str | None = None
+    selection_source: str = "recurring"
+    stop_reason: str | None = None
     items: list[Btc15mPaperEvaluation] = Field(default_factory=list)
     total_windows: int = 0
     total_skipped: int = 0
@@ -341,6 +375,9 @@ class Btc15mCampaignNextWindowResponse(BaseModel):
     """Current or next BTC15m campaign window response."""
 
     checked_at: str
+    mode: Btc15mRunMode = Btc15mRunMode.PAPER
+    target_slug: str | None = None
+    selection_source: str = "recurring"
     waited_seconds: int = 0
     timed_out: bool = False
     poll_count: int = 0

@@ -75,6 +75,16 @@ HOURS_OPTION = typer.Option(
     "--hours",
     help="Bounded campaign duration in hours.",
 )
+OPTIONAL_SLUG_OPTION = typer.Option(
+    None,
+    "--slug",
+    help="Explicit BTC15m market slug target for direct paper runs and campaigns.",
+)
+MODE_OPTION = typer.Option(
+    "paper",
+    "--mode",
+    help="BTC15m run mode: paper or live. Live remains reserved in this step.",
+)
 JSON_OPTION = LOCAL_JSON_OPTION
 
 
@@ -149,11 +159,27 @@ def replay(
 def paper_run(
     ctx: typer.Context,
     limit: int = LIMIT_OPTION,
+    slug: str | None = OPTIONAL_SLUG_OPTION,
+    mode: str = MODE_OPTION,
     json_output: bool = JSON_OPTION,
 ) -> None:
     """Paper-evaluate completed BTC15m windows chronologically."""
+    normalized_slug = slug.strip() if slug is not None else None
+    limit_source = ctx.get_parameter_source("limit")
+    if normalized_slug:
+        if getattr(limit_source, "name", "") == "COMMANDLINE" and limit != 1:
+            emit_command_error(
+                ctx,
+                code="invalid_argument",
+                message="When --slug is provided, --limit must be exactly 1 for BTC15m paper runs.",
+                resource="btc15m",
+                identifier="limit",
+                local_json_output=json_output,
+            )
+            raise typer.Exit(1)
+        limit = 1
     try:
-        result = Btc15mStrategyService().paper_run(limit=limit)
+        result = Btc15mStrategyService().paper_run(limit=limit, slug=slug, mode=mode)
     except (Btc15mValidationError, Btc15mStateError) as exc:
         _emit_btc15m_error(ctx, exc=exc, json_output=json_output)
         raise typer.Exit(1) from exc
@@ -197,11 +223,13 @@ def liquidity_sample(
 @campaign_app.command("next-window")
 def campaign_next_window(
     ctx: typer.Context,
+    slug: str | None = OPTIONAL_SLUG_OPTION,
+    mode: str = MODE_OPTION,
     json_output: bool = JSON_OPTION,
 ) -> None:
     """Return the current unresolved or next distinct BTC15m campaign window."""
     try:
-        result = Btc15mStrategyService().campaign_next_window()
+        result = Btc15mStrategyService().campaign_next_window(slug=slug, mode=mode)
     except (Btc15mValidationError, Btc15mStateError) as exc:
         _emit_btc15m_error(ctx, exc=exc, json_output=json_output)
         raise typer.Exit(1) from exc
@@ -219,11 +247,13 @@ def campaign_next_window(
 def campaign_run(
     ctx: typer.Context,
     hours: str = HOURS_OPTION,
+    slug: str | None = OPTIONAL_SLUG_OPTION,
+    mode: str = MODE_OPTION,
     json_output: bool = JSON_OPTION,
 ) -> None:
     """Run a bounded sequential BTC15m campaign."""
     try:
-        result = Btc15mStrategyService().campaign_run(hours=hours)
+        result = Btc15mStrategyService().campaign_run(hours=hours, slug=slug, mode=mode)
     except (Btc15mValidationError, Btc15mStateError) as exc:
         _emit_btc15m_error(ctx, exc=exc, json_output=json_output)
         raise typer.Exit(1) from exc
@@ -292,8 +322,9 @@ def _emit_btc15m_error(
         code=code,
         message=str(exc),
         resource="btc15m",
-        identifier=identifier,
+        identifier=identifier or getattr(exc, "identifier", None),
         local_json_output=json_output,
+        hint=getattr(exc, "hint", None),
     )
 
 
@@ -383,6 +414,8 @@ def _format_paper_run_response(response: Btc15mPaperRunResponse) -> str:
     return "\n".join(
         [
             f"Paper run: {response.run.run_id}",
+            f"Mode: {response.run.mode}",
+            f"Target slug: {response.run.target_slug or '-'}",
             f"Evaluated windows: {response.run.total_evaluated}",
             f"Skipped windows: {response.run.total_skipped}",
             f"Total realized PnL: {response.run.total_realized_pnl_usdc}",
@@ -406,6 +439,8 @@ def _render_paper_run_response(response: Btc15mPaperRunResponse) -> RenderableTy
         title="Paper Run Summary",
         rows=[
             ("Run", response.run.run_id),
+            ("Mode", response.run.mode),
+            ("Target slug", response.run.target_slug or "-"),
             ("Evaluated", str(response.run.total_evaluated)),
             ("Skipped", str(response.run.total_skipped)),
             ("Realized PnL", response.run.total_realized_pnl_usdc),
@@ -469,6 +504,8 @@ def _format_campaign_next_window_response(response: Btc15mCampaignNextWindowResp
         return "No campaign window became available before the wait limit."
     return "\n".join(
         [
+            f"Mode: {response.mode}",
+            f"Target slug: {response.target_slug or '-'}",
             f"Market: {response.window.market_slug}",
             f"Condition: {response.window.condition_id or '-'}",
             f"Waited seconds: {response.waited_seconds}",
@@ -487,6 +524,8 @@ def _render_campaign_next_window_response(
         summary_table(
             title="Next Window",
             rows=[
+                ("Mode", response.mode),
+                ("Target slug", response.target_slug or "-"),
                 ("Market", response.window.market_slug),
                 ("Condition", response.window.condition_id or "-"),
                 ("Waited seconds", str(response.waited_seconds)),
@@ -500,6 +539,9 @@ def _format_campaign_run_response(response: Btc15mCampaignRunResponse) -> str:
     return "\n".join(
         [
             f"Campaign run: {response.campaign.run_id}",
+            f"Mode: {response.campaign.mode}",
+            f"Target slug: {response.campaign.target_slug or '-'}",
+            f"Stop reason: {response.campaign.stop_reason or '-'}",
             f"Evaluated windows: {response.campaign.total_windows}",
             f"Skipped windows: {response.campaign.total_skipped}",
             f"Total realized PnL: {response.campaign.total_realized_pnl_usdc}",
@@ -513,6 +555,9 @@ def _render_campaign_run_response(response: Btc15mCampaignRunResponse) -> Render
         rows=[
             ("Run", response.campaign.run_id),
             ("Hours", response.campaign.requested_hours),
+            ("Mode", response.campaign.mode),
+            ("Target slug", response.campaign.target_slug or "-"),
+            ("Stop reason", response.campaign.stop_reason or "-"),
             ("Windows", str(response.campaign.total_windows)),
             ("Skipped", str(response.campaign.total_skipped)),
             ("Realized PnL", response.campaign.total_realized_pnl_usdc),
