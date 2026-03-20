@@ -36,11 +36,13 @@ class Btc15mRunMode(StrEnum):
 class Btc15mTerminalState(StrEnum):
     """Explicit operator-terminal session states."""
 
+    WAITING_FOR_NEXT_WINDOW = "WAITING_FOR_NEXT_WINDOW"
     PRE_START_CAPTURE = "PRE_START_CAPTURE"
     BOUNDARY_PENDING = "BOUNDARY_PENDING"
     DIRECTION_LOCK_PENDING = "DIRECTION_LOCK_PENDING"
     ENTRY_WINDOW_OPEN = "ENTRY_WINDOW_OPEN"
     HOLD_TO_EXPIRY = "HOLD_TO_EXPIRY"
+    OBSERVE_ONLY = "OBSERVE_ONLY"
     RESOLVED = "RESOLVED"
     SKIPPED = "SKIPPED"
 
@@ -380,6 +382,20 @@ class Btc15mTerminalEventRecord(BaseModel):
     message: str
 
 
+class Btc15mDashboardSideState(BaseModel):
+    """Compact two-sided Polymarket summary for BTC15m terminal views."""
+
+    token_id: str | None = None
+    outcome: str | None = None
+    best_bid: str | None = None
+    best_ask: str | None = None
+    midpoint: str | None = None
+    spread: str | None = None
+    visible_liquidity_030: str | None = None
+    visible_liquidity_020: str | None = None
+    visible_liquidity_010: str | None = None
+
+
 class Btc15mDashboardSnapshotRecord(BaseModel):
     """One persisted BTC15m dashboard snapshot."""
 
@@ -390,6 +406,8 @@ class Btc15mDashboardSnapshotRecord(BaseModel):
     sampled_at: str
     view_kind: str = "dashboard"
     mode: Btc15mRunMode = Btc15mRunMode.PAPER
+    attach_mode: str = "current"
+    observe_only: bool = False
     window_status: str
     boundary_status: str = "pending"
     window_start_at: str | None = None
@@ -399,6 +417,7 @@ class Btc15mDashboardSnapshotRecord(BaseModel):
     current_chainlink_price: str | None = None
     current_binance_price: str | None = None
     start_price_proxy_v1: str | None = None
+    price_to_beat: str | None = None
     direction_lock_status: str = "pending"
     target_token_id: str | None = None
     target_outcome: str | None = None
@@ -417,11 +436,14 @@ class Btc15mDashboardSnapshotRecord(BaseModel):
     binance_realized_vol_3m_bps: str | None = None
     binance_volume_1m: str | None = None
     binance_volume_3m: str | None = None
+    binance_near_touch_imbalance: str | None = None
     visible_liquidity_030: str | None = None
     visible_liquidity_020: str | None = None
     visible_liquidity_010: str | None = None
     manipulation_flags: list[str] = Field(default_factory=list)
     polymarket_levels: list[Btc15mPolymarketLiquidityLevel] = Field(default_factory=list)
+    up_side: Btc15mDashboardSideState | None = None
+    down_side: Btc15mDashboardSideState | None = None
     rungs: list[Btc15mDashboardRungState] = Field(default_factory=list)
     latest_events: list[Btc15mTerminalEventRecord] = Field(default_factory=list)
     mfe_usdc: str | None = None
@@ -439,6 +461,8 @@ class Btc15mTerminalSessionRecord(BaseModel):
     started_at: str
     ended_at: str
     mode: Btc15mRunMode = Btc15mRunMode.PAPER
+    attach_mode: str = "current"
+    observe_only: bool = False
     stop_reason: str
     final_state: Btc15mTerminalState
     current_requested: bool = True
@@ -455,6 +479,7 @@ class Btc15mTerminalSessionRecord(BaseModel):
     filled_rung_count: int = 0
     posted_rung_count: int = 0
     cancelled_rung_count: int = 0
+    total_snapshots: int = 0
     market_open_interest: str | None = None
     market_volume: str | None = None
     manipulation_flags: list[str] = Field(default_factory=list)
@@ -604,6 +629,7 @@ class Btc15mTerminalResponse(BaseModel):
     started_at: str
     ended_at: str
     mode: Btc15mRunMode = Btc15mRunMode.PAPER
+    attach_mode: str = "current"
     stop_reason: str
     window: Btc15mWindowIdentity | None = None
     total_snapshots: int = 0
@@ -618,6 +644,8 @@ class Btc15mTerminalReportSummary(BaseModel):
     terminal_session_count: int = 0
     paper_session_count: int = 0
     live_session_count: int = 0
+    observe_only_session_count: int = 0
+    waiting_session_count: int = 0
     resolved_session_count: int = 0
     skipped_session_count: int = 0
     total_realized_pnl_usdc: str = "0"
@@ -628,7 +656,19 @@ class Btc15mTerminalReportResponse(BaseModel):
     """Aggregate terminal-session report."""
 
     summary: Btc15mTerminalReportSummary
+    session: Btc15mTerminalSessionRecord | None = None
     recent_sessions: list[Btc15mTerminalSessionRecord] = Field(default_factory=list)
+    errors: list[Btc15mSectionError] = Field(default_factory=list)
+
+
+class Btc15mTerminalReplayResponse(BaseModel):
+    """Replay metadata and snapshots for one stored BTC15m terminal session."""
+
+    session_id: str
+    total_snapshots: int = 0
+    session: Btc15mTerminalSessionRecord | None = None
+    first_snapshot: Btc15mDashboardSnapshotRecord | None = None
+    latest_snapshot: Btc15mDashboardSnapshotRecord | None = None
     errors: list[Btc15mSectionError] = Field(default_factory=list)
 
 

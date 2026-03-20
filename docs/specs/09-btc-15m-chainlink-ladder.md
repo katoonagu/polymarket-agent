@@ -54,8 +54,10 @@ Current research commands:
 - `pm strategy btc15m campaign next-window [--slug <market_slug>] [--mode paper|live]`
 - `pm strategy btc15m campaign run --hours <n> [--slug <market_slug>] [--mode paper|live]`
 - `pm strategy btc15m campaign report`
-- `pm strategy btc15m terminal --current [--mode paper|live] [--confirm]`
-- `pm strategy btc15m terminal report`
+- `pm strategy btc15m terminal --current [--observe-only] [--mode paper|live] [--confirm]`
+- `pm strategy btc15m terminal --wait-next [--mode paper|live] [--confirm]`
+- `pm strategy btc15m terminal replay --session-id <id>`
+- `pm strategy btc15m terminal report [--session-id <id>]`
 - `pm strategy btc15m report`
 
 Current workflow notes:
@@ -70,10 +72,21 @@ Current workflow notes:
 - `campaign run --slug` targets exactly one explicit window and then stops
 - `terminal --current` is the dense bounded operator session for the current
   BTC15m window and uses slug-derived timing as the authoritative session clock
+- late attach on `terminal --current` now falls back into `OBSERVE_ONLY`
+  instead of hard-stopping when the start boundary cannot be recovered
+- `terminal --current --observe-only` keeps the current session attached
+  without arming the ladder
+- `terminal --wait-next` watches the current window, begins pre-start capture
+  before the next BTC15m bucket opens, arms that next window, and exits after a
+  final tear sheet
 - `terminal --json` is snapshot-only and exits immediately
 - `terminal --mode live --confirm` is the only BTC15m live execution surface on
   the current branch and still requires inline per-rung and cancellation
   confirms inside the attached terminal
+- `terminal replay --session-id` replays persisted terminal snapshots only and
+  does not call live market, oracle, or execution endpoints
+- `terminal report --session-id` returns one persisted tear sheet while bare
+  `terminal report` remains the aggregate session-history view
 
 ## Strategy Overview and Design Goals
 

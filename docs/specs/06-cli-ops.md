@@ -588,10 +588,14 @@ The current branch already includes `pm setup doctor`, `pm setup guide`, `pm set
 One strategy-specific exception now exists on the current branch:
 
 - `pm strategy btc15m terminal --current`
-- `pm strategy btc15m terminal report`
+- `pm strategy btc15m terminal --current --observe-only`
+- `pm strategy btc15m terminal --wait-next`
+- `pm strategy btc15m terminal replay --session-id <id>`
+- `pm strategy btc15m terminal report [--session-id <id>]`
 
 This BTC15m surface is a bounded attached terminal for one current recurring
-window, not a generic daemonized shell replacement.
+window or one explicitly waited-next window, not a generic daemonized shell
+replacement.
 
 Intended direction:
 
@@ -617,6 +621,10 @@ Richer human-readable tables are now implemented for selected operator commands 
 - `pm shell` is bounded and operator-invoked, not a daemonized or full-screen terminal process
 - `pm strategy btc15m terminal` is also bounded to one current window; it is a
   strategy-specific operator terminal, not a generic unattended TUI loop
+- late attach on `pm strategy btc15m terminal --current` may degrade into
+  observe-only rather than failing the entire attached session immediately
+- `pm strategy btc15m terminal --wait-next` remains bounded to exactly one next
+  armed BTC15m window; it is not an auto-roll daemon
 - intelligence, strategy, ops, and execution remain separate modules; execution alone may place or cancel orders
 
 ## Operational Direction

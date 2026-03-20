@@ -698,9 +698,11 @@ def test_terminal_snapshot_only_returns_terminal_view(tmp_path) -> None:
     assert result.latest_snapshot is not None
     assert result.latest_snapshot.view_kind == "terminal"
     assert result.latest_snapshot.start_price_proxy_v1 == "100"
+    assert result.latest_snapshot.observe_only is False
+    assert result.latest_snapshot.attach_mode == "current"
 
 
-def test_terminal_snapshot_skips_when_post_start_boundary_is_missing(tmp_path) -> None:
+def test_terminal_snapshot_late_attach_defaults_to_observe_only(tmp_path) -> None:
     candidate = _candidate(COND_1, "btc-updown-15m-1774002600")
     service = _service(
         tmp_path,
@@ -713,8 +715,26 @@ def test_terminal_snapshot_skips_when_post_start_boundary_is_missing(tmp_path) -
     result = service.terminal_current(snapshot_only=True)
 
     assert result.latest_snapshot is not None
-    assert result.latest_snapshot.window_status == Btc15mTerminalState.SKIPPED
+    assert result.latest_snapshot.window_status == Btc15mTerminalState.OBSERVE_ONLY
+    assert result.latest_snapshot.observe_only is True
     assert "missing_start_proxy" in result.latest_snapshot.manipulation_flags
+
+
+def test_terminal_wait_next_snapshot_stays_waiting_until_next_capture_opens(tmp_path) -> None:
+    candidate = _candidate(COND_1, "btc-updown-15m-1774002600")
+    service = _service(
+        tmp_path,
+        now=_dt("2026-03-20T10:31:05Z"),
+        candidate=candidate,
+        chainlink_events=[_crypto_event("chainlink", "2026-03-20T10:31:05Z", 101)],
+        binance_events=[_crypto_event("binance", "2026-03-20T10:31:05Z", 101)],
+    )
+
+    result = service.terminal_wait_next(snapshot_only=True)
+
+    assert result.latest_snapshot is not None
+    assert result.attach_mode == "wait_next"
+    assert result.latest_snapshot.window_status == Btc15mTerminalState.WAITING_FOR_NEXT_WINDOW
 
 
 def test_terminal_live_mode_requires_confirm(tmp_path) -> None:
@@ -777,6 +797,135 @@ def test_terminal_live_declined_post_records_session(tmp_path) -> None:
     assert service._state.list_terminal_sessions()[-1].session_id == result.session_id  # type: ignore[attr-defined]
 
 
+def test_terminal_current_observe_only_persists_multiple_snapshots(tmp_path) -> None:
+    candidate = _candidate(COND_1, "btc-updown-15m-1774002600")
+    service = _service(
+        tmp_path,
+        now=_dt("2026-03-20T10:45:58Z"),
+        candidate=candidate,
+        chainlink_events=[_crypto_event("chainlink", "2026-03-20T10:45:58Z", 101)],
+        binance_events=[_crypto_event("binance", "2026-03-20T10:45:58Z", 101)],
+    )
+
+    result = service.terminal_current(observe_only=True)
+
+    assert result.session is not None
+    assert result.session.final_state is Btc15mTerminalState.OBSERVE_ONLY
+    assert result.total_snapshots >= 2
+    snapshots = [
+        item
+        for item in service._state.list_dashboard_snapshots()  # type: ignore[attr-defined]
+        if item.session_id == result.session_id and item.view_kind == "terminal"
+    ]
+    assert len(snapshots) == result.total_snapshots
+
+
+def test_terminal_wait_next_arms_next_window_when_capture_opens(tmp_path) -> None:
+    current_candidate = _candidate(COND_1, "btc-updown-15m-1774002600")
+    next_candidate = _candidate(COND_2, "btc-updown-15m-1774003500")
+    service = _service(
+        tmp_path,
+        now=_dt("2026-03-20T10:44:59Z"),
+        candidate=current_candidate,
+        chainlink_events=[_crypto_event("chainlink", "2026-03-20T10:44:59Z", 101)],
+        binance_events=[_crypto_event("binance", "2026-03-20T10:44:59Z", 101)],
+    )
+    current_resolved = service._resolve_window_from_candidate(  # type: ignore[attr-defined]
+        current_candidate,
+        selection_source="current_exact",
+        target_slug=current_candidate.market_slug,
+    )
+    next_resolved = service._resolve_window_from_candidate(  # type: ignore[attr-defined]
+        next_candidate,
+        selection_source="wait_next_exact",
+        target_slug=next_candidate.market_slug,
+    )
+    runtime = service._create_terminal_runtime(  # type: ignore[attr-defined]
+        session_id="terminal-wait-test",
+        resolved=current_resolved,
+        mode=Btc15mRunMode.PAPER,
+        started_at_dt=_dt("2026-03-20T10:44:59Z"),
+        attach_mode="wait_next",
+        observe_only=True,
+        wait_next_target_start_dt=_dt("2026-03-20T10:45:00Z"),
+    )
+    service._resolve_window_by_bucket_start = lambda bucket_start, selection_source: next_resolved  # type: ignore[attr-defined]
+
+    service._advance_terminal_runtime(runtime)  # type: ignore[attr-defined]
+
+    assert runtime.wait_next_target_start_dt is None
+    assert runtime.resolved.window.market_slug == next_candidate.market_slug
+    assert runtime.observe_only is False
+    assert runtime.state in {
+        Btc15mTerminalState.PRE_START_CAPTURE,
+        Btc15mTerminalState.BOUNDARY_PENDING,
+        Btc15mTerminalState.DIRECTION_LOCK_PENDING,
+    }
+
+
+def test_terminal_snapshot_includes_both_market_sides(tmp_path) -> None:
+    candidate = _candidate(COND_1, "btc-updown-15m-1774002600")
+    service = _service(
+        tmp_path,
+        now=_dt("2026-03-20T10:39:00Z"),
+        candidate=candidate,
+        chainlink_events=[_crypto_event("chainlink", "2026-03-20T10:39:00Z", 101)],
+        binance_events=[_crypto_event("binance", "2026-03-20T10:39:00Z", 101)],
+    )
+    service._state.append_boundary_decision(  # type: ignore[attr-defined]
+        Btc15mBoundaryDecisionRecord(
+            window_id="btc15m:" + COND_1,
+            condition_id=COND_1,
+            market_slug=candidate.market_slug,
+            created_at="2026-03-20T10:30:01Z",
+            status="partial",
+            post_start=_price_tick("chainlink", "2026-03-20T10:30:00Z", "100"),
+            timing_source="slug_timestamp",
+            start_price_proxy_v1="100",
+        )
+    )
+
+    result = service.terminal_current(snapshot_only=True)
+
+    assert result.latest_snapshot is not None
+    assert result.latest_snapshot.up_side is not None
+    assert result.latest_snapshot.down_side is not None
+
+
+def test_terminal_replay_uses_stored_snapshots_only(tmp_path) -> None:
+    service = _service(tmp_path, now=_dt("2026-03-20T10:36:00Z"))
+    session = Btc15mTerminalSessionRecord(
+        session_id="terminal-1",
+        created_at="2026-03-20T10:45:00Z",
+        started_at="2026-03-20T10:36:00Z",
+        ended_at="2026-03-20T10:45:00Z",
+        mode=Btc15mRunMode.PAPER,
+        attach_mode="current",
+        stop_reason="window_complete",
+        final_state=Btc15mTerminalState.RESOLVED,
+        window=_window_record(COND_1, "btc-updown-15m-1774002600", "2026-03-20T10:30:00Z").window,
+    )
+    service._state.append_terminal_session(session)  # type: ignore[attr-defined]
+    snapshots = [
+        service._build_dashboard_snapshot(  # type: ignore[attr-defined]
+            service._resolve_window_from_candidate(  # type: ignore[attr-defined]
+                _candidate(COND_1, "btc-updown-15m-1774002600"),
+                selection_source="current_exact",
+                target_slug="btc-updown-15m-1774002600",
+            ),
+            session_id="terminal-1",
+        ).model_copy(update={"view_kind": "terminal"})
+        for _ in range(2)
+    ]
+    service._state.append_dashboard_snapshots(snapshots)  # type: ignore[attr-defined]
+
+    result = service.terminal_replay(session_id="terminal-1")
+
+    assert result.total_snapshots == 2
+    assert result.latest_snapshot is not None
+    assert result.latest_snapshot.view_kind == "terminal"
+
+
 def test_terminal_report_aggregates_sessions(tmp_path) -> None:
     service = _service(tmp_path, now=_dt("2026-03-20T10:36:00Z"))
     service._state.append_terminal_session(  # type: ignore[attr-defined]
@@ -801,6 +950,32 @@ def test_terminal_report_aggregates_sessions(tmp_path) -> None:
     assert result.summary.terminal_session_count == 1
     assert result.summary.paper_session_count == 1
     assert result.summary.resolved_session_count == 1
+
+
+def test_terminal_report_session_id_returns_single_tear_sheet(tmp_path) -> None:
+    service = _service(tmp_path, now=_dt("2026-03-20T10:36:00Z"))
+    service._state.append_terminal_session(  # type: ignore[attr-defined]
+        Btc15mTerminalSessionRecord(
+            session_id="terminal-1",
+            created_at="2026-03-20T10:45:00Z",
+            started_at="2026-03-20T10:36:00Z",
+            ended_at="2026-03-20T10:45:00Z",
+            mode=Btc15mRunMode.PAPER,
+            attach_mode="current",
+            stop_reason="window_complete",
+            final_state=Btc15mTerminalState.RESOLVED,
+            window=_window_record(
+                COND_1,
+                "btc-updown-15m-1774002600",
+                "2026-03-20T10:30:00Z",
+            ).window,
+        )
+    )
+
+    result = service.terminal_report(session_id="terminal-1")
+
+    assert result.session is not None
+    assert result.session.session_id == "terminal-1"
 
 
 def test_auto_roll_returns_insufficient_remaining_time(tmp_path) -> None:

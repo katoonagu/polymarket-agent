@@ -31,6 +31,7 @@ from pm.strategy import (
     Btc15mReportSummary,
     Btc15mResolveCurrentResponse,
     Btc15mRunMode,
+    Btc15mTerminalReplayResponse,
     Btc15mTerminalReportResponse,
     Btc15mTerminalReportSummary,
     Btc15mTerminalResponse,
@@ -188,6 +189,7 @@ class FakeBtc15mStrategyService:
         *,
         mode: str = "paper",
         confirm: bool = False,
+        observe_only: bool = False,
         snapshot_only: bool = False,
         on_snapshot=None,
         confirm_action=None,
@@ -200,8 +202,10 @@ class FakeBtc15mStrategyService:
             update={
                 "view_kind": "terminal",
                 "mode": Btc15mRunMode(mode),
-                "window_status": "ENTRY_WINDOW_OPEN",
-                "selected_side": "UP",
+                "attach_mode": "current_observe_only" if observe_only else "current",
+                "observe_only": observe_only,
+                "window_status": "OBSERVE_ONLY" if observe_only else "ENTRY_WINDOW_OPEN",
+                "selected_side": None if observe_only else "UP",
                 "latest_events": [],
             }
         )
@@ -216,13 +220,20 @@ class FakeBtc15mStrategyService:
                 started_at="2026-03-20T10:36:00Z",
                 ended_at="2026-03-20T10:45:00Z",
                 mode=mode,
-                stop_reason="window_complete",
-                final_state=Btc15mTerminalState.RESOLVED,
+                attach_mode="current_observe_only" if observe_only else "current",
+                observe_only=observe_only,
+                stop_reason="observe_only_complete" if observe_only else "window_complete",
+                final_state=(
+                    Btc15mTerminalState.OBSERVE_ONLY
+                    if observe_only
+                    else Btc15mTerminalState.RESOLVED
+                ),
                 window=_window_record().window,
                 boundary_status="complete",
-                selected_side="UP",
+                selected_side=None if observe_only else "UP",
                 latest_snapshot=snapshot,
-                latest_evaluation=_evaluation(),
+                latest_evaluation=None if observe_only else _evaluation(),
+                total_snapshots=1,
             )
         )
         return Btc15mTerminalResponse(
@@ -230,7 +241,14 @@ class FakeBtc15mStrategyService:
             started_at="2026-03-20T10:36:00Z",
             ended_at="2026-03-20T10:45:00Z",
             mode=Btc15mRunMode(mode),
-            stop_reason="snapshot_only" if snapshot_only else "window_complete",
+            attach_mode="current_observe_only" if observe_only else "current",
+            stop_reason=(
+                "snapshot_only"
+                if snapshot_only
+                else "observe_only_complete"
+                if observe_only
+                else "window_complete"
+            ),
             window=_window_record().window,
             total_snapshots=1,
             latest_snapshot=snapshot,
@@ -238,16 +256,120 @@ class FakeBtc15mStrategyService:
             errors=[],
         )
 
-    def terminal_report(self) -> Btc15mTerminalReportResponse:
+    def terminal_wait_next(
+        self,
+        *,
+        mode: str = "paper",
+        confirm: bool = False,
+        snapshot_only: bool = False,
+        on_snapshot=None,
+        confirm_action=None,
+    ) -> Btc15mTerminalResponse:
+        _ = confirm
+        _ = confirm_action
+        snapshot = self.dashboard_current().latest_snapshot
+        assert snapshot is not None
+        snapshot = snapshot.model_copy(
+            update={
+                "view_kind": "terminal",
+                "mode": Btc15mRunMode(mode),
+                "attach_mode": "wait_next",
+                "observe_only": True,
+                "window_status": "WAITING_FOR_NEXT_WINDOW",
+                "latest_events": [],
+            }
+        )
+        if on_snapshot is not None and not snapshot_only:
+            on_snapshot(snapshot)
+        session = None if snapshot_only else Btc15mTerminalSessionRecord(
+            session_id="terminal-wait-1",
+            created_at="2026-03-20T11:15:00Z",
+            started_at="2026-03-20T10:36:00Z",
+            ended_at="2026-03-20T11:15:00Z",
+            mode=mode,
+            attach_mode="wait_next",
+            observe_only=False,
+            stop_reason="window_complete",
+            final_state=Btc15mTerminalState.RESOLVED,
+            window=_window_record().window,
+            selected_side="UP",
+            latest_snapshot=snapshot,
+            latest_evaluation=_evaluation(),
+            total_snapshots=2,
+        )
+        return Btc15mTerminalResponse(
+            session_id="terminal-wait-1",
+            started_at="2026-03-20T10:36:00Z",
+            ended_at="2026-03-20T11:15:00Z",
+            mode=Btc15mRunMode(mode),
+            attach_mode="wait_next",
+            stop_reason="window_complete" if not snapshot_only else "snapshot_only",
+            window=_window_record().window,
+            total_snapshots=1 if snapshot_only else 2,
+            latest_snapshot=snapshot,
+            session=session,
+            errors=[],
+        )
+
+    def terminal_replay(self, *, session_id: str, on_snapshot=None) -> Btc15mTerminalReplayResponse:
+        snapshot = self.dashboard_current().latest_snapshot
+        assert snapshot is not None
+        snapshot = snapshot.model_copy(
+            update={"view_kind": "terminal", "attach_mode": "current", "window_status": "RESOLVED"}
+        )
+        if on_snapshot is not None:
+            on_snapshot(snapshot)
+        return Btc15mTerminalReplayResponse(
+            session_id=session_id,
+            total_snapshots=2,
+            session=Btc15mTerminalSessionRecord(
+                session_id=session_id,
+                created_at="2026-03-20T10:45:00Z",
+                started_at="2026-03-20T10:36:00Z",
+                ended_at="2026-03-20T10:45:00Z",
+                mode=Btc15mRunMode.PAPER,
+                attach_mode="current",
+                stop_reason="window_complete",
+                final_state=Btc15mTerminalState.RESOLVED,
+                window=_window_record().window,
+                latest_snapshot=snapshot,
+                latest_evaluation=_evaluation(),
+            ),
+            first_snapshot=snapshot,
+            latest_snapshot=snapshot,
+            errors=[],
+        )
+
+    def terminal_report(self, *, session_id: str | None = None) -> Btc15mTerminalReportResponse:
         return Btc15mTerminalReportResponse(
             summary=Btc15mTerminalReportSummary(
                 terminal_session_count=1,
                 paper_session_count=1,
                 live_session_count=0,
+                observe_only_session_count=0,
+                waiting_session_count=0,
                 resolved_session_count=1,
                 skipped_session_count=0,
                 total_realized_pnl_usdc="241.6666662",
                 average_realized_pnl_usdc="241.6666662",
+            ),
+            session=(
+                Btc15mTerminalSessionRecord(
+                    session_id=session_id,
+                    created_at="2026-03-20T10:45:00Z",
+                    started_at="2026-03-20T10:36:00Z",
+                    ended_at="2026-03-20T10:45:00Z",
+                    mode=Btc15mRunMode.PAPER,
+                    attach_mode="current",
+                    stop_reason="window_complete",
+                    final_state=Btc15mTerminalState.RESOLVED,
+                    window=_window_record().window,
+                    selected_side="UP",
+                    latest_snapshot=self.dashboard_current().latest_snapshot,
+                    latest_evaluation=_evaluation(),
+                )
+                if session_id is not None
+                else None
             ),
             recent_sessions=[
                 Btc15mTerminalSessionRecord(
@@ -256,6 +378,7 @@ class FakeBtc15mStrategyService:
                     started_at="2026-03-20T10:36:00Z",
                     ended_at="2026-03-20T10:45:00Z",
                     mode=Btc15mRunMode.PAPER,
+                    attach_mode="current",
                     stop_reason="window_complete",
                     final_state=Btc15mTerminalState.RESOLVED,
                     window=_window_record().window,
@@ -454,9 +577,43 @@ def test_btc15m_json_commands(monkeypatch) -> None:
             "--json",
         ],
     )
+    terminal_wait_result = runner.invoke(
+        app,
+        [
+            "strategy",
+            "btc15m",
+            "terminal",
+            "--wait-next",
+            "--json",
+        ],
+    )
     terminal_report_result = runner.invoke(
         app,
         ["strategy", "btc15m", "terminal", "report", "--json"],
+    )
+    terminal_report_session_result = runner.invoke(
+        app,
+        [
+            "strategy",
+            "btc15m",
+            "terminal",
+            "report",
+            "--session-id",
+            "terminal-1",
+            "--json",
+        ],
+    )
+    terminal_replay_result = runner.invoke(
+        app,
+        [
+            "strategy",
+            "btc15m",
+            "terminal",
+            "replay",
+            "--session-id",
+            "terminal-1",
+            "--json",
+        ],
     )
     auto_roll_result = runner.invoke(
         app,
@@ -536,8 +693,17 @@ def test_btc15m_json_commands(monkeypatch) -> None:
     assert terminal_result.exit_code == 0
     terminal_payload = json.loads(terminal_result.stdout)
     assert terminal_payload["latest_snapshot"]["view_kind"] == "terminal"
+    assert terminal_wait_result.exit_code == 0
+    assert json.loads(terminal_wait_result.stdout)["attach_mode"] == "wait_next"
     assert terminal_report_result.exit_code == 0
     assert json.loads(terminal_report_result.stdout)["summary"]["terminal_session_count"] == 1
+    assert terminal_report_session_result.exit_code == 0
+    assert (
+        json.loads(terminal_report_session_result.stdout)["session"]["session_id"]
+        == "terminal-1"
+    )
+    assert terminal_replay_result.exit_code == 0
+    assert json.loads(terminal_replay_result.stdout)["session_id"] == "terminal-1"
     assert auto_roll_result.exit_code == 0
     auto_roll_payload = json.loads(auto_roll_result.stdout)
     assert auto_roll_payload["run"]["stop_reason"] == "insufficient_remaining_time"
@@ -678,6 +844,30 @@ def test_btc15m_terminal_live_json_requires_interactive_mode(monkeypatch) -> Non
             "--json",
         ],
     )
+
+    assert result.exit_code == 1
+    payload = json.loads(result.stdout)
+    assert payload["error"]["identifier"] == "mode"
+
+
+def test_btc15m_terminal_current_observe_only_json(monkeypatch) -> None:
+    monkeypatch.setattr("pm.cli.strategy_btc15m.Btc15mStrategyService", FakeBtc15mStrategyService)
+
+    result = runner.invoke(
+        app,
+        ["strategy", "btc15m", "terminal", "--current", "--observe-only", "--json"],
+    )
+
+    assert result.exit_code == 0
+    payload = json.loads(result.stdout)
+    assert payload["attach_mode"] == "current_observe_only"
+    assert payload["latest_snapshot"]["observe_only"] is True
+
+
+def test_btc15m_terminal_requires_exactly_one_session_target(monkeypatch) -> None:
+    monkeypatch.setattr("pm.cli.strategy_btc15m.Btc15mStrategyService", FakeBtc15mStrategyService)
+
+    result = runner.invoke(app, ["strategy", "btc15m", "terminal", "--json"])
 
     assert result.exit_code == 1
     payload = json.loads(result.stdout)

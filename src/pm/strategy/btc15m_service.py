@@ -36,6 +36,7 @@ from pm.strategy.btc15m_models import (
     Btc15mCampaignRunResponse,
     Btc15mDashboardResponse,
     Btc15mDashboardRungState,
+    Btc15mDashboardSideState,
     Btc15mDashboardSnapshotRecord,
     Btc15mLadderRungResult,
     Btc15mLiquiditySampleRecord,
@@ -59,6 +60,7 @@ from pm.strategy.btc15m_models import (
     Btc15mRunMode,
     Btc15mSectionError,
     Btc15mTerminalEventRecord,
+    Btc15mTerminalReplayResponse,
     Btc15mTerminalReportResponse,
     Btc15mTerminalReportSummary,
     Btc15mTerminalResponse,
@@ -98,6 +100,7 @@ DEFAULT_LIVE_TICK_CAPTURE_SECONDS = 1
 DEFAULT_TERMINAL_EVENT_LOG_LIMIT = 12
 DEFAULT_TERMINAL_SNAPSHOT_LOG_LIMIT = 8
 DEFAULT_TERMINAL_CONTEXT_REFRESH_SECONDS = 30
+DEFAULT_TERMINAL_REPLAY_REFRESH_SECONDS = 0.15
 DEFAULT_CAMPAIGN_WAIT_SECONDS = 15
 DEFAULT_CAMPAIGN_MAX_WAIT_SECONDS = 20 * 60
 DEFAULT_CAMPAIGN_SAMPLE_CADENCE_SECONDS = 30
@@ -192,6 +195,9 @@ class _TerminalRuntime:
     mode: Btc15mRunMode
     started_at_dt: datetime
     state: Btc15mTerminalState
+    attach_mode: str = "current"
+    observe_only: bool = False
+    wait_next_target_start_dt: datetime | None = None
     stop_reason: str = "running"
     events: list[Btc15mTerminalEventRecord] = field(default_factory=list)
     errors: list[Btc15mSectionError] = field(default_factory=list)
@@ -461,6 +467,7 @@ class Btc15mStrategyService:
         *,
         mode: str = "paper",
         confirm: bool = False,
+        observe_only: bool = False,
         snapshot_only: bool = False,
         on_snapshot: Callable[[Btc15mDashboardSnapshotRecord], None] | None = None,
         confirm_action: Callable[[str], bool | None] | None = None,
@@ -483,13 +490,15 @@ class Btc15mStrategyService:
         current = self._resolve_current_window()
         session_id = _make_id("btc15m_terminal")
         started_at_dt = self._now()
+        runtime = self._create_terminal_runtime(
+            session_id=session_id,
+            resolved=current.resolved,
+            mode=normalized_mode,
+            started_at_dt=started_at_dt,
+            attach_mode="current_observe_only" if observe_only else "current",
+            observe_only=observe_only,
+        )
         if snapshot_only:
-            runtime = self._create_terminal_runtime(
-                session_id=session_id,
-                resolved=current.resolved,
-                mode=normalized_mode,
-                started_at_dt=started_at_dt,
-            )
             snapshot = self._advance_terminal_runtime(runtime)
             self._state.append_dashboard_snapshots([snapshot])
             return Btc15mTerminalResponse(
@@ -497,19 +506,197 @@ class Btc15mStrategyService:
                 started_at=_isoformat(started_at_dt),
                 ended_at=_isoformat(self._now()),
                 mode=normalized_mode,
+                attach_mode=runtime.attach_mode,
                 stop_reason="snapshot_only",
-                window=current.resolved.window,
+                window=runtime.resolved.window,
                 total_snapshots=1,
                 latest_snapshot=snapshot,
                 errors=snapshot.errors,
             )
+        return self._run_terminal_session(
+            runtime,
+            on_snapshot=on_snapshot,
+            confirm_action=confirm_action,
+        )
 
+    def terminal_wait_next(
+        self,
+        *,
+        mode: str = "paper",
+        confirm: bool = False,
+        snapshot_only: bool = False,
+        on_snapshot: Callable[[Btc15mDashboardSnapshotRecord], None] | None = None,
+        confirm_action: Callable[[str], bool | None] | None = None,
+    ) -> Btc15mTerminalResponse:
+        """Wait for and arm the next BTC15m window, monitoring the current window meanwhile."""
+        normalized_mode = _normalize_terminal_mode(mode)
+        if snapshot_only and normalized_mode is Btc15mRunMode.LIVE:
+            raise Btc15mOperatorHintError(
+                "BTC15m terminal JSON snapshots are only available in paper mode.",
+                identifier="mode",
+                hint={"next_steps": ["Run human terminal mode for live inline confirmations."]},
+            )
+        if normalized_mode is Btc15mRunMode.LIVE and not confirm:
+            raise Btc15mValidationError("BTC15m live terminal requires --mode live --confirm.")
+        if normalized_mode is Btc15mRunMode.LIVE and confirm_action is None and not snapshot_only:
+            raise Btc15mValidationError(
+                "BTC15m live terminal requires an attached interactive confirmer."
+            )
+
+        now = self._now()
+        current = self._resolve_current_window()
+        current_bucket_start = _floor_btc15m_window_start(now)
+        next_bucket_start = current_bucket_start + WINDOW_DURATION
+        next_capture_at = next_bucket_start - timedelta(
+            seconds=DEFAULT_PRE_START_CAPTURE_WINDOW_SECONDS
+        )
+
+        resolved = current.resolved
+        attach_mode = "wait_next"
+        observe_only = False
+        wait_target_start_dt: datetime | None = None
+
+        if (
+            current.resolved.window_start_dt is not None
+            and current.resolved.window_start_dt >= next_capture_at
+            and current.status == "upcoming"
+        ):
+            resolved = current.resolved
+        else:
+            observe_only = True
+            wait_target_start_dt = next_bucket_start
+
+        session_id = _make_id("btc15m_terminal")
+        started_at_dt = self._now()
         runtime = self._create_terminal_runtime(
             session_id=session_id,
-            resolved=current.resolved,
+            resolved=resolved,
             mode=normalized_mode,
             started_at_dt=started_at_dt,
+            attach_mode=attach_mode,
+            observe_only=observe_only,
+            wait_next_target_start_dt=wait_target_start_dt,
         )
+
+        if snapshot_only:
+            snapshot = self._advance_terminal_runtime(runtime)
+            self._state.append_dashboard_snapshots([snapshot])
+            return Btc15mTerminalResponse(
+                session_id=session_id,
+                started_at=_isoformat(started_at_dt),
+                ended_at=_isoformat(self._now()),
+                mode=normalized_mode,
+                attach_mode=runtime.attach_mode,
+                stop_reason="snapshot_only",
+                window=runtime.resolved.window,
+                total_snapshots=1,
+                latest_snapshot=snapshot,
+                errors=snapshot.errors,
+            )
+        return self._run_terminal_session(
+            runtime,
+            on_snapshot=on_snapshot,
+            confirm_action=confirm_action,
+        )
+
+    def terminal_replay(
+        self,
+        *,
+        session_id: str,
+        on_snapshot: Callable[[Btc15mDashboardSnapshotRecord], None] | None = None,
+    ) -> Btc15mTerminalReplayResponse:
+        """Replay one stored BTC15m terminal session from persisted snapshots only."""
+        normalized_session_id = session_id.strip()
+        session = self._terminal_session_by_id(normalized_session_id)
+        if session is None:
+            raise Btc15mValidationError(
+                f"BTC15m terminal session '{normalized_session_id}' was not found."
+            )
+        snapshots = self._terminal_snapshots_for_session(normalized_session_id)
+        if on_snapshot is not None:
+            for index, snapshot in enumerate(snapshots):
+                on_snapshot(snapshot)
+                if index < len(snapshots) - 1:
+                    self._sleep(DEFAULT_TERMINAL_REPLAY_REFRESH_SECONDS)
+        return Btc15mTerminalReplayResponse(
+            session_id=normalized_session_id,
+            total_snapshots=len(snapshots),
+            session=session,
+            first_snapshot=snapshots[0] if snapshots else None,
+            latest_snapshot=snapshots[-1] if snapshots else None,
+        )
+
+    def terminal_report(
+        self,
+        *,
+        session_id: str | None = None,
+    ) -> Btc15mTerminalReportResponse:
+        """Return persisted BTC15m terminal sessions newest-first or one tear sheet."""
+        sessions = self._state.list_terminal_sessions()
+        summary = self._build_terminal_report_summary(sessions)
+        if session_id is not None:
+            normalized_session_id = session_id.strip()
+            session = self._terminal_session_by_id(normalized_session_id)
+            if session is None:
+                raise Btc15mValidationError(
+                    f"BTC15m terminal session '{normalized_session_id}' was not found."
+                )
+            return Btc15mTerminalReportResponse(summary=summary, session=session)
+        return Btc15mTerminalReportResponse(
+            summary=summary,
+            recent_sessions=list(reversed(sessions))[:10],
+        )
+
+    def _build_terminal_report_summary(
+        self,
+        sessions: list[Btc15mTerminalSessionRecord],
+    ) -> Btc15mTerminalReportSummary:
+        """Summarize persisted terminal sessions."""
+        total_pnl = Decimal("0")
+        resolved_count = 0
+        skipped_count = 0
+        paper_count = 0
+        live_count = 0
+        observe_only_count = 0
+        waiting_count = 0
+        pnl_items = 0
+        for item in sessions:
+            if item.mode is Btc15mRunMode.PAPER:
+                paper_count += 1
+            else:
+                live_count += 1
+            if item.observe_only:
+                observe_only_count += 1
+            if item.attach_mode == "wait_next":
+                waiting_count += 1
+            if item.final_state is Btc15mTerminalState.RESOLVED:
+                resolved_count += 1
+            if item.final_state is Btc15mTerminalState.SKIPPED:
+                skipped_count += 1
+            if item.latest_evaluation is not None:
+                total_pnl += _decimal(item.latest_evaluation.realized_pnl_usdc)
+                pnl_items += 1
+        average_pnl = total_pnl / Decimal(pnl_items) if pnl_items else Decimal("0")
+        return Btc15mTerminalReportSummary(
+            terminal_session_count=len(sessions),
+            paper_session_count=paper_count,
+            live_session_count=live_count,
+            observe_only_session_count=observe_only_count,
+            waiting_session_count=waiting_count,
+            resolved_session_count=resolved_count,
+            skipped_session_count=skipped_count,
+            total_realized_pnl_usdc=_decimal_text(total_pnl),
+            average_realized_pnl_usdc=_decimal_text(average_pnl),
+        )
+
+    def _run_terminal_session(
+        self,
+        runtime: _TerminalRuntime,
+        *,
+        on_snapshot: Callable[[Btc15mDashboardSnapshotRecord], None] | None = None,
+        confirm_action: Callable[[str], bool | None] | None = None,
+    ) -> Btc15mTerminalResponse:
+        """Run a bounded terminal session until the active phase completes."""
         snapshots: list[Btc15mDashboardSnapshotRecord] = []
 
         while True:
@@ -518,10 +705,7 @@ class Btc15mStrategyService:
             snapshots.append(snapshot)
             if on_snapshot is not None:
                 on_snapshot(snapshot)
-            if runtime.state in {
-                Btc15mTerminalState.RESOLVED,
-                Btc15mTerminalState.SKIPPED,
-            }:
+            if self._terminal_runtime_complete(runtime, iteration_started):
                 break
             remaining = DEFAULT_DASHBOARD_REFRESH_SECONDS - max(
                 0.0,
@@ -532,55 +716,39 @@ class Btc15mStrategyService:
 
         if snapshots:
             self._state.append_dashboard_snapshots(snapshots)
-        session = self._finalize_terminal_session(runtime)
+        session = self._finalize_terminal_session(runtime, total_snapshots=len(snapshots))
         self._state.append_terminal_session(session)
         return Btc15mTerminalResponse(
-            session_id=session_id,
-            started_at=_isoformat(started_at_dt),
+            session_id=runtime.session_id,
+            started_at=_isoformat(runtime.started_at_dt),
             ended_at=_isoformat(self._now()),
-            mode=normalized_mode,
+            mode=runtime.mode,
+            attach_mode=runtime.attach_mode,
             stop_reason=session.stop_reason,
-            window=current.resolved.window,
+            window=runtime.resolved.window,
             total_snapshots=len(snapshots),
             latest_snapshot=snapshots[-1] if snapshots else None,
             session=session,
             errors=session.errors,
         )
 
-    def terminal_report(self) -> Btc15mTerminalReportResponse:
-        """Return persisted BTC15m terminal sessions newest-first."""
-        sessions = self._state.list_terminal_sessions()
-        total_pnl = Decimal("0")
-        resolved_count = 0
-        skipped_count = 0
-        paper_count = 0
-        live_count = 0
-        pnl_items = 0
-        for item in sessions:
-            if item.mode is Btc15mRunMode.PAPER:
-                paper_count += 1
-            else:
-                live_count += 1
-            if item.final_state is Btc15mTerminalState.RESOLVED:
-                resolved_count += 1
-            if item.final_state is Btc15mTerminalState.SKIPPED:
-                skipped_count += 1
-            if item.latest_evaluation is not None:
-                total_pnl += _decimal(item.latest_evaluation.realized_pnl_usdc)
-                pnl_items += 1
-        average_pnl = total_pnl / Decimal(pnl_items) if pnl_items else Decimal("0")
-        return Btc15mTerminalReportResponse(
-            summary=Btc15mTerminalReportSummary(
-                terminal_session_count=len(sessions),
-                paper_session_count=paper_count,
-                live_session_count=live_count,
-                resolved_session_count=resolved_count,
-                skipped_session_count=skipped_count,
-                total_realized_pnl_usdc=_decimal_text(total_pnl),
-                average_realized_pnl_usdc=_decimal_text(average_pnl),
-            ),
-            recent_sessions=list(reversed(sessions))[:10],
-        )
+    def _terminal_session_by_id(self, session_id: str) -> Btc15mTerminalSessionRecord | None:
+        """Return one persisted terminal session by identifier."""
+        for item in reversed(self._state.list_terminal_sessions()):
+            if item.session_id == session_id:
+                return item
+        return None
+
+    def _terminal_snapshots_for_session(
+        self,
+        session_id: str,
+    ) -> list[Btc15mDashboardSnapshotRecord]:
+        """Return terminal snapshots for one persisted session."""
+        return [
+            item
+            for item in self._state.list_dashboard_snapshots()
+            if item.session_id == session_id and item.view_kind == "terminal"
+        ]
 
     def auto_roll(
         self,
@@ -1745,50 +1913,120 @@ class Btc15mStrategyService:
         resolved: _ResolvedWindow,
         mode: Btc15mRunMode,
         started_at_dt: datetime,
+        attach_mode: str = "current",
+        observe_only: bool = False,
+        wait_next_target_start_dt: datetime | None = None,
     ) -> _TerminalRuntime:
-        latest_boundary = self._latest_boundary_decision(resolved.window.window_id)
-        latest_window = self._latest_window_record(resolved.window.window_id)
-        state = Btc15mTerminalState.PRE_START_CAPTURE
         runtime = _TerminalRuntime(
             session_id=session_id,
             resolved=resolved,
             mode=mode,
             started_at_dt=started_at_dt,
-            state=state,
-            boundary_pre_start=latest_boundary.pre_start if latest_boundary is not None else None,
-            boundary_post_start=latest_boundary.post_start if latest_boundary is not None else None,
-            boundary_pre_end=latest_boundary.pre_end if latest_boundary is not None else None,
-            boundary_post_end=latest_boundary.post_end if latest_boundary is not None else None,
-            boundary_status=(
-                latest_boundary.status
-                if latest_boundary is not None
-                else latest_window.boundary_status
-                if latest_window is not None
-                else "pending"
+            state=(
+                Btc15mTerminalState.WAITING_FOR_NEXT_WINDOW
+                if attach_mode == "wait_next" and wait_next_target_start_dt is not None
+                else Btc15mTerminalState.OBSERVE_ONLY
+                if observe_only
+                else Btc15mTerminalState.PRE_START_CAPTURE
             ),
-            start_price_proxy_v1=(
-                latest_boundary.start_price_proxy_v1
-                if latest_boundary is not None
-                else latest_window.start_price_proxy_v1
-                if latest_window is not None
-                else None
-            ),
-            end_price_proxy_v1=(
-                latest_boundary.end_price_proxy_v1
-                if latest_boundary is not None
-                else latest_window.end_price_proxy_v1
-                if latest_window is not None
-                else None
-            ),
-            selected_side=(
-                latest_window.decision
-                if latest_window is not None and latest_window.decision in {"UP", "DOWN"}
-                else None
-            ),
-            decision_at=latest_window.decision_at if latest_window is not None else None,
-            market_open_interest=getattr(latest_window, "market_open_interest", None),
-            market_volume=getattr(latest_window, "market_volume", None),
+            attach_mode=attach_mode,
+            observe_only=observe_only,
+            wait_next_target_start_dt=wait_next_target_start_dt,
         )
+        self._hydrate_terminal_runtime_for_window(runtime, resolved)
+        self._update_terminal_state(runtime, started_at_dt)
+        if runtime.state is Btc15mTerminalState.SKIPPED:
+            runtime.stop_reason = runtime.skip_reasons[-1] if runtime.skip_reasons else "skipped"
+        self._record_terminal_event(
+            runtime,
+            kind="session",
+            status="info",
+            message=f"Attached BTC15m terminal session in {mode.value} mode.",
+        )
+        if attach_mode == "wait_next" and wait_next_target_start_dt is not None:
+            self._record_terminal_event(
+                runtime,
+                kind="wait_next",
+                status="info",
+                message=(
+                    "Waiting to arm next BTC15m window at "
+                    f"{_isoformat(wait_next_target_start_dt)}."
+                ),
+            )
+        elif observe_only:
+            self._record_terminal_event(
+                runtime,
+                kind="observe",
+                status="info",
+                message="Running BTC15m terminal in observe-only mode for the current window.",
+            )
+        return runtime
+
+    def _hydrate_terminal_runtime_for_window(
+        self,
+        runtime: _TerminalRuntime,
+        resolved: _ResolvedWindow,
+    ) -> None:
+        """Load persisted window-specific BTC15m terminal state into a runtime."""
+        latest_boundary = self._latest_boundary_decision(resolved.window.window_id)
+        latest_window = self._latest_window_record(resolved.window.window_id)
+        runtime.resolved = resolved
+        runtime.boundary_pre_start = (
+            latest_boundary.pre_start if latest_boundary is not None else None
+        )
+        runtime.boundary_post_start = (
+            latest_boundary.post_start if latest_boundary is not None else None
+        )
+        runtime.boundary_pre_end = latest_boundary.pre_end if latest_boundary is not None else None
+        runtime.boundary_post_end = (
+            latest_boundary.post_end if latest_boundary is not None else None
+        )
+        runtime.boundary_status = (
+            latest_boundary.status
+            if latest_boundary is not None
+            else latest_window.boundary_status
+            if latest_window is not None
+            else "pending"
+        )
+        runtime.start_price_proxy_v1 = (
+            latest_boundary.start_price_proxy_v1
+            if latest_boundary is not None
+            else latest_window.start_price_proxy_v1
+            if latest_window is not None
+            else None
+        )
+        runtime.end_price_proxy_v1 = (
+            latest_boundary.end_price_proxy_v1
+            if latest_boundary is not None
+            else latest_window.end_price_proxy_v1
+            if latest_window is not None
+            else None
+        )
+        runtime.selected_side = (
+            latest_window.decision
+            if latest_window is not None and latest_window.decision in {"UP", "DOWN"}
+            else None
+        )
+        runtime.decision_at = latest_window.decision_at if latest_window is not None else None
+        runtime.target_token_id = None
+        runtime.target_outcome = None
+        runtime.rungs = []
+        runtime.market_open_interest = getattr(latest_window, "market_open_interest", None)
+        runtime.market_volume = getattr(latest_window, "market_volume", None)
+        runtime.manipulation_flags = []
+        runtime.skip_reasons = []
+        runtime.reason_blocks = []
+        runtime.chainlink_ticks = []
+        runtime.binance_ticks = []
+        runtime.market_samples = []
+        runtime.liquidity_samples = []
+        runtime.favorable_marks = []
+        runtime.mfe = Decimal("0")
+        runtime.mae = Decimal("0")
+        runtime.max_favorable_price = None
+        runtime.time_to_peak_seconds = None
+        runtime.first_fill_at = None
+        runtime.last_market_context_refresh_at = None
         if runtime.selected_side in {"UP", "DOWN"}:
             target = _resolve_target_token(
                 resolved.window.token_ids,
@@ -1848,16 +2086,24 @@ class Btc15mStrategyService:
                 )
                 for rung in latest_evaluation.rungs
             ]
-        self._update_terminal_state(runtime, started_at_dt)
-        if runtime.state is Btc15mTerminalState.SKIPPED:
-            runtime.stop_reason = runtime.skip_reasons[-1] if runtime.skip_reasons else "skipped"
+
+    def _switch_terminal_runtime_to_window(
+        self,
+        runtime: _TerminalRuntime,
+        resolved: _ResolvedWindow,
+        *,
+        observe_only: bool,
+    ) -> None:
+        """Switch one terminal runtime to a newly armed BTC15m window."""
+        runtime.observe_only = observe_only
+        runtime.wait_next_target_start_dt = None
+        self._hydrate_terminal_runtime_for_window(runtime, resolved)
         self._record_terminal_event(
             runtime,
             kind="session",
             status="info",
-            message=f"Attached BTC15m terminal session in {mode.value} mode.",
+            message=f"Armed BTC15m terminal on {resolved.window.market_slug}.",
         )
-        return runtime
 
     def _advance_terminal_runtime(
         self,
@@ -1873,13 +2119,28 @@ class Btc15mStrategyService:
         if binance_tick is not None:
             _append_tick_if_new(runtime.binance_ticks, binance_tick)
         self._maybe_refresh_terminal_market_context(runtime, sampled_at_dt)
+        self._maybe_arm_wait_next_window(runtime, sampled_at_dt)
         self._update_terminal_boundaries(runtime)
         if runtime.state is not Btc15mTerminalState.SKIPPED:
             self._update_terminal_state(runtime, sampled_at_dt)
-        if runtime.state is not Btc15mTerminalState.SKIPPED:
+        if (
+            runtime.state
+            not in {
+                Btc15mTerminalState.SKIPPED,
+                Btc15mTerminalState.OBSERVE_ONLY,
+                Btc15mTerminalState.WAITING_FOR_NEXT_WINDOW,
+            }
+            and not runtime.observe_only
+        ):
             self._maybe_apply_terminal_decision(runtime, sampled_at_dt)
         if (
-            runtime.state is not Btc15mTerminalState.SKIPPED
+            runtime.state
+            not in {
+                Btc15mTerminalState.SKIPPED,
+                Btc15mTerminalState.OBSERVE_ONLY,
+                Btc15mTerminalState.WAITING_FOR_NEXT_WINDOW,
+            }
+            and not runtime.observe_only
             and runtime.selected_side in {"UP", "DOWN"}
         ):
             if runtime.mode is Btc15mRunMode.PAPER:
@@ -1896,6 +2157,49 @@ class Btc15mStrategyService:
         snapshot = self._build_terminal_snapshot(runtime, sampled_at_dt)
         runtime.latest_snapshot = snapshot
         return snapshot
+
+    def _maybe_arm_wait_next_window(
+        self,
+        runtime: _TerminalRuntime,
+        now: datetime,
+    ) -> None:
+        """Switch a wait-next terminal session onto the next eligible BTC15m window."""
+        if runtime.wait_next_target_start_dt is None:
+            return
+        capture_opens_at = runtime.wait_next_target_start_dt - timedelta(
+            seconds=DEFAULT_PRE_START_CAPTURE_WINDOW_SECONDS
+        )
+        if now < capture_opens_at:
+            runtime.state = Btc15mTerminalState.WAITING_FOR_NEXT_WINDOW
+            return
+        next_resolved = self._resolve_window_by_bucket_start(
+            runtime.wait_next_target_start_dt,
+            selection_source="wait_next_exact",
+        )
+        if next_resolved is None:
+            deadline = runtime.wait_next_target_start_dt + timedelta(
+                seconds=DEFAULT_POST_START_GRACE_WINDOW_SECONDS
+            )
+            runtime.state = Btc15mTerminalState.WAITING_FOR_NEXT_WINDOW
+            if now > deadline:
+                self._mark_terminal_skipped(
+                    runtime,
+                    stop_reason="no_wait_next_candidate",
+                    message=(
+                        "Could not resolve the next BTC15m window before the "
+                        "start grace expired."
+                    ),
+                )
+            return
+        if runtime.resolved.window.window_id == next_resolved.window.window_id:
+            runtime.wait_next_target_start_dt = None
+            runtime.observe_only = False
+            return
+        self._switch_terminal_runtime_to_window(
+            runtime,
+            next_resolved,
+            observe_only=False,
+        )
 
     def _maybe_refresh_terminal_market_context(
         self,
@@ -1968,18 +2272,35 @@ class Btc15mStrategyService:
             seconds=timing_controls.post_end_grace_window_seconds
         )
         if runtime.start_price_proxy_v1 is None and now > post_start_deadline:
-            self._mark_terminal_skipped(
-                runtime,
-                stop_reason="missing_start_proxy",
-                message="No Chainlink tick arrived within the post-start grace window.",
-            )
+            if runtime.attach_mode in {"current", "current_observe_only", "wait_next"}:
+                if "missing_start_proxy" not in runtime.skip_reasons:
+                    runtime.skip_reasons.append("missing_start_proxy")
+                if not runtime.observe_only:
+                    runtime.observe_only = True
+                    runtime.stop_reason = "observe_only_missing_start_proxy"
+                    self._record_terminal_event(
+                        runtime,
+                        kind="observe",
+                        status="info",
+                        message="Start boundary grace expired; continuing in observe-only mode.",
+                    )
+                runtime.boundary_status = (
+                    "partial" if runtime.boundary_pre_start is not None else "pending"
+                )
+            else:
+                self._mark_terminal_skipped(
+                    runtime,
+                    stop_reason="missing_start_proxy",
+                    message="No Chainlink tick arrived within the post-start grace window.",
+                )
             return
         if runtime.end_price_proxy_v1 is None and now > post_end_deadline:
-            self._mark_terminal_skipped(
-                runtime,
-                stop_reason="missing_end_proxy",
-                message="No Chainlink tick arrived within the post-end grace window.",
-            )
+            if not runtime.observe_only:
+                self._mark_terminal_skipped(
+                    runtime,
+                    stop_reason="missing_end_proxy",
+                    message="No Chainlink tick arrived within the post-end grace window.",
+                )
             return
         if runtime.start_price_proxy_v1 is not None and runtime.end_price_proxy_v1 is not None:
             runtime.boundary_status = "complete"
@@ -2005,6 +2326,14 @@ class Btc15mStrategyService:
         minute_five = start_dt + timedelta(seconds=timing_controls.direction_lock_offset_seconds)
         minute_ten = start_dt + timedelta(seconds=timing_controls.entry_window_end_offset_seconds)
         end_grace = end_dt + timedelta(seconds=timing_controls.post_end_grace_window_seconds)
+        if runtime.wait_next_target_start_dt is not None:
+            runtime.state = Btc15mTerminalState.WAITING_FOR_NEXT_WINDOW
+            return
+        if runtime.observe_only:
+            runtime.state = Btc15mTerminalState.OBSERVE_ONLY
+            if now >= end_grace and runtime.stop_reason == "running":
+                runtime.stop_reason = "observe_only_complete"
+            return
         if now < start_dt:
             runtime.state = Btc15mTerminalState.PRE_START_CAPTURE
         elif runtime.start_price_proxy_v1 is None:
@@ -2055,6 +2384,27 @@ class Btc15mStrategyService:
         runtime.state = Btc15mTerminalState.SKIPPED
         runtime.stop_reason = stop_reason
         self._record_terminal_event(runtime, kind="skip", status="fail", message=message)
+
+    def _terminal_runtime_complete(
+        self,
+        runtime: _TerminalRuntime,
+        observed_at: datetime,
+    ) -> bool:
+        """Decide when a bounded terminal session should stop."""
+        if runtime.state in {Btc15mTerminalState.RESOLVED, Btc15mTerminalState.SKIPPED}:
+            return True
+        if runtime.state is Btc15mTerminalState.OBSERVE_ONLY:
+            window_end_dt = runtime.resolved.window_end_dt
+            if window_end_dt is None:
+                return False
+            end_grace = window_end_dt + timedelta(
+                seconds=_default_timing_controls().post_end_grace_window_seconds
+            )
+            if observed_at >= end_grace:
+                if runtime.stop_reason == "running":
+                    runtime.stop_reason = "observe_only_complete"
+                return True
+        return False
 
     def _maybe_apply_terminal_decision(
         self,
@@ -2437,6 +2787,8 @@ class Btc15mStrategyService:
         sampled_at_dt: datetime,
     ) -> Btc15mDashboardSnapshotRecord:
         selected_level = None
+        up_level = None
+        down_level = None
         if runtime.target_token_id is not None:
             for sample in reversed(runtime.liquidity_samples):
                 selected_level = _polymarket_level(sample, runtime.target_token_id)
@@ -2446,6 +2798,9 @@ class Btc15mStrategyService:
         countdown = _terminal_countdown_seconds(runtime, sampled_at_dt)
         latest_liquidity = runtime.liquidity_samples[-1] if runtime.liquidity_samples else None
         binance = latest_liquidity.binance if latest_liquidity is not None else None
+        if latest_liquidity is not None:
+            up_level = _polymarket_level_by_outcome(latest_liquidity, "up")
+            down_level = _polymarket_level_by_outcome(latest_liquidity, "down")
         current_chainlink_price = (
             runtime.chainlink_ticks[-1].value if runtime.chainlink_ticks else None
         )
@@ -2460,6 +2815,8 @@ class Btc15mStrategyService:
             sampled_at=_isoformat(sampled_at_dt),
             view_kind="terminal",
             mode=runtime.mode,
+            attach_mode=runtime.attach_mode,
+            observe_only=runtime.observe_only,
             window_status=runtime.state.value,
             boundary_status=runtime.boundary_status,
             window_start_at=runtime.resolved.window.window_start_at,
@@ -2469,6 +2826,7 @@ class Btc15mStrategyService:
             current_chainlink_price=current_chainlink_price,
             current_binance_price=current_binance_price,
             start_price_proxy_v1=runtime.start_price_proxy_v1,
+            price_to_beat=runtime.start_price_proxy_v1,
             direction_lock_status=(
                 runtime.selected_side if runtime.selected_side is not None else runtime.state.value
             ),
@@ -2497,6 +2855,7 @@ class Btc15mStrategyService:
             ),
             binance_volume_1m=_binance_volume_proxy(latest_liquidity, minutes=1),
             binance_volume_3m=_binance_volume_proxy(latest_liquidity, minutes=3),
+            binance_near_touch_imbalance=_binance_near_touch_imbalance(binance),
             visible_liquidity_030=(
                 selected_level.visible_liquidity_030 if selected_level is not None else None
             ),
@@ -2508,6 +2867,8 @@ class Btc15mStrategyService:
             ),
             manipulation_flags=sorted(set(runtime.manipulation_flags + runtime.skip_reasons)),
             polymarket_levels=(latest_liquidity.polymarket if latest_liquidity is not None else []),
+            up_side=_dashboard_side_state(up_level),
+            down_side=_dashboard_side_state(down_level),
             rungs=[
                 Btc15mDashboardRungState(
                     price=_decimal_text(item.price),
@@ -2610,6 +2971,8 @@ class Btc15mStrategyService:
     def _finalize_terminal_session(
         self,
         runtime: _TerminalRuntime,
+        *,
+        total_snapshots: int = 0,
     ) -> Btc15mTerminalSessionRecord:
         finalized_at = self._now()
         boundary_decision = self._build_terminal_boundary_decision(runtime)
@@ -2646,6 +3009,8 @@ class Btc15mStrategyService:
             started_at=_isoformat(runtime.started_at_dt),
             ended_at=_isoformat(finalized_at),
             mode=runtime.mode,
+            attach_mode=runtime.attach_mode,
+            observe_only=runtime.observe_only,
             stop_reason=runtime.stop_reason,
             final_state=runtime.state,
             window=runtime.resolved.window,
@@ -2661,6 +3026,7 @@ class Btc15mStrategyService:
             filled_rung_count=sum(1 for item in runtime.rungs if item.state == "filled"),
             posted_rung_count=sum(1 for item in runtime.rungs if item.state == "posted"),
             cancelled_rung_count=sum(1 for item in runtime.rungs if item.state == "cancelled"),
+            total_snapshots=total_snapshots,
             market_open_interest=runtime.market_open_interest,
             market_volume=runtime.market_volume,
             manipulation_flags=sorted(set(runtime.manipulation_flags + runtime.skip_reasons)),
@@ -4222,8 +4588,15 @@ def _terminal_countdown_seconds(runtime: _TerminalRuntime, now: datetime) -> int
     resolved = runtime.resolved
     if resolved.window_start_dt is None or resolved.window_end_dt is None:
         return None
+    if (
+        runtime.state is Btc15mTerminalState.WAITING_FOR_NEXT_WINDOW
+        and runtime.wait_next_target_start_dt is not None
+    ):
+        return max(0, int((runtime.wait_next_target_start_dt - now).total_seconds()))
     if runtime.state is Btc15mTerminalState.PRE_START_CAPTURE:
         return max(0, int((resolved.window_start_dt - now).total_seconds()))
+    if runtime.state is Btc15mTerminalState.OBSERVE_ONLY:
+        return max(0, int((resolved.window_end_dt - now).total_seconds()))
     if runtime.state in {
         Btc15mTerminalState.BOUNDARY_PENDING,
         Btc15mTerminalState.DIRECTION_LOCK_PENDING,
@@ -4239,6 +4612,49 @@ def _terminal_rung_visible_liquidity(
     if level is None:
         return None
     return _decimal_text(_ask_liquidity_at_or_better(level.asks, price))
+
+
+def _polymarket_level_by_outcome(
+    sample: Btc15mLiquiditySampleRecord,
+    outcome: str,
+) -> Btc15mPolymarketLiquidityLevel | None:
+    target = outcome.strip().lower()
+    for level in sample.polymarket:
+        if (level.outcome or "").strip().lower() == target:
+            return level
+    return None
+
+
+def _dashboard_side_state(
+    level: Btc15mPolymarketLiquidityLevel | None,
+) -> Btc15mDashboardSideState | None:
+    if level is None:
+        return None
+    return Btc15mDashboardSideState(
+        token_id=level.token_id,
+        outcome=level.outcome,
+        best_bid=level.best_bid,
+        best_ask=level.best_ask,
+        midpoint=level.midpoint,
+        spread=level.spread,
+        visible_liquidity_030=level.visible_liquidity_030,
+        visible_liquidity_020=level.visible_liquidity_020,
+        visible_liquidity_010=level.visible_liquidity_010,
+    )
+
+
+def _binance_near_touch_imbalance(snapshot: Any | None) -> str | None:
+    if snapshot is None:
+        return None
+    bid_depth = _decimal_optional(getattr(snapshot, "near_touch_bid_depth", None))
+    ask_depth = _decimal_optional(getattr(snapshot, "near_touch_ask_depth", None))
+    if bid_depth is None or ask_depth is None:
+        return None
+    denominator = bid_depth + ask_depth
+    if denominator <= 0:
+        return None
+    imbalance = (bid_depth - ask_depth) / denominator
+    return _decimal_text(imbalance)
 
 
 def _binance_volume_proxy(

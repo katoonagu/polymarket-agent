@@ -215,6 +215,10 @@ Define and validate the first market-specific recurring strategy track for BTC
   - decision-time liquidity and anti-manipulation guards for paper evaluation
   - dense BTC15m terminal session at `pm strategy btc15m terminal --current`
   - bounded terminal-session history and report surface for current-window review
+  - late-attach fallback into observe-only instead of immediate terminal death
+  - bounded `terminal --wait-next` flow that watches the current tape, arms one
+    next BTC15m window, and exits with a tear sheet
+  - replayable terminal sessions and session-scoped tear-sheet reporting
   - guarded `Up/Down` execution normalization so the BTC15m live terminal can
     reuse the shared execution safety model
 - Still pending:
@@ -240,7 +244,11 @@ Define and validate the first market-specific recurring strategy track for BTC
 - Campaign artifacts can summarize liquidity context, anti-manipulation skips,
   and per-window paper outcomes without running forever
 - The current BTC15m window can be monitored from an attached terminal session
-  with dense live metrics and a final bounded session summary
+  with dense live metrics, both-side market panels, rolling event tape, and a
+  final bounded tear sheet
+- Late attach no longer collapses into a useless single-snapshot skip; the
+  operator can remain attached in observe-only mode or explicitly wait for the
+  next window
 - Paper evaluation is explainable enough to judge whether guarded live work is
   justified
 - Any future live work remains explicitly deferred behind validation and policy

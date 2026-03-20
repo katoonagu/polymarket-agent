@@ -28,6 +28,7 @@ from pm.strategy import (
     Btc15mResolveCurrentResponse,
     Btc15mStateError,
     Btc15mStrategyService,
+    Btc15mTerminalReplayResponse,
     Btc15mTerminalReportResponse,
     Btc15mTerminalResponse,
     Btc15mValidationError,
@@ -112,10 +113,30 @@ CURRENT_OPTION = typer.Option(
     "--current",
     help="Target the current BTC15m recurring window.",
 )
+WAIT_NEXT_OPTION = typer.Option(
+    False,
+    "--wait-next",
+    help="Observe the current window and arm the next BTC15m window when capture opens.",
+)
+OBSERVE_ONLY_OPTION = typer.Option(
+    False,
+    "--observe-only",
+    help="Stay attached in observe-only mode instead of arming the current BTC15m window.",
+)
 CONFIRM_OPTION = typer.Option(
     False,
     "--confirm",
     help="Required for BTC15m live terminal mode.",
+)
+SESSION_ID_OPTION = typer.Option(
+    ...,
+    "--session-id",
+    help="Persisted BTC15m terminal session identifier.",
+)
+OPTIONAL_SESSION_ID_OPTION = typer.Option(
+    None,
+    "--session-id",
+    help="Optional persisted BTC15m terminal session identifier.",
 )
 JSON_OPTION = LOCAL_JSON_OPTION
 
@@ -300,6 +321,8 @@ def dashboard_current(
 def terminal_current(
     ctx: typer.Context,
     current: bool = CURRENT_OPTION,
+    wait_next: bool = WAIT_NEXT_OPTION,
+    observe_only: bool = OBSERVE_ONLY_OPTION,
     mode: str = MODE_OPTION,
     confirm: bool = CONFIRM_OPTION,
     json_output: bool = JSON_OPTION,
@@ -307,13 +330,23 @@ def terminal_current(
     """Run one dense BTC15m operator terminal session for the current window."""
     if ctx.invoked_subcommand is not None:
         return
-    if not current:
+    if current == wait_next:
         emit_command_error(
             ctx,
             code="invalid_argument",
-            message="BTC15m terminal requires --current in this bounded session step.",
+            message="BTC15m terminal requires exactly one of --current or --wait-next.",
             resource="btc15m",
-            identifier="current",
+            identifier="mode",
+            local_json_output=json_output,
+        )
+        raise typer.Exit(1)
+    if wait_next and observe_only:
+        emit_command_error(
+            ctx,
+            code="invalid_argument",
+            message="BTC15m terminal --observe-only is only supported with --current.",
+            resource="btc15m",
+            identifier="observe_only",
             local_json_output=json_output,
         )
         raise typer.Exit(1)
@@ -339,11 +372,21 @@ def terminal_current(
         )
         raise typer.Exit(1)
     try:
+        service = Btc15mStrategyService()
         if json_output:
-            result = Btc15mStrategyService().terminal_current(
-                mode=mode,
-                confirm=confirm,
-                snapshot_only=True,
+            result = (
+                service.terminal_current(
+                    mode=mode,
+                    confirm=confirm,
+                    observe_only=observe_only,
+                    snapshot_only=True,
+                )
+                if current
+                else service.terminal_wait_next(
+                    mode=mode,
+                    confirm=confirm,
+                    snapshot_only=True,
+                )
             )
         else:
             console = Console()
@@ -359,11 +402,21 @@ def terminal_current(
                     latest_snapshot = snapshot
                     live_view.update(_render_terminal_snapshot(snapshot))
 
-                result = Btc15mStrategyService().terminal_current(
-                    mode=mode,
-                    confirm=confirm,
-                    on_snapshot=_on_snapshot,
-                    confirm_action=_confirm_action if mode.strip().lower() == "live" else None,
+                result = (
+                    service.terminal_current(
+                        mode=mode,
+                        confirm=confirm,
+                        observe_only=observe_only,
+                        on_snapshot=_on_snapshot,
+                        confirm_action=_confirm_action if mode.strip().lower() == "live" else None,
+                    )
+                    if current
+                    else service.terminal_wait_next(
+                        mode=mode,
+                        confirm=confirm,
+                        on_snapshot=_on_snapshot,
+                        confirm_action=_confirm_action if mode.strip().lower() == "live" else None,
+                    )
                 )
                 if latest_snapshot is None and result.latest_snapshot is not None:
                     live_view.update(_render_terminal_snapshot(result.latest_snapshot))
@@ -380,16 +433,57 @@ def terminal_current(
     )
 
 
+@terminal_app.command("replay")
+def terminal_replay(
+    ctx: typer.Context,
+    session_id: str = SESSION_ID_OPTION,
+    json_output: bool = JSON_OPTION,
+) -> None:
+    """Replay one persisted BTC15m terminal session from stored snapshots only."""
+    try:
+        service = Btc15mStrategyService()
+        if json_output:
+            result = service.terminal_replay(session_id=session_id)
+        else:
+            console = Console()
+            latest_snapshot: Btc15mDashboardSnapshotRecord | None = None
+            with Live(
+                empty_message("Replaying BTC15m terminal session..."),
+                console=console,
+            ) as live_view:
+
+                def _on_snapshot(snapshot: Btc15mDashboardSnapshotRecord) -> None:
+                    nonlocal latest_snapshot
+                    latest_snapshot = snapshot
+                    live_view.update(_render_terminal_snapshot(snapshot))
+
+                result = service.terminal_replay(session_id=session_id, on_snapshot=_on_snapshot)
+                if latest_snapshot is None and result.latest_snapshot is not None:
+                    live_view.update(_render_terminal_snapshot(result.latest_snapshot))
+    except (Btc15mValidationError, Btc15mStateError) as exc:
+        _emit_btc15m_error(ctx, exc=exc, identifier=session_id, json_output=json_output)
+        raise typer.Exit(1) from exc
+
+    emit_command_output(
+        ctx,
+        result.model_dump(mode="json"),
+        text=_format_terminal_replay_response(result),
+        renderable=_render_terminal_replay_response(result),
+        local_json_output=json_output,
+    )
+
+
 @terminal_app.command("report")
 def terminal_report(
     ctx: typer.Context,
+    session_id: str | None = OPTIONAL_SESSION_ID_OPTION,
     json_output: bool = JSON_OPTION,
 ) -> None:
     """Show aggregate BTC15m terminal-session history."""
     try:
-        result = Btc15mStrategyService().terminal_report()
-    except Btc15mStateError as exc:
-        _emit_btc15m_error(ctx, exc=exc, json_output=json_output)
+        result = Btc15mStrategyService().terminal_report(session_id=session_id)
+    except (Btc15mValidationError, Btc15mStateError) as exc:
+        _emit_btc15m_error(ctx, exc=exc, identifier=session_id, json_output=json_output)
         raise typer.Exit(1) from exc
 
     emit_command_output(
@@ -929,6 +1023,7 @@ def _format_terminal_response(response: Btc15mTerminalResponse) -> str:
         [
             f"Terminal session: {response.session_id}",
             f"Mode: {response.mode}",
+            f"Attach mode: {response.attach_mode}",
             f"Stop reason: {response.stop_reason}",
             f"Final state: {state}",
             f"Market: {response.window.market_slug if response.window is not None else '-'}",
@@ -937,29 +1032,15 @@ def _format_terminal_response(response: Btc15mTerminalResponse) -> str:
 
 
 def _render_terminal_snapshot(snapshot: Btc15mDashboardSnapshotRecord) -> RenderableType:
-    target_bid = next(
-        (
-            level.best_bid
-            for level in snapshot.polymarket_levels
-            if level.token_id == snapshot.target_token_id
-        ),
-        None,
-    )
-    target_ask = next(
-        (
-            level.best_ask
-            for level in snapshot.polymarket_levels
-            if level.token_id == snapshot.target_token_id
-        ),
-        None,
-    )
     header = summary_table(
         title="Window",
         rows=[
             ("Market", snapshot.market_slug),
             ("Mode", str(snapshot.mode)),
+            ("Attach", snapshot.attach_mode),
             ("State", snapshot.window_status),
             ("Countdown", str(snapshot.countdown_seconds or 0)),
+            ("Observe only", "yes" if snapshot.observe_only else "no"),
             ("Window", f"{snapshot.window_start_at or '-'} -> {snapshot.window_end_at or '-'}"),
         ],
     )
@@ -968,6 +1049,7 @@ def _render_terminal_snapshot(snapshot: Btc15mDashboardSnapshotRecord) -> Render
         rows=[
             ("Boundary status", snapshot.boundary_status),
             ("Start proxy", snapshot.start_price_proxy_v1 or "-"),
+            ("Price to beat", snapshot.price_to_beat or "-"),
             ("Chainlink", snapshot.current_chainlink_price or "-"),
             ("Binance", snapshot.current_binance_price or "-"),
             ("Direction", snapshot.direction_lock_status),
@@ -1001,11 +1083,57 @@ def _render_terminal_snapshot(snapshot: Btc15mDashboardSnapshotRecord) -> Render
             ("Time to peak", str(snapshot.time_to_peak_seconds or 0)),
         ],
     )
+    up_side = summary_table(
+        title="Up Side",
+        rows=[
+            ("Bid", snapshot.up_side.best_bid or "-" if snapshot.up_side is not None else "-"),
+            ("Ask", snapshot.up_side.best_ask or "-" if snapshot.up_side is not None else "-"),
+            (
+                "Midpoint",
+                snapshot.up_side.midpoint or "-" if snapshot.up_side is not None else "-",
+            ),
+            ("Spread", snapshot.up_side.spread or "-" if snapshot.up_side is not None else "-"),
+            (
+                "Visible 0.30/0.20/0.10",
+                (
+                    f"{snapshot.up_side.visible_liquidity_030 or '-'} / "
+                    f"{snapshot.up_side.visible_liquidity_020 or '-'} / "
+                    f"{snapshot.up_side.visible_liquidity_010 or '-'}"
+                )
+                if snapshot.up_side is not None
+                else "-",
+            ),
+        ],
+    )
+    down_side = summary_table(
+        title="Down Side",
+        rows=[
+            ("Bid", snapshot.down_side.best_bid or "-" if snapshot.down_side is not None else "-"),
+            ("Ask", snapshot.down_side.best_ask or "-" if snapshot.down_side is not None else "-"),
+            (
+                "Midpoint",
+                snapshot.down_side.midpoint or "-" if snapshot.down_side is not None else "-",
+            ),
+            (
+                "Spread",
+                snapshot.down_side.spread or "-" if snapshot.down_side is not None else "-",
+            ),
+            (
+                "Visible 0.30/0.20/0.10",
+                (
+                    f"{snapshot.down_side.visible_liquidity_030 or '-'} / "
+                    f"{snapshot.down_side.visible_liquidity_020 or '-'} / "
+                    f"{snapshot.down_side.visible_liquidity_010 or '-'}"
+                )
+                if snapshot.down_side is not None
+                else "-",
+            ),
+        ],
+    )
     polymarket = summary_table(
         title="Polymarket",
         rows=[
-            ("Bid", target_bid or "-"),
-            ("Ask", target_ask or "-"),
+            ("Target", snapshot.target_outcome or "-"),
             ("Midpoint", snapshot.current_midpoint or "-"),
             ("Spread", snapshot.current_spread or "-"),
             ("Visible @0.30", snapshot.visible_liquidity_030 or "-"),
@@ -1022,6 +1150,7 @@ def _render_terminal_snapshot(snapshot: Btc15mDashboardSnapshotRecord) -> Render
             ("Best ask", snapshot.binance_best_ask or "-"),
             ("Near-touch bid", snapshot.binance_near_touch_bid_depth or "-"),
             ("Near-touch ask", snapshot.binance_near_touch_ask_depth or "-"),
+            ("Imbalance", snapshot.binance_near_touch_imbalance or "-"),
             ("Vol 1m bps", snapshot.binance_realized_vol_1m_bps or "-"),
             ("Vol 3m bps", snapshot.binance_realized_vol_3m_bps or "-"),
             ("Volume 1m", snapshot.binance_volume_1m or "-"),
@@ -1060,6 +1189,8 @@ def _render_terminal_snapshot(snapshot: Btc15mDashboardSnapshotRecord) -> Render
         Layout(
             render_group(
                 Panel(strategy, title="Strategy"),
+                Panel(up_side, title="Up"),
+                Panel(down_side, title="Down"),
                 Panel(flags, title="Flags"),
             ),
             name="center",
@@ -1083,6 +1214,7 @@ def _render_terminal_response(response: Btc15mTerminalResponse) -> RenderableTyp
         rows=[
             ("Session", response.session_id),
             ("Mode", str(response.mode)),
+            ("Attach mode", response.attach_mode),
             ("Stop reason", response.stop_reason),
             ("Snapshots", str(response.total_snapshots)),
             ("Market", response.window.market_slug if response.window is not None else "-"),
@@ -1093,6 +1225,7 @@ def _render_terminal_response(response: Btc15mTerminalResponse) -> RenderableTyp
             title="Final Session",
             rows=[
                 ("Final state", response.session.final_state),
+                ("Observe only", "yes" if response.session.observe_only else "no"),
                 ("Side", response.session.selected_side or "-"),
                 ("Boundary", response.session.boundary_status),
                 (
@@ -1104,6 +1237,7 @@ def _render_terminal_response(response: Btc15mTerminalResponse) -> RenderableTyp
                     ),
                 ),
                 ("Exposure", response.session.exposure_notional_usdc or "-"),
+                ("Snapshots", str(response.session.total_snapshots)),
                 (
                     "Realized PnL",
                     (
@@ -1125,11 +1259,22 @@ def _render_terminal_response(response: Btc15mTerminalResponse) -> RenderableTyp
 
 
 def _format_terminal_report_response(response: Btc15mTerminalReportResponse) -> str:
+    if response.session is not None:
+        return "\n".join(
+            [
+                f"Terminal session: {response.session.session_id}",
+                f"Mode: {response.session.mode}",
+                f"Attach mode: {response.session.attach_mode}",
+                f"Final state: {response.session.final_state}",
+                f"Stop reason: {response.session.stop_reason}",
+            ]
+        )
     return "\n".join(
         [
             f"Terminal sessions: {response.summary.terminal_session_count}",
             f"Paper sessions: {response.summary.paper_session_count}",
             f"Live sessions: {response.summary.live_session_count}",
+            f"Observe-only sessions: {response.summary.observe_only_session_count}",
             f"Resolved sessions: {response.summary.resolved_session_count}",
             f"Skipped sessions: {response.summary.skipped_session_count}",
         ]
@@ -1139,6 +1284,31 @@ def _format_terminal_report_response(response: Btc15mTerminalReportResponse) -> 
 def _render_terminal_report_response(
     response: Btc15mTerminalReportResponse,
 ) -> RenderableType:
+    if response.session is not None:
+        summary = summary_table(
+            title="Terminal Tear Sheet",
+            rows=[
+                ("Session", response.session.session_id),
+                ("Mode", response.session.mode),
+                ("Attach mode", response.session.attach_mode),
+                ("Final state", response.session.final_state),
+                ("Stop reason", response.session.stop_reason),
+                ("Side", response.session.selected_side or "-"),
+                ("Snapshots", str(response.session.total_snapshots)),
+                (
+                    "Realized PnL",
+                    response.session.latest_evaluation.realized_pnl_usdc
+                    if response.session.latest_evaluation is not None
+                    else "-",
+                ),
+            ],
+        )
+        details = (
+            _render_terminal_snapshot(response.session.latest_snapshot)
+            if response.session.latest_snapshot is not None
+            else empty_message("No terminal snapshot for this session.")
+        )
+        return section_panel("BTC15m Terminal Tear Sheet", render_group(summary, details))
     summary = summary_table(
         title="Terminal Summary",
         rows=[
@@ -1150,6 +1320,7 @@ def _render_terminal_report_response(
                     f"{response.summary.live_session_count}"
                 ),
             ),
+            ("Observe only", str(response.summary.observe_only_session_count)),
             (
                 "Resolved / skipped",
                 (
@@ -1182,6 +1353,45 @@ def _render_terminal_report_response(
         else empty_message("No terminal sessions yet.")
     )
     return section_panel("BTC15m Terminal Report", render_group(summary, recent))
+
+
+def _format_terminal_replay_response(response: Btc15mTerminalReplayResponse) -> str:
+    market_slug = (
+        response.session.window.market_slug
+        if response.session is not None and response.session.window is not None
+        else "-"
+    )
+    return "\n".join(
+        [
+            f"Replay session: {response.session_id}",
+            f"Snapshots: {response.total_snapshots}",
+            f"Market: {market_slug}",
+            f"Final state: {response.session.final_state if response.session is not None else '-'}",
+        ]
+    )
+
+
+def _render_terminal_replay_response(response: Btc15mTerminalReplayResponse) -> RenderableType:
+    summary = summary_table(
+        title="Replay Summary",
+        rows=[
+            ("Session", response.session_id),
+            ("Snapshots", str(response.total_snapshots)),
+            (
+                "Market",
+                response.session.window.market_slug
+                if response.session is not None and response.session.window is not None
+                else "-",
+            ),
+            ("Final state", response.session.final_state if response.session is not None else "-"),
+        ],
+    )
+    details = (
+        _render_terminal_snapshot(response.latest_snapshot)
+        if response.latest_snapshot is not None
+        else empty_message("No stored terminal snapshots for this session.")
+    )
+    return section_panel("BTC15m Terminal Replay", render_group(summary, details))
 
 
 def _format_campaign_next_window_response(response: Btc15mCampaignNextWindowResponse) -> str:
