@@ -3,20 +3,26 @@
 from __future__ import annotations
 
 import typer
-from rich.console import RenderableType
+from rich.console import Console, RenderableType
+from rich.live import Live
 
 from pm.cli.support import LOCAL_JSON_OPTION, emit_command_error, emit_command_output
 from pm.common.tables import empty_message, render_group, row_table, section_panel, summary_table
 from pm.strategy import (
+    Btc15mAutoRollResponse,
     Btc15mCampaignNextWindowResponse,
     Btc15mCampaignReportResponse,
     Btc15mCampaignRunResponse,
+    Btc15mDashboardResponse,
+    Btc15mDashboardSnapshotRecord,
     Btc15mLiquiditySampleResponse,
+    Btc15mLiveResponse,
     Btc15mPaperRunResponse,
     Btc15mRecordStartResponse,
     Btc15mRecordWindowResponse,
     Btc15mReplayResponse,
     Btc15mReportResponse,
+    Btc15mResolveCurrentResponse,
     Btc15mStateError,
     Btc15mStrategyService,
     Btc15mValidationError,
@@ -75,6 +81,11 @@ HOURS_OPTION = typer.Option(
     "--hours",
     help="Bounded campaign duration in hours.",
 )
+OPTIONAL_HOURS_OPTION = typer.Option(
+    None,
+    "--hours",
+    help="Optional bounded current-window duration in hours.",
+)
 OPTIONAL_SLUG_OPTION = typer.Option(
     None,
     "--slug",
@@ -84,6 +95,11 @@ MODE_OPTION = typer.Option(
     "paper",
     "--mode",
     help="BTC15m run mode: paper or live. Live remains reserved in this step.",
+)
+CURRENT_OPTION = typer.Option(
+    False,
+    "--current",
+    help="Target the current BTC15m recurring window.",
 )
 JSON_OPTION = LOCAL_JSON_OPTION
 
@@ -151,6 +167,138 @@ def replay(
         result.model_dump(mode="json"),
         text=_format_replay_response(result),
         renderable=_render_replay_response(result),
+        local_json_output=json_output,
+    )
+
+
+@app.command("resolve-current")
+def resolve_current(
+    ctx: typer.Context,
+    json_output: bool = JSON_OPTION,
+) -> None:
+    """Resolve the current BTC15m live or upcoming recurring window."""
+    try:
+        result = Btc15mStrategyService().resolve_current()
+    except (Btc15mValidationError, Btc15mStateError) as exc:
+        _emit_btc15m_error(ctx, exc=exc, json_output=json_output)
+        raise typer.Exit(1) from exc
+
+    emit_command_output(
+        ctx,
+        result.model_dump(mode="json"),
+        text=_format_resolve_current_response(result),
+        renderable=_render_resolve_current_response(result),
+        local_json_output=json_output,
+    )
+
+
+@app.command("live")
+def live_current(
+    ctx: typer.Context,
+    current: bool = CURRENT_OPTION,
+    mode: str = MODE_OPTION,
+    hours: str | None = OPTIONAL_HOURS_OPTION,
+    json_output: bool = JSON_OPTION,
+) -> None:
+    """Run one bounded current-window BTC15m live-data paper session."""
+    if not current:
+        emit_command_error(
+            ctx,
+            code="invalid_argument",
+            message="BTC15m live requires --current in this bounded current-window step.",
+            resource="btc15m",
+            identifier="current",
+            local_json_output=json_output,
+        )
+        raise typer.Exit(1)
+    try:
+        result = Btc15mStrategyService().live_current(mode=mode, hours=hours)
+    except (Btc15mValidationError, Btc15mStateError) as exc:
+        _emit_btc15m_error(ctx, exc=exc, json_output=json_output)
+        raise typer.Exit(1) from exc
+
+    emit_command_output(
+        ctx,
+        result.model_dump(mode="json"),
+        text=_format_live_response(result),
+        renderable=_render_live_response(result),
+        local_json_output=json_output,
+    )
+
+
+@app.command("dashboard")
+def dashboard_current(
+    ctx: typer.Context,
+    current: bool = CURRENT_OPTION,
+    seconds: int = typer.Option(
+        30,
+        "--seconds",
+        min=1,
+        help="Bounded BTC15m dashboard duration in seconds.",
+    ),
+    json_output: bool = JSON_OPTION,
+) -> None:
+    """Run a bounded BTC15m current-window terminal dashboard."""
+    if not current:
+        emit_command_error(
+            ctx,
+            code="invalid_argument",
+            message="BTC15m dashboard requires --current in this bounded current-window step.",
+            resource="btc15m",
+            identifier="current",
+            local_json_output=json_output,
+        )
+        raise typer.Exit(1)
+    try:
+        if json_output:
+            result = Btc15mStrategyService().dashboard_current(seconds=seconds)
+        else:
+            console = Console()
+            latest_snapshot: Btc15mDashboardSnapshotRecord | None = None
+            with Live(empty_message("Starting BTC15m dashboard..."), console=console) as live:
+                def _on_snapshot(snapshot: Btc15mDashboardSnapshotRecord) -> None:
+                    nonlocal latest_snapshot
+                    latest_snapshot = snapshot
+                    live.update(_render_dashboard_snapshot(snapshot))
+
+                result = Btc15mStrategyService().dashboard_current(
+                    seconds=seconds,
+                    on_snapshot=_on_snapshot,
+                )
+                if latest_snapshot is None and result.latest_snapshot is not None:
+                    live.update(_render_dashboard_snapshot(result.latest_snapshot))
+    except (Btc15mValidationError, Btc15mStateError) as exc:
+        _emit_btc15m_error(ctx, exc=exc, json_output=json_output)
+        raise typer.Exit(1) from exc
+
+    emit_command_output(
+        ctx,
+        result.model_dump(mode="json"),
+        text=_format_dashboard_response(result),
+        renderable=_render_dashboard_response(result),
+        local_json_output=json_output,
+    )
+
+
+@app.command("auto-roll")
+def auto_roll(
+    ctx: typer.Context,
+    hours: str = HOURS_OPTION,
+    mode: str = MODE_OPTION,
+    json_output: bool = JSON_OPTION,
+) -> None:
+    """Run one bounded BTC15m current-window auto-roll session."""
+    try:
+        result = Btc15mStrategyService().auto_roll(hours=hours, mode=mode)
+    except (Btc15mValidationError, Btc15mStateError) as exc:
+        _emit_btc15m_error(ctx, exc=exc, json_output=json_output)
+        raise typer.Exit(1) from exc
+
+    emit_command_output(
+        ctx,
+        result.model_dump(mode="json"),
+        text=_format_auto_roll_response(result),
+        renderable=_render_auto_roll_response(result),
         local_json_output=json_output,
     )
 
@@ -410,6 +558,99 @@ def _render_replay_response(response: Btc15mReplayResponse) -> RenderableType:
     return section_panel("BTC15m Replay", table)
 
 
+def _format_resolve_current_response(response: Btc15mResolveCurrentResponse) -> str:
+    if response.window is None:
+        return "No current BTC15m window was resolved."
+    seconds_to_start = response.seconds_to_start
+    seconds_to_end = response.seconds_to_end
+    return "\n".join(
+        [
+            f"Market: {response.window.market_slug}",
+            f"Status: {response.status}",
+            f"Timing source: {response.timing_source}",
+            f"Seconds to start: {seconds_to_start if seconds_to_start is not None else '-'}",
+            f"Seconds to end: {seconds_to_end if seconds_to_end is not None else '-'}",
+        ]
+    )
+
+
+def _render_resolve_current_response(response: Btc15mResolveCurrentResponse) -> RenderableType:
+    if response.window is None:
+        return section_panel("BTC15m Resolve", empty_message("No current BTC15m window."))
+    return section_panel(
+        "BTC15m Resolve",
+        summary_table(
+            title="Current Window",
+            rows=[
+                ("Market", response.window.market_slug),
+                ("Status", response.status),
+                ("Timing source", response.timing_source),
+                ("Selection source", response.selection_source),
+                ("Window start", response.window.window_start_at or "-"),
+                ("Window end", response.window.window_end_at or "-"),
+                ("Seconds to start", str(response.seconds_to_start or 0)),
+                ("Seconds to end", str(response.seconds_to_end or 0)),
+            ],
+        ),
+    )
+
+
+def _format_live_response(response: Btc15mLiveResponse) -> str:
+    realized_pnl = (
+        response.evaluation.realized_pnl_usdc if response.evaluation is not None else "-"
+    )
+    return "\n".join(
+        [
+            f"Live run: {response.run_id}",
+            f"Mode: {response.mode}",
+            f"Stop reason: {response.stop_reason}",
+            f"Market: {response.window.market_slug if response.window is not None else '-'}",
+            f"Realized PnL: {realized_pnl}",
+        ]
+    )
+
+
+def _render_live_response(response: Btc15mLiveResponse) -> RenderableType:
+    return section_panel(
+        "BTC15m Live Paper",
+        render_group(
+            summary_table(
+                title="Run Summary",
+                rows=[
+                    ("Run", response.run_id),
+                    ("Mode", str(response.mode)),
+                    ("Stop reason", response.stop_reason),
+                    ("Market", response.window.market_slug if response.window is not None else "-"),
+                    (
+                        "Window start",
+                        (response.window.window_start_at or "-") if response.window else "-",
+                    ),
+                    (
+                        "Window end",
+                        (response.window.window_end_at or "-") if response.window else "-",
+                    ),
+                ],
+            ),
+            (
+                row_table(
+                    title="Evaluation",
+                    columns=("Decision", "Resolution", "Fills", "PnL"),
+                    rows=[
+                        (
+                            response.evaluation.decision,
+                            response.evaluation.resolution_result,
+                            str(response.evaluation.filled_rung_count),
+                            response.evaluation.realized_pnl_usdc,
+                        )
+                    ],
+                )
+                if response.evaluation is not None
+                else empty_message("No evaluation was produced.")
+            ),
+        ),
+    )
+
+
 def _format_paper_run_response(response: Btc15mPaperRunResponse) -> str:
     return "\n".join(
         [
@@ -497,6 +738,68 @@ def _render_liquidity_response(response: Btc15mLiquiditySampleResponse) -> Rende
         else empty_message("No liquidity samples.")
     )
     return section_panel("BTC15m Liquidity", render_group(summary, items))
+
+
+def _format_dashboard_response(response: Btc15mDashboardResponse) -> str:
+    return "\n".join(
+        [
+            f"Dashboard session: {response.session_id}",
+            f"Snapshots: {response.total_snapshots}",
+            f"Market: {response.window.market_slug if response.window is not None else '-'}",
+        ]
+    )
+
+
+def _render_dashboard_snapshot(snapshot: Btc15mDashboardSnapshotRecord) -> RenderableType:
+    rung_rows = [
+        (
+            rung.price,
+            rung.state,
+            rung.visible_liquidity or "-",
+            rung.fill_at or "-",
+        )
+        for rung in snapshot.rungs
+    ]
+    rung_table = row_table(
+        title="Ladder",
+        columns=("Price", "State", "Visible liquidity", "Fill at"),
+        rows=rung_rows,
+    )
+    summary = summary_table(
+        title="Snapshot",
+        rows=[
+            ("Market", snapshot.market_slug),
+            ("Sampled at", snapshot.sampled_at),
+            ("Window", f"{snapshot.window_start_at or '-'} -> {snapshot.window_end_at or '-'}"),
+            ("Chainlink", snapshot.current_chainlink_price or "-"),
+            ("Binance", snapshot.current_binance_price or "-"),
+            ("Start proxy", snapshot.start_price_proxy_v1 or "-"),
+            ("Direction", snapshot.direction_lock_status),
+            ("Midpoint", snapshot.current_midpoint or "-"),
+            ("Spread", snapshot.current_spread or "-"),
+            ("Flags", ", ".join(snapshot.manipulation_flags) or "-"),
+            ("MFE / MAE", f"{snapshot.mfe_usdc or '-'} / {snapshot.mae_usdc or '-'}"),
+        ],
+    )
+    return section_panel("BTC15m Dashboard", render_group(summary, rung_table))
+
+
+def _render_dashboard_response(response: Btc15mDashboardResponse) -> RenderableType:
+    if response.latest_snapshot is None:
+        return section_panel("BTC15m Dashboard", empty_message("No dashboard snapshots."))
+    summary = summary_table(
+        title="Session Summary",
+        rows=[
+            ("Session", response.session_id),
+            ("Snapshots", str(response.total_snapshots)),
+            ("Requested seconds", str(response.requested_seconds)),
+            ("Market", response.window.market_slug if response.window is not None else "-"),
+        ],
+    )
+    return section_panel(
+        "BTC15m Dashboard",
+        render_group(summary, _render_dashboard_snapshot(response.latest_snapshot)),
+    )
 
 
 def _format_campaign_next_window_response(response: Btc15mCampaignNextWindowResponse) -> str:
@@ -635,6 +938,52 @@ def _render_campaign_report_response(response: Btc15mCampaignReportResponse) -> 
         else empty_message("No campaign evaluations yet.")
     )
     return section_panel("BTC15m Campaign Report", render_group(summary, recent))
+
+
+def _format_auto_roll_response(response: Btc15mAutoRollResponse) -> str:
+    return "\n".join(
+        [
+            f"Auto-roll run: {response.run.run_id}",
+            f"Hours: {response.run.requested_hours}",
+            f"Mode: {response.run.mode}",
+            f"Stop reason: {response.run.stop_reason}",
+            f"Windows: {response.run.total_windows}",
+            f"PnL: {response.run.total_realized_pnl_usdc}",
+        ]
+    )
+
+
+def _render_auto_roll_response(response: Btc15mAutoRollResponse) -> RenderableType:
+    summary = summary_table(
+        title="Auto-Roll Summary",
+        rows=[
+            ("Run", response.run.run_id),
+            ("Hours", response.run.requested_hours),
+            ("Mode", str(response.run.mode)),
+            ("Stop reason", response.run.stop_reason),
+            ("Windows", str(response.run.total_windows)),
+            ("Skipped", str(response.run.total_skipped)),
+            ("Realized PnL", response.run.total_realized_pnl_usdc),
+        ],
+    )
+    items = (
+        row_table(
+            title="Auto-Roll Windows",
+            columns=("Market", "Decision", "Resolution", "PnL"),
+            rows=(
+                (
+                    item.market_slug,
+                    item.decision,
+                    item.resolution_result,
+                    item.realized_pnl_usdc,
+                )
+                for item in response.run.items
+            ),
+        )
+        if response.run.items
+        else empty_message("No auto-roll evaluations were produced.")
+    )
+    return section_panel("BTC15m Auto-Roll", render_group(summary, items))
 
 
 def _format_report(response: Btc15mReportResponse) -> str:

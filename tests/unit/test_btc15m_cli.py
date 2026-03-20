@@ -8,12 +8,18 @@ from typer.testing import CliRunner
 
 from pm.cli.app import app
 from pm.strategy import (
+    Btc15mAutoRollResponse,
+    Btc15mAutoRollRunRecord,
     Btc15mCampaignNextWindowResponse,
     Btc15mCampaignReportResponse,
     Btc15mCampaignReportSummary,
     Btc15mCampaignRunRecord,
     Btc15mCampaignRunResponse,
+    Btc15mDashboardResponse,
+    Btc15mDashboardRungState,
+    Btc15mDashboardSnapshotRecord,
     Btc15mLiquiditySampleResponse,
+    Btc15mLiveResponse,
     Btc15mPaperEvaluation,
     Btc15mPaperRunRecord,
     Btc15mPaperRunResponse,
@@ -23,6 +29,7 @@ from pm.strategy import (
     Btc15mReplayResponse,
     Btc15mReportResponse,
     Btc15mReportSummary,
+    Btc15mResolveCurrentResponse,
     Btc15mWindowIdentity,
     Btc15mWindowRecord,
 )
@@ -67,6 +74,105 @@ class FakeBtc15mStrategyService:
                 to_at="2026-03-20T00:00:00Z",
                 items=[_evaluation()],
                 total=1,
+                errors=[],
+            )
+        )
+
+    def resolve_current(self) -> Btc15mResolveCurrentResponse:
+        return Btc15mResolveCurrentResponse(
+            checked_at="2026-03-20T10:36:00Z",
+            timing_source="slug_timestamp",
+            selection_source="current_exact",
+            status="live",
+            seconds_to_start=0,
+            seconds_to_end=540,
+            window=_window_record().window,
+            errors=[],
+        )
+
+    def live_current(
+        self,
+        *,
+        mode: str = "paper",
+        hours: str | None = None,
+    ) -> Btc15mLiveResponse:
+        return Btc15mLiveResponse(
+            run_id="live-1",
+            started_at="2026-03-20T10:36:00Z",
+            ended_at="2026-03-20T10:45:30Z",
+            mode=mode,
+            requested_hours=hours,
+            stop_reason="completed_current_window",
+            window=_window_record().window,
+            evaluation=_evaluation(),
+            errors=[],
+        )
+
+    def dashboard_current(
+        self,
+        *,
+        seconds: int = 30,
+        on_snapshot=None,
+    ) -> Btc15mDashboardResponse:
+        snapshot = Btc15mDashboardSnapshotRecord(
+            snapshot_id="snapshot-1",
+            session_id="dashboard-1",
+            window_id="btc15m:window-1",
+            market_slug="btc-updown-15m-1774002600",
+            sampled_at="2026-03-20T10:36:00Z",
+            window_status="current_monitor",
+            window_start_at="2026-03-20T10:30:00Z",
+            window_end_at="2026-03-20T10:45:00Z",
+            current_chainlink_price="100",
+            current_binance_price="100.1",
+            start_price_proxy_v1="99.5",
+            direction_lock_status="UP",
+            current_midpoint="0.28",
+            current_spread="0.03",
+            visible_liquidity_030="80",
+            visible_liquidity_020="100",
+            visible_liquidity_010="200",
+            manipulation_flags=[],
+            rungs=[
+                Btc15mDashboardRungState(price="0.30", state="armed", visible_liquidity="80"),
+                Btc15mDashboardRungState(price="0.20", state="armed", visible_liquidity="100"),
+                Btc15mDashboardRungState(price="0.10", state="armed", visible_liquidity="200"),
+            ],
+            errors=[],
+        )
+        if on_snapshot is not None:
+            on_snapshot(snapshot)
+        return Btc15mDashboardResponse(
+            session_id="dashboard-1",
+            started_at="2026-03-20T10:36:00Z",
+            ended_at="2026-03-20T10:36:30Z",
+            requested_seconds=seconds,
+            window=_window_record().window,
+            total_snapshots=1,
+            latest_snapshot=snapshot,
+            latest_evaluation=None,
+            errors=[],
+        )
+
+    def auto_roll(
+        self,
+        *,
+        hours: str,
+        mode: str = "paper",
+    ) -> Btc15mAutoRollResponse:
+        return Btc15mAutoRollResponse(
+            run=Btc15mAutoRollRunRecord(
+                run_id="auto-roll-1",
+                created_at="2026-03-20T10:36:00Z",
+                started_at="2026-03-20T10:36:00Z",
+                ended_at="2026-03-20T12:36:00Z",
+                requested_hours=hours,
+                mode=mode,
+                stop_reason="insufficient_remaining_time",
+                items=[],
+                total_windows=0,
+                total_skipped=0,
+                total_realized_pnl_usdc="0",
                 errors=[],
             )
         )
@@ -221,6 +327,47 @@ def test_btc15m_json_commands(monkeypatch) -> None:
             "--json",
         ],
     )
+    resolve_current_result = runner.invoke(
+        app,
+        ["strategy", "btc15m", "resolve-current", "--json"],
+    )
+    live_result = runner.invoke(
+        app,
+        [
+            "strategy",
+            "btc15m",
+            "live",
+            "--current",
+            "--mode",
+            "paper",
+            "--json",
+        ],
+    )
+    dashboard_result = runner.invoke(
+        app,
+        [
+            "strategy",
+            "btc15m",
+            "dashboard",
+            "--current",
+            "--seconds",
+            "1",
+            "--json",
+        ],
+    )
+    auto_roll_result = runner.invoke(
+        app,
+        [
+            "strategy",
+            "btc15m",
+            "auto-roll",
+            "--hours",
+            "2",
+            "--mode",
+            "paper",
+            "--json",
+        ],
+    )
     paper_result = runner.invoke(
         app,
         [
@@ -276,6 +423,16 @@ def test_btc15m_json_commands(monkeypatch) -> None:
     assert json.loads(record_result.stdout)["total"] == 1
     assert replay_result.exit_code == 0
     assert json.loads(replay_result.stdout)["replay"]["total"] == 1
+    assert resolve_current_result.exit_code == 0
+    assert json.loads(resolve_current_result.stdout)["window"]["market_slug"] == "btc-15m-up-down-1"
+    assert live_result.exit_code == 0
+    assert json.loads(live_result.stdout)["stop_reason"] == "completed_current_window"
+    assert dashboard_result.exit_code == 0
+    dashboard_payload = json.loads(dashboard_result.stdout)
+    assert dashboard_payload["latest_snapshot"]["market_slug"] == "btc-updown-15m-1774002600"
+    assert auto_roll_result.exit_code == 0
+    auto_roll_payload = json.loads(auto_roll_result.stdout)
+    assert auto_roll_payload["run"]["stop_reason"] == "insufficient_remaining_time"
     assert paper_result.exit_code == 0
     assert json.loads(paper_result.stdout)["run"]["target_slug"] == "btc-15m-up-down-1"
     assert json.loads(paper_result.stdout)["run"]["total_evaluated"] == 1

@@ -23,9 +23,11 @@ from pm.market.models import (
     RecurringMarketCandidate,
 )
 from pm.strategy import (
+    AUTO_ROLL_RUNS_FILENAME,
     BOUNDARY_DECISIONS_FILENAME,
     BOUNDARY_OBSERVATIONS_FILENAME,
     CAMPAIGN_RUNS_FILENAME,
+    DASHBOARD_SNAPSHOTS_FILENAME,
     LIQUIDITY_SAMPLES_FILENAME,
     PAPER_RUNS_FILENAME,
     REPLAYS_FILENAME,
@@ -289,6 +291,8 @@ def _service(
             paper_runs_path=tmp_path / PAPER_RUNS_FILENAME,
             liquidity_samples_path=tmp_path / LIQUIDITY_SAMPLES_FILENAME,
             campaign_runs_path=tmp_path / CAMPAIGN_RUNS_FILENAME,
+            dashboard_snapshots_path=tmp_path / DASHBOARD_SNAPSHOTS_FILENAME,
+            auto_roll_runs_path=tmp_path / AUTO_ROLL_RUNS_FILENAME,
         ),
         market_intel_service=FakeMarketIntelService(resolved_market_intel_candidate),
         market_client=FakeMarketClient(_market_events()),
@@ -471,6 +475,57 @@ def test_campaign_slug_path_targets_single_window(tmp_path) -> None:
     assert result.campaign.total_windows == 1
 
 
+def test_slug_timing_overrides_conflicting_gamma_timing(tmp_path) -> None:
+    candidate = _candidate(COND_1, "btc-updown-15m-1774002600")
+    search_candidate = GammaSearchCandidate(
+        market=_normalized_market(candidate),
+        search_index=0,
+        start_date="2026-03-20T10:00:00Z",
+        end_date="2026-03-20T10:15:00Z",
+        resolution_date="2026-03-20T10:15:00Z",
+    )
+    service = _service(
+        tmp_path,
+        now=_dt("2026-03-20T10:31:00Z"),
+        candidate=candidate,
+        search_candidate=search_candidate,
+    )
+
+    resolved = service._resolve_window_by_slug(candidate.market_slug)  # type: ignore[attr-defined]
+
+    assert resolved.window.window_start_at == "2026-03-20T10:30:00Z"
+    assert resolved.window.window_end_at == "2026-03-20T10:45:00Z"
+    assert resolved.window.slug_start_unix == 1774002600
+    assert resolved.window.timing_source == "slug_timestamp"
+    assert resolved.window.timing_notes
+
+
+def test_resolve_current_uses_exact_slug_bucket(tmp_path) -> None:
+    candidate = _candidate(COND_1, "btc-updown-15m-1774002600")
+    service = _service(
+        tmp_path,
+        now=_dt("2026-03-20T10:36:00Z"),
+        candidate=candidate,
+    )
+
+    result = service.resolve_current()
+
+    assert result.window is not None
+    assert result.window.market_slug == candidate.market_slug
+    assert result.status == "live"
+    assert result.timing_source == "slug_timestamp"
+    assert result.seconds_to_end == 540
+
+
+def test_resolve_current_no_candidate_includes_hint(tmp_path) -> None:
+    service = _service(tmp_path, now=_dt("2026-03-20T10:36:00Z"))
+    FakeGammaClient.market = None
+    FakeGammaClient.candidate = None
+
+    with pytest.raises(Exception, match="No live BTC 15m current-window candidate was found."):
+        service.resolve_current()
+
+
 def test_boundary_capture_uses_first_tick_at_or_after_t0(tmp_path) -> None:
     chainlink_events = [
         _crypto_event("chainlink", "2026-03-18T23:59:59Z", 99),
@@ -511,6 +566,38 @@ def test_missing_post_start_tick_within_grace_yields_partial_skip(tmp_path) -> N
     latest_window = service._state.list_windows()[-1]  # type: ignore[attr-defined]
     assert latest_window.boundary_status == "partial"
     assert latest_window.start_price_proxy_v1 is None
+
+
+def test_dashboard_current_persists_snapshot(tmp_path) -> None:
+    candidate = _candidate(COND_1, "btc-updown-15m-1774002600")
+    service = _service(
+        tmp_path,
+        now=_dt("2026-03-20T10:36:00Z"),
+        candidate=candidate,
+        chainlink_events=[_crypto_event("chainlink", "2026-03-20T10:36:00Z", 101)],
+        binance_events=[_crypto_event("binance", "2026-03-20T10:36:00Z", 101)],
+    )
+
+    result = service.dashboard_current(seconds=1)
+
+    assert result.total_snapshots == 1
+    assert result.latest_snapshot is not None
+    assert result.latest_snapshot.market_slug == candidate.market_slug
+    assert len(service._state.list_dashboard_snapshots()) == 1  # type: ignore[attr-defined]
+
+
+def test_auto_roll_returns_insufficient_remaining_time(tmp_path) -> None:
+    candidate = _candidate(COND_1, "btc-updown-15m-1774002600")
+    service = _service(
+        tmp_path,
+        now=_dt("2026-03-20T10:36:00Z"),
+        candidate=candidate,
+    )
+
+    result = service.auto_roll(hours="0.01", mode="paper")
+
+    assert result.run.stop_reason == "insufficient_remaining_time"
+    assert service._state.list_auto_roll_runs()[-1].run_id == result.run.run_id  # type: ignore[attr-defined]
 
 
 def test_recurring_resolution_falls_back_to_tolerant_gamma_search(tmp_path) -> None:

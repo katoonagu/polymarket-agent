@@ -1,6 +1,8 @@
 """Strategy registry, review, and dispatch package exports."""
 
 from pm.strategy.btc15m_models import (
+    Btc15mAutoRollResponse,
+    Btc15mAutoRollRunRecord,
     Btc15mBoundaryDecisionRecord,
     Btc15mBoundaryObservationRecord,
     Btc15mCampaignNextWindowResponse,
@@ -8,9 +10,13 @@ from pm.strategy.btc15m_models import (
     Btc15mCampaignReportSummary,
     Btc15mCampaignRunRecord,
     Btc15mCampaignRunResponse,
+    Btc15mDashboardResponse,
+    Btc15mDashboardRungState,
+    Btc15mDashboardSnapshotRecord,
     Btc15mLadderRungResult,
     Btc15mLiquiditySampleRecord,
     Btc15mLiquiditySampleResponse,
+    Btc15mLiveResponse,
     Btc15mMarketSample,
     Btc15mPaperEvaluation,
     Btc15mPaperRunRecord,
@@ -25,6 +31,7 @@ from pm.strategy.btc15m_models import (
     Btc15mReplayResponse,
     Btc15mReportResponse,
     Btc15mReportSummary,
+    Btc15mResolveCurrentResponse,
     Btc15mRunMode,
     Btc15mSectionError,
     Btc15mTimingControls,
@@ -33,9 +40,11 @@ from pm.strategy.btc15m_models import (
 )
 from pm.strategy.btc15m_service import Btc15mStrategyService, Btc15mValidationError
 from pm.strategy.btc15m_state import (
+    AUTO_ROLL_RUNS_FILENAME,
     BOUNDARY_DECISIONS_FILENAME,
     BOUNDARY_OBSERVATIONS_FILENAME,
     CAMPAIGN_RUNS_FILENAME,
+    DASHBOARD_SNAPSHOTS_FILENAME,
     LIQUIDITY_SAMPLES_FILENAME,
     PAPER_RUNS_FILENAME,
     REPLAYS_FILENAME,
@@ -95,8 +104,11 @@ from pm.strategy.state import (
 )
 
 __all__ = [
+    "AUTO_ROLL_RUNS_FILENAME",
     "BOUNDARY_DECISIONS_FILENAME",
     "BOUNDARY_OBSERVATIONS_FILENAME",
+    "Btc15mAutoRollResponse",
+    "Btc15mAutoRollRunRecord",
     "Btc15mBoundaryDecisionRecord",
     "Btc15mBoundaryObservationRecord",
     "Btc15mCampaignNextWindowResponse",
@@ -104,7 +116,11 @@ __all__ = [
     "Btc15mCampaignReportSummary",
     "Btc15mCampaignRunRecord",
     "Btc15mCampaignRunResponse",
+    "Btc15mDashboardResponse",
+    "Btc15mDashboardRungState",
+    "Btc15mDashboardSnapshotRecord",
     "Btc15mLadderRungResult",
+    "Btc15mLiveResponse",
     "Btc15mLiquiditySampleRecord",
     "Btc15mLiquiditySampleResponse",
     "Btc15mMarketSample",
@@ -119,6 +135,7 @@ __all__ = [
     "Btc15mRecordWindowResponse",
     "Btc15mReplayRecord",
     "Btc15mReplayResponse",
+    "Btc15mResolveCurrentResponse",
     "Btc15mReportResponse",
     "Btc15mReportSummary",
     "Btc15mRunMode",
@@ -131,6 +148,7 @@ __all__ = [
     "Btc15mWindowIdentity",
     "Btc15mWindowRecord",
     "CAMPAIGN_RUNS_FILENAME",
+    "DASHBOARD_SNAPSHOTS_FILENAME",
     "DECISIONS_FILENAME",
     "DISPATCH_RESULTS_FILENAME",
     "EXECUTION_LINKS_FILENAME",
