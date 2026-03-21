@@ -59,6 +59,7 @@ from pm.strategy.btc15m_models import (
     Btc15mResolveCurrentResponse,
     Btc15mRunMode,
     Btc15mSectionError,
+    Btc15mTerminalDisplayTruth,
     Btc15mTerminalEventRecord,
     Btc15mTerminalReplayResponse,
     Btc15mTerminalReportResponse,
@@ -227,6 +228,7 @@ class _TerminalRuntime:
     market_volume: str | None = None
     last_market_context_refresh_at: datetime | None = None
     last_page_parity_refresh_at: datetime | None = None
+    current_market: NormalizedMarket | None = None
     page_parity_fallback: Btc15mPageParityData | None = None
     manipulation_flags: list[str] = field(default_factory=list)
     skip_reasons: list[str] = field(default_factory=list)
@@ -2084,6 +2086,7 @@ class Btc15mStrategyService:
         runtime.first_fill_at = None
         runtime.last_market_context_refresh_at = None
         runtime.last_page_parity_refresh_at = None
+        runtime.current_market = None
         runtime.page_parity_fallback = None
         runtime.current_window_snapshots = 0
         runtime.window_started_at_dt = self._now()
@@ -2190,6 +2193,20 @@ class Btc15mStrategyService:
             return True
         next_resolved = current.resolved
         if next_resolved.window.window_id == runtime.resolved.window.window_id:
+            if runtime.resolved.window_start_dt is not None:
+                direct_next = self._resolve_window_by_bucket_start(
+                    runtime.resolved.window_start_dt + WINDOW_DURATION,
+                    selection_source="next_exact",
+                )
+                if direct_next is not None:
+                    self._switch_terminal_runtime_to_window(
+                        runtime,
+                        direct_next,
+                        observe_only=False,
+                    )
+                    runtime.stop_reason = "running"
+                    self._update_terminal_state(runtime, self._now())
+                    return True
             runtime.state = Btc15mTerminalState.WAITING_FOR_NEXT_WINDOW
             runtime.observe_only = True
             runtime.wait_next_target_start_dt = (
@@ -2341,6 +2358,7 @@ class Btc15mStrategyService:
         if runtime.page_parity_fallback is not None and not refresh_due:
             return
         market = self._get_market_by_slug_or_none(runtime.resolved.window.market_slug)
+        runtime.current_market = market
         if market is None:
             runtime.page_parity_fallback = Btc15mPageParityData(
                 notes=["market_lookup_unavailable"],
@@ -2938,10 +2956,10 @@ class Btc15mStrategyService:
         current_binance_price = (
             runtime.binance_ticks[-1].value if runtime.binance_ticks else None
         )
-        page_parity = self._terminal_page_parity_fields(
+        display = self._build_terminal_display_truth(
             runtime,
+            countdown_seconds=countdown,
             current_chainlink_price=current_chainlink_price,
-            current_binance_price=current_binance_price,
             up_level=up_level,
             down_level=down_level,
         )
@@ -2960,17 +2978,18 @@ class Btc15mStrategyService:
             window_start_at=runtime.resolved.window.window_start_at,
             window_end_at=runtime.resolved.window.window_end_at,
             countdown_seconds=countdown,
-            current_window_label=page_parity["current_window_label"],
-            page_parity_source=page_parity["page_parity_source"],
-            page_parity_url=page_parity["page_parity_url"],
-            current_live_btc_price=page_parity["current_live_btc_price"],
-            up_price=page_parity["up_price"],
-            down_price=page_parity["down_price"],
+            display=display,
+            current_window_label=display.display_window_label,
+            page_parity_source=display.display_source,
+            page_parity_url=display.display_url,
+            current_live_btc_price=display.display_current_btc,
+            up_price=display.display_up_price,
+            down_price=display.display_down_price,
             selected_side=runtime.selected_side,
             current_chainlink_price=current_chainlink_price,
             current_binance_price=current_binance_price,
             start_price_proxy_v1=runtime.start_price_proxy_v1,
-            price_to_beat=page_parity["price_to_beat"],
+            price_to_beat=display.display_price_to_beat,
             direction_lock_status=(
                 runtime.selected_side if runtime.selected_side is not None else runtime.state.value
             ),
@@ -3011,8 +3030,20 @@ class Btc15mStrategyService:
             ),
             manipulation_flags=sorted(set(runtime.manipulation_flags + runtime.skip_reasons)),
             polymarket_levels=(latest_liquidity.polymarket if latest_liquidity is not None else []),
-            up_side=_dashboard_side_state(up_level),
-            down_side=_dashboard_side_state(down_level),
+            up_side=_dashboard_side_state(
+                up_level,
+                last_trade_price=_latest_market_sample_last_trade_price(
+                    runtime.market_samples,
+                    up_level.token_id if up_level is not None else None,
+                ),
+            ),
+            down_side=_dashboard_side_state(
+                down_level,
+                last_trade_price=_latest_market_sample_last_trade_price(
+                    runtime.market_samples,
+                    down_level.token_id if down_level is not None else None,
+                ),
+            ),
             rungs=[
                 Btc15mDashboardRungState(
                     price=_decimal_text(item.price),
@@ -3040,71 +3071,101 @@ class Btc15mStrategyService:
             + (latest_liquidity.errors if latest_liquidity is not None else []),
         )
 
-    def _terminal_page_parity_fields(
+    def _build_terminal_display_truth(
         self,
         runtime: _TerminalRuntime,
         *,
+        countdown_seconds: int | None,
         current_chainlink_price: str | None,
-        current_binance_price: str | None,
         up_level: Btc15mPolymarketLiquidityLevel | None,
         down_level: Btc15mPolymarketLiquidityLevel | None,
-    ) -> dict[str, str | None]:
+    ) -> Btc15mTerminalDisplayTruth:
         fallback = runtime.page_parity_fallback or Btc15mPageParityData()
-        api_label = _window_label(runtime.resolved.window)
-        api_up_price = _coalesce_price(
-            up_level.midpoint if up_level is not None else None,
-            up_level.best_ask if up_level is not None else None,
-            up_level.best_bid if up_level is not None else None,
+        notes = list(fallback.notes)
+        market = runtime.current_market
+        if market is None:
+            market = self._get_market_by_slug_or_none(runtime.resolved.window.market_slug)
+            runtime.current_market = market
+        persisted_display = self._latest_persisted_terminal_display(runtime)
+        display_window_label = fallback.current_window_label or _window_label(
+            runtime.resolved.window
         )
-        api_down_price = _coalesce_price(
-            down_level.midpoint if down_level is not None else None,
-            down_level.best_ask if down_level is not None else None,
-            down_level.best_bid if down_level is not None else None,
-        )
-        values = {
-            "current_window_label": api_label or fallback.current_window_label,
-            "price_to_beat": runtime.start_price_proxy_v1 or fallback.price_to_beat,
-            "current_live_btc_price": (
-                fallback.current_live_btc_price
-                or current_chainlink_price
-                or current_binance_price
-            ),
-            "up_price": api_up_price or fallback.up_price,
-            "down_price": api_down_price or fallback.down_price,
-            "page_parity_url": fallback.event_url,
-        }
-        api_used = any(
-            value is not None
-            for value in (
-                api_label,
-                runtime.start_price_proxy_v1,
-                current_chainlink_price,
-                api_up_price,
-                api_down_price,
-            )
-        )
-        fallback_used = any(
-            (
-                (api_label is None and fallback.current_window_label is not None),
-                (runtime.start_price_proxy_v1 is None and fallback.price_to_beat is not None),
-                (
-                    current_chainlink_price is None
-                    and current_binance_price is None
-                    and fallback.current_live_btc_price is not None
-                ),
-                (api_up_price is None and fallback.up_price is not None),
-                (api_down_price is None and fallback.down_price is not None),
-            )
-        )
-        if api_used and fallback_used:
-            values["page_parity_source"] = "mixed"
-        elif fallback_used:
-            values["page_parity_source"] = "page_fallback"
-        elif api_used:
-            values["page_parity_source"] = "api"
+        display_price_to_beat = fallback.price_to_beat
+        if display_price_to_beat is None and market is not None:
+            display_price_to_beat = _extract_display_price_to_beat_from_market(market)
+            if display_price_to_beat is not None:
+                notes.append("price_to_beat_market_text_fallback")
+        display_current_btc = fallback.current_live_btc_price or current_chainlink_price
+        if fallback.current_live_btc_price is None and current_chainlink_price is not None:
+            notes.append("current_btc_chainlink_fallback")
+        display_up_price = fallback.up_price
+        display_down_price = fallback.down_price
+        if display_up_price is not None and display_down_price is not None:
+            display_source = "page_exact"
         else:
-            values["page_parity_source"] = "unavailable"
-        return values
+            up_source = None
+            down_source = None
+            if display_up_price is None:
+                display_up_price, up_source = _emulate_terminal_display_price(
+                    up_level,
+                    market_samples=runtime.market_samples,
+                    persisted_value=(
+                        persisted_display.display_up_price
+                        if persisted_display is not None
+                        else None
+                    ),
+                    side_name="up",
+                    notes=notes,
+                )
+            if display_down_price is None:
+                display_down_price, down_source = _emulate_terminal_display_price(
+                    down_level,
+                    market_samples=runtime.market_samples,
+                    persisted_value=(
+                        persisted_display.display_down_price
+                        if persisted_display is not None
+                        else None
+                    ),
+                    side_name="down",
+                    notes=notes,
+                )
+            display_source = _display_source_from_modes(
+                up_source,
+                down_source,
+                has_display_context=any(
+                    value is not None
+                    for value in (
+                        display_window_label,
+                        display_price_to_beat,
+                        display_current_btc,
+                        display_up_price,
+                        display_down_price,
+                    )
+                ),
+            )
+        return Btc15mTerminalDisplayTruth(
+            display_price_to_beat=display_price_to_beat,
+            display_current_btc=display_current_btc,
+            display_up_price=display_up_price,
+            display_down_price=display_down_price,
+            display_countdown=_format_terminal_countdown(countdown_seconds),
+            display_source=display_source,
+            display_window_label=display_window_label,
+            display_url=fallback.event_url or _market_page_url(market),
+            display_notes=notes,
+        )
+
+    def _latest_persisted_terminal_display(
+        self,
+        runtime: _TerminalRuntime,
+    ) -> Btc15mTerminalDisplayTruth | None:
+        if runtime.latest_snapshot is not None:
+            return _snapshot_display_truth(runtime.latest_snapshot)
+        for item in reversed(self._state.list_dashboard_snapshots()):
+            if item.window_id != runtime.resolved.window.window_id:
+                continue
+            return _snapshot_display_truth(item)
+        return None
 
     def _build_terminal_boundary_decision(
         self,
@@ -3214,6 +3275,7 @@ class Btc15mStrategyService:
                 )
         total_quantity, total_cost, avg_entry = _terminal_position_summary(runtime.rungs)
         latest_snapshot = runtime.latest_snapshot
+        latest_display = _snapshot_display_truth(latest_snapshot)
         tear_sheet = Btc15mTerminalWindowTearSheet(
             window=runtime.resolved.window,
             started_at=_isoformat(runtime.window_started_at_dt or runtime.started_at_dt),
@@ -3224,21 +3286,24 @@ class Btc15mStrategyService:
             stop_reason=runtime.stop_reason,
             final_state=runtime.state,
             boundary_status=runtime.boundary_status,
+            display=latest_display,
             current_window_label=(
-                latest_snapshot.current_window_label if latest_snapshot is not None else None
+                latest_display.display_window_label if latest_display is not None else None
             ),
             page_parity_source=(
-                latest_snapshot.page_parity_source if latest_snapshot is not None else None
+                latest_display.display_source if latest_display is not None else None
             ),
             page_parity_url=(
-                latest_snapshot.page_parity_url if latest_snapshot is not None else None
+                latest_display.display_url if latest_display is not None else None
             ),
-            price_to_beat=latest_snapshot.price_to_beat if latest_snapshot is not None else None,
+            price_to_beat=(
+                latest_display.display_price_to_beat if latest_display is not None else None
+            ),
             current_live_btc_price=(
-                latest_snapshot.current_live_btc_price if latest_snapshot is not None else None
+                latest_display.display_current_btc if latest_display is not None else None
             ),
-            up_price=latest_snapshot.up_price if latest_snapshot is not None else None,
-            down_price=latest_snapshot.down_price if latest_snapshot is not None else None,
+            up_price=latest_display.display_up_price if latest_display is not None else None,
+            down_price=latest_display.display_down_price if latest_display is not None else None,
             selected_side=runtime.selected_side,
             target_token_id=runtime.target_token_id,
             target_outcome=runtime.target_outcome,
@@ -3299,6 +3364,7 @@ class Btc15mStrategyService:
                 if latest_window is not None
                 else runtime.boundary_status
             ),
+            display=latest_window.display if latest_window is not None else None,
             current_window_label=(
                 latest_window.current_window_label if latest_window is not None else None
             ),
@@ -3745,6 +3811,7 @@ class Btc15mStrategyService:
                     best_ask=event.market_event.best_ask,
                     midpoint=event.market_event.midpoint,
                     spread=event.market_event.spread,
+                    last_trade_price=event.market_event.price,
                     bids=event.market_event.bids,
                     asks=event.market_event.asks,
                 )
@@ -4955,6 +5022,8 @@ def _polymarket_level_by_outcome(
 
 def _dashboard_side_state(
     level: Btc15mPolymarketLiquidityLevel | None,
+    *,
+    last_trade_price: str | None = None,
 ) -> Btc15mDashboardSideState | None:
     if level is None:
         return None
@@ -4965,10 +5034,154 @@ def _dashboard_side_state(
         best_ask=level.best_ask,
         midpoint=level.midpoint,
         spread=level.spread,
+        last_trade_price=last_trade_price,
         visible_liquidity_030=level.visible_liquidity_030,
         visible_liquidity_020=level.visible_liquidity_020,
         visible_liquidity_010=level.visible_liquidity_010,
     )
+
+
+def _snapshot_display_truth(
+    snapshot: Btc15mDashboardSnapshotRecord | None,
+) -> Btc15mTerminalDisplayTruth | None:
+    if snapshot is None:
+        return None
+    if snapshot.display is not None:
+        return snapshot.display
+    return Btc15mTerminalDisplayTruth(
+        display_price_to_beat=snapshot.price_to_beat,
+        display_current_btc=snapshot.current_live_btc_price,
+        display_up_price=snapshot.up_price,
+        display_down_price=snapshot.down_price,
+        display_countdown=_format_terminal_countdown(snapshot.countdown_seconds),
+        display_source=snapshot.page_parity_source,
+        display_window_label=snapshot.current_window_label,
+        display_url=snapshot.page_parity_url,
+        display_notes=[],
+    )
+
+
+def _format_terminal_countdown(countdown_seconds: int | None) -> str | None:
+    if countdown_seconds is None:
+        return None
+    if countdown_seconds < 0:
+        countdown_seconds = 0
+    hours, remainder = divmod(countdown_seconds, 3600)
+    minutes, seconds = divmod(remainder, 60)
+    if hours:
+        return f"{hours:02d}:{minutes:02d}:{seconds:02d}"
+    return f"{minutes:02d}:{seconds:02d}"
+
+
+def _market_page_url(market: NormalizedMarket | None) -> str | None:
+    if market is None:
+        return None
+    return f"https://polymarket.com/market/{market.market_slug}"
+
+
+def _extract_display_price_to_beat_from_market(market: NormalizedMarket) -> str | None:
+    for text in (market.question, market.event_title or "", market.event_slug or ""):
+        parsed = _extract_display_price_to_beat_from_text(text)
+        if parsed is not None:
+            return parsed
+    return None
+
+
+def _extract_display_price_to_beat_from_text(text: str) -> str | None:
+    patterns = (
+        re.compile(r"price\s+to\s+beat[^0-9$]*\$?(?P<value>[0-9][0-9,\.]*)", re.I),
+        re.compile(r"\b(?:above|below)\b[^0-9$]{0,12}\$?(?P<value>[0-9][0-9,\.]*)", re.I),
+        re.compile(r"\$?(?P<value>[0-9][0-9,\.]*)[^a-z0-9]{0,8}(?:or higher|or lower)", re.I),
+    )
+    for pattern in patterns:
+        match = pattern.search(text)
+        if match is None:
+            continue
+        return match.group("value").replace(",", "")
+    return None
+
+
+def _latest_market_sample_last_trade_price(
+    market_samples: list[Btc15mMarketSample],
+    token_id: str | None,
+) -> str | None:
+    if token_id is None:
+        return None
+    for item in reversed(market_samples):
+        if item.token_id != token_id:
+            continue
+        if item.event_type == "last_trade_price" and item.last_trade_price is not None:
+            return item.last_trade_price
+    return None
+
+
+def _display_price_emulation_source(
+    level: Btc15mPolymarketLiquidityLevel | None,
+) -> Decimal | None:
+    if level is None:
+        return None
+    spread = _decimal_optional(level.spread)
+    if spread is not None:
+        return spread
+    bid = _decimal_optional(level.best_bid)
+    ask = _decimal_optional(level.best_ask)
+    if bid is None or ask is None:
+        return None
+    return ask - bid
+
+
+def _emulate_terminal_display_price(
+    level: Btc15mPolymarketLiquidityLevel | None,
+    *,
+    market_samples: list[Btc15mMarketSample],
+    persisted_value: str | None,
+    side_name: str,
+    notes: list[str],
+) -> tuple[str | None, str | None]:
+    if level is None:
+        if persisted_value is not None:
+            notes.append(f"{side_name}_display_reused_persisted")
+            return persisted_value, "degraded"
+        notes.append(f"{side_name}_display_level_unavailable")
+        return None, "degraded"
+    spread = _display_price_emulation_source(level)
+    if spread is not None and spread <= Decimal("0.10"):
+        midpoint = _coalesce_price(
+            level.midpoint,
+            _midpoint_optional_text(level.best_bid, level.best_ask),
+        )
+        if midpoint is not None:
+            return midpoint, "emulated_midpoint"
+    if spread is not None and spread > Decimal("0.10"):
+        last_trade_price = _latest_market_sample_last_trade_price(market_samples, level.token_id)
+        if last_trade_price is not None:
+            return last_trade_price, "emulated_last_trade"
+        if persisted_value is not None:
+            notes.append(f"{side_name}_display_reused_persisted")
+            return persisted_value, "degraded"
+        notes.append(f"{side_name}_display_last_trade_unavailable")
+        return None, "degraded"
+    if persisted_value is not None:
+        notes.append(f"{side_name}_display_reused_persisted")
+        return persisted_value, "degraded"
+    notes.append(f"{side_name}_display_spread_unavailable")
+    return None, "degraded"
+
+
+def _display_source_from_modes(
+    *modes: str | None,
+    has_display_context: bool,
+) -> str:
+    normalized = {mode for mode in modes if mode is not None}
+    if "degraded" in normalized:
+        return "degraded"
+    if "emulated_last_trade" in normalized:
+        return "emulated_last_trade"
+    if "emulated_midpoint" in normalized:
+        return "emulated_midpoint"
+    if has_display_context:
+        return "degraded"
+    return "unavailable"
 
 
 def _binance_near_touch_imbalance(snapshot: Any | None) -> str | None:

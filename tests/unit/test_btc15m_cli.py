@@ -7,6 +7,7 @@ import json
 from typer.testing import CliRunner
 
 from pm.cli.app import app
+from pm.cli.strategy_btc15m import _format_cents_label
 from pm.strategy import (
     Btc15mAutoRollResponse,
     Btc15mAutoRollRunRecord,
@@ -31,6 +32,7 @@ from pm.strategy import (
     Btc15mReportSummary,
     Btc15mResolveCurrentResponse,
     Btc15mRunMode,
+    Btc15mTerminalDisplayTruth,
     Btc15mTerminalReplayResponse,
     Btc15mTerminalReportResponse,
     Btc15mTerminalReportSummary,
@@ -131,6 +133,7 @@ class FakeBtc15mStrategyService:
             window_status="current_monitor",
             window_start_at="2026-03-20T10:30:00Z",
             window_end_at="2026-03-20T10:45:00Z",
+            display=_display_truth(),
             current_window_label="10:30 - 10:45 UTC",
             page_parity_source="api",
             current_live_btc_price="100",
@@ -240,6 +243,7 @@ class FakeBtc15mStrategyService:
                 ),
                 window=_window_record().window,
                 boundary_status="complete",
+                display=_display_truth(),
                 current_window_label="10:30 - 10:45 UTC",
                 page_parity_source="api",
                 price_to_beat="99.5",
@@ -265,6 +269,7 @@ class FakeBtc15mStrategyService:
                             else Btc15mTerminalState.RESOLVED
                         ),
                         boundary_status="complete",
+                        display=_display_truth(),
                         current_window_label="10:30 - 10:45 UTC",
                         page_parity_source="api",
                         price_to_beat="99.5",
@@ -337,6 +342,7 @@ class FakeBtc15mStrategyService:
             stop_reason="window_complete",
             final_state=Btc15mTerminalState.RESOLVED,
             window=_window_record().window,
+            display=_display_truth(),
             current_window_label="10:30 - 10:45 UTC",
             page_parity_source="api",
             price_to_beat="99.5",
@@ -358,6 +364,7 @@ class FakeBtc15mStrategyService:
                     stop_reason="window_complete",
                     final_state=Btc15mTerminalState.RESOLVED,
                     boundary_status="complete",
+                    display=_display_truth(),
                     current_window_label="10:30 - 10:45 UTC",
                     page_parity_source="api",
                     price_to_beat="99.5",
@@ -406,6 +413,7 @@ class FakeBtc15mStrategyService:
                 stop_reason="window_complete",
                 final_state=Btc15mTerminalState.RESOLVED,
                 window=_window_record().window,
+                display=_display_truth(),
                 current_window_label="10:30 - 10:45 UTC",
                 page_parity_source="api",
                 price_to_beat="99.5",
@@ -425,6 +433,7 @@ class FakeBtc15mStrategyService:
                         stop_reason="window_complete",
                         final_state=Btc15mTerminalState.RESOLVED,
                         boundary_status="complete",
+                        display=_display_truth(),
                         current_window_label="10:30 - 10:45 UTC",
                         page_parity_source="api",
                         price_to_beat="99.5",
@@ -467,6 +476,7 @@ class FakeBtc15mStrategyService:
                     stop_reason="window_complete",
                     final_state=Btc15mTerminalState.RESOLVED,
                     window=_window_record().window,
+                    display=_display_truth(),
                     current_window_label="10:30 - 10:45 UTC",
                     page_parity_source="api",
                     price_to_beat="99.5",
@@ -487,6 +497,7 @@ class FakeBtc15mStrategyService:
                             stop_reason="window_complete",
                             final_state=Btc15mTerminalState.RESOLVED,
                             boundary_status="complete",
+                            display=_display_truth(),
                             current_window_label="10:30 - 10:45 UTC",
                             page_parity_source="api",
                             price_to_beat="99.5",
@@ -514,6 +525,7 @@ class FakeBtc15mStrategyService:
                     stop_reason="window_complete",
                     final_state=Btc15mTerminalState.RESOLVED,
                     window=_window_record().window,
+                    display=_display_truth(),
                     current_window_label="10:30 - 10:45 UTC",
                     page_parity_source="api",
                     price_to_beat="99.5",
@@ -1016,6 +1028,7 @@ def test_btc15m_terminal_follow_current_json(monkeypatch) -> None:
     assert payload["latest_snapshot"]["current_window_label"] == "10:30 - 10:45 UTC"
     assert payload["latest_snapshot"]["up_price"] == "0.31"
     assert payload["latest_snapshot"]["down_price"] == "0.69"
+    assert payload["latest_snapshot"]["display"]["display_source"] == "page_exact"
 
 
 def test_btc15m_terminal_requires_exactly_one_session_target(monkeypatch) -> None:
@@ -1038,7 +1051,7 @@ def test_btc15m_terminal_human_mode_runs(monkeypatch) -> None:
 
     assert result.exit_code == 0
     assert "BTC15m Terminal" in result.stdout
-    assert "30c" in result.stdout
+    assert _format_cents_label("0.30") == "30¢"
 
 
 def _window_record() -> Btc15mWindowRecord:
@@ -1063,6 +1076,18 @@ def _window_record() -> Btc15mWindowRecord:
         decision="UP",
         decision_at="2026-03-19T00:05:00Z",
         resolution_result="UP",
+    )
+
+
+def _display_truth() -> Btc15mTerminalDisplayTruth:
+    return Btc15mTerminalDisplayTruth(
+        display_price_to_beat="99.5",
+        display_current_btc="100",
+        display_up_price="0.31",
+        display_down_price="0.69",
+        display_countdown="09:00",
+        display_source="page_exact",
+        display_window_label="10:30 - 10:45 UTC",
     )
 
 

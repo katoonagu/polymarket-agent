@@ -216,8 +216,12 @@ Define and validate the first market-specific recurring strategy track for BTC
   - dense BTC15m terminal session at `pm strategy btc15m terminal --follow-current`
   - current-window-first terminal behavior with automatic rollover across BTC15m
     slugs while the operator stays attached
-  - page-parity-first operator view with API-first Polymarket display fields and
-    lightweight public event-page fallback for missing visible fields
+  - explicit terminal display-truth layer separate from oracle and ladder state
+  - page-parity-first operator view with API-first Polymarket display fields,
+    slug-targeted public page fallback, and page-style midpoint-or-last-trade
+    emulation when exact visible prices are unavailable
+  - compact secondary Binance diagnostics with lower visual weight than the
+    primary Polymarket operator display
   - bounded terminal-session history and report surface with per-window tear
     sheets and session-level rolling logs
   - late-attach fallback into observe-only instead of immediate terminal death,

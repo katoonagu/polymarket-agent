@@ -156,8 +156,11 @@ Rules:
 - `campaign next-window --slug <market-slug>` and `campaign run --slug <market-slug>` target that exact market instead of relying on recurring discovery
 - `terminal --follow-current` is the canonical BTC15m operator session; `--current` remains a compatibility alias with the same current-window-first behavior
 - the terminal now prioritizes the live active BTC15m market immediately, keeps slug-first timing authoritative, and auto-rolls to the next slug while the operator stays attached
+- the terminal now keeps display truth separate from strategy truth: page-style `display_price_to_beat`, displayed BTC, displayed Up/Down prices, countdown, and source metadata are persisted independently from Chainlink boundary state, start proxies, and ladder state
 - the primary terminal screen is page-parity-first: price to beat, live BTC price, Up price, Down price, countdown, midpoint/spread, and visible liquidity are shown before Binance diagnostics
-- page parity is API-first with lightweight public event-page fallback only for missing visible fields; fallback failure is non-fatal
+- page parity is API-first by current slug, with lightweight public market-page fallback and page-style price emulation from public CLOB state when exact visible fields are missing
+- displayed Up/Down prices now prefer page truth, then emulate Polymarket display rules from public state: midpoint when spread is `<= 0.10`, otherwise latest public last-trade price; degraded empties or persisted display values are used when safe emulation is unavailable
+- Binance is now a secondary diagnostics strip and may collapse when page-truth display is healthy
 - late attach on `terminal --follow-current` now degrades into `OBSERVE_ONLY` instead of dying immediately when the start boundary is already unrecoverable, then continues forward into the next slug
 - `terminal --follow-current --observe-only` keeps the session attached for the rest of the active window without arming the ladder
 - `terminal --wait-next` watches the current tape, arms exactly one next BTC15m window when pre-start capture opens, writes a tear sheet, and exits
@@ -165,6 +168,7 @@ Rules:
 - `terminal --mode live --confirm` is the only BTC15m live execution surface on this branch and still requires inline per-action confirmation before posting or cancelling any rung
 - `terminal replay --session-id` replays persisted terminal snapshots only and does not call live market or oracle endpoints
 - `terminal report --session-id` returns one persisted tear sheet, while bare `terminal report` remains the aggregate history view
+- ladder labels in human terminal output are shown as `30¢ / 20¢ / 10¢`; JSON stays numeric as `0.30 / 0.20 / 0.10`
 - recorder artifacts persist under `.pm/state/` as dedicated BTC15m boundary, window, replay, liquidity-sample, campaign-run, and paper-run state
 - terminal summaries now persist under `.pm/state/btc-15m-chainlink-terminal-sessions.json`, while per-refresh rolling terminal snapshots reuse the BTC15m dashboard snapshot log with `view_kind="terminal"`
 - start and end boundaries persist the last Chainlink tick before or at the boundary and the first Chainlink tick at or after the boundary

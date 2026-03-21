@@ -34,7 +34,9 @@ from pm.strategy import (
     TERMINAL_SESSIONS_FILENAME,
     WINDOWS_FILENAME,
     Btc15mBoundaryDecisionRecord,
+    Btc15mDashboardSnapshotRecord,
     Btc15mLiquiditySampleRecord,
+    Btc15mMarketSample,
     Btc15mPaperRunRecord,
     Btc15mPolymarketLiquidityLevel,
     Btc15mRunMode,
@@ -363,6 +365,7 @@ def _service(
     search_candidate: GammaSearchCandidate | None = None,
     chainlink_events: list[CapturedStreamEvent] | None = None,
     binance_events: list[CapturedStreamEvent] | None = None,
+    market_events: list[CapturedStreamEvent] | None = None,
     market_intel_candidate: RecurringMarketCandidate | None | object = ...,
     order_lifecycle: FakeOrderLifecycle | None = None,
     page_parity_data: Btc15mPageParityData | None = None,
@@ -389,7 +392,7 @@ def _service(
             terminal_sessions_path=tmp_path / TERMINAL_SESSIONS_FILENAME,
         ),
         market_intel_service=FakeMarketIntelService(resolved_market_intel_candidate),
-        market_client=FakeMarketClient(_market_events()),
+        market_client=FakeMarketClient(market_events or _market_events()),
         crypto_client=FakeCryptoClient(
             chainlink_events=chainlink_events or _chainlink_events(),
             binance_events=binance_events or _binance_events(),
@@ -754,12 +757,130 @@ def test_terminal_snapshot_uses_page_parity_fallback_when_needed(tmp_path) -> No
     result = service.terminal_current(snapshot_only=True)
 
     assert result.latest_snapshot is not None
-    assert result.latest_snapshot.page_parity_source == "mixed"
-    assert result.latest_snapshot.current_window_label == "10:30 - 10:45 UTC"
+    assert result.latest_snapshot.display is not None
+    assert result.latest_snapshot.page_parity_source == "page_exact"
+    assert result.latest_snapshot.current_window_label == "BTC 15m active"
     assert result.latest_snapshot.current_live_btc_price == "101240.1"
-    assert result.latest_snapshot.up_price == "0.09"
-    assert result.latest_snapshot.down_price == "0.09"
+    assert result.latest_snapshot.up_price == "0.33"
+    assert result.latest_snapshot.down_price == "0.67"
     assert result.latest_snapshot.price_to_beat == "101234.5"
+    assert result.latest_snapshot.start_price_proxy_v1 != result.latest_snapshot.price_to_beat
+    assert result.latest_snapshot.display.display_price_to_beat == "101234.5"
+    assert result.latest_snapshot.display.display_source == "page_exact"
+
+
+def test_terminal_snapshot_emulates_display_prices_from_midpoint_when_spread_is_tight(
+    tmp_path,
+) -> None:
+    candidate = _candidate(COND_1, "btc-updown-15m-1774002600")
+    service = _service(
+        tmp_path,
+        now=_dt("2026-03-20T10:39:00Z"),
+        candidate=candidate,
+        chainlink_events=[_crypto_event("chainlink", "2026-03-20T10:39:00Z", 101)],
+        binance_events=[_crypto_event("binance", "2026-03-20T10:39:00Z", 102)],
+    )
+
+    result = service.terminal_current(snapshot_only=True)
+
+    assert result.latest_snapshot is not None
+    assert result.latest_snapshot.display is not None
+    assert result.latest_snapshot.display.display_source == "emulated_midpoint"
+    assert result.latest_snapshot.display.display_current_btc == "101"
+    assert result.latest_snapshot.display.display_up_price == "0.09"
+    assert result.latest_snapshot.display.display_down_price == "0.09"
+
+
+def test_terminal_snapshot_uses_last_trade_for_wide_spread_display(tmp_path) -> None:
+    candidate = _candidate(COND_1, "btc-updown-15m-1774002600")
+    service = _service(
+        tmp_path,
+        now=_dt("2026-03-20T10:39:00Z"),
+        candidate=candidate,
+    )
+    service._capture_liquidity_sample = lambda *args, **kwargs: _wide_liquidity_sample(  # type: ignore[attr-defined]
+        "btc15m:" + COND_1,
+        candidate.market_slug,
+    )
+    service._state.append_windows(  # type: ignore[attr-defined]
+        [
+            _window_record(
+                COND_1,
+                candidate.market_slug,
+                "2026-03-20T10:30:00Z",
+            ).model_copy(
+                update={
+                    "market_samples": [
+                        Btc15mMarketSample(
+                            token_id=TOKEN_UP,
+                            outcome="Up",
+                            event_type="last_trade_price",
+                            source="polymarket_market_ws",
+                            captured_at="2026-03-20T10:38:30Z",
+                            observed_at="2026-03-20T10:38:30Z",
+                            last_trade_price="0.29",
+                        ),
+                        Btc15mMarketSample(
+                            token_id=TOKEN_DOWN,
+                            outcome="Down",
+                            event_type="last_trade_price",
+                            source="polymarket_market_ws",
+                            captured_at="2026-03-20T10:38:31Z",
+                            observed_at="2026-03-20T10:38:31Z",
+                            last_trade_price="0.71",
+                        ),
+                    ]
+                }
+            )
+        ]
+    )
+
+    result = service.terminal_current(snapshot_only=True)
+
+    assert result.latest_snapshot is not None
+    assert result.latest_snapshot.display is not None
+    assert result.latest_snapshot.display.display_source == "emulated_last_trade"
+    assert result.latest_snapshot.display.display_up_price == "0.29"
+    assert result.latest_snapshot.display.display_down_price == "0.71"
+
+
+def test_terminal_snapshot_degrades_when_wide_spread_has_no_last_trade(tmp_path) -> None:
+    candidate = _candidate(COND_1, "btc-updown-15m-1774002600")
+    service = _service(
+        tmp_path,
+        now=_dt("2026-03-20T10:39:00Z"),
+        candidate=candidate,
+        market_events=[],
+    )
+    service._capture_liquidity_sample = lambda *args, **kwargs: _wide_liquidity_sample(  # type: ignore[attr-defined]
+        "btc15m:" + COND_1,
+        candidate.market_slug,
+    )
+    service._state.append_dashboard_snapshots(  # type: ignore[attr-defined]
+        [
+            Btc15mDashboardSnapshotRecord(
+                snapshot_id="persisted-display-1",
+                session_id="older-session",
+                window_id="btc15m:" + COND_1,
+                market_slug=candidate.market_slug,
+                sampled_at="2026-03-20T10:37:00Z",
+                view_kind="terminal",
+                window_status="ENTRY_WINDOW_OPEN",
+                up_price="0.28",
+                down_price="0.72",
+                price_to_beat="101200",
+            )
+        ]
+    )
+
+    result = service.terminal_current(snapshot_only=True)
+
+    assert result.latest_snapshot is not None
+    assert result.latest_snapshot.display is not None
+    assert result.latest_snapshot.display.display_source == "degraded"
+    assert result.latest_snapshot.display.display_up_price == "0.28"
+    assert result.latest_snapshot.display.display_down_price == "0.72"
+    assert "up_display_reused_persisted" in result.latest_snapshot.display.display_notes
 
 
 def test_terminal_wait_next_snapshot_stays_waiting_until_next_capture_opens(tmp_path) -> None:
@@ -1263,7 +1384,37 @@ def _market_events() -> list[CapturedStreamEvent]:
                     NormalizedBookLevel(price="0.30", size="80"),
                 ],
             ),
-        )
+        ),
+        CapturedStreamEvent(
+            session_id="market-session",
+            stream_kind="market",
+            source="polymarket_market_ws",
+            captured_at="2026-03-19T00:06:02Z",
+            event_type="last_trade_price",
+            market_event=NormalizedMarketStreamEvent(
+                event_type="last_trade_price",
+                token_id=TOKEN_UP,
+                timestamp=int((observed_dt + timedelta(seconds=2)).timestamp()),
+                price="0.31",
+                size="10",
+                side="buy",
+            ),
+        ),
+        CapturedStreamEvent(
+            session_id="market-session",
+            stream_kind="market",
+            source="polymarket_market_ws",
+            captured_at="2026-03-19T00:06:03Z",
+            event_type="last_trade_price",
+            market_event=NormalizedMarketStreamEvent(
+                event_type="last_trade_price",
+                token_id=TOKEN_DOWN,
+                timestamp=int((observed_dt + timedelta(seconds=3)).timestamp()),
+                price="0.69",
+                size="12",
+                side="sell",
+            ),
+        ),
     ]
 
 
@@ -1344,7 +1495,25 @@ def _market_events_to_samples():
                 NormalizedBookLevel(price="0.20", size="100"),
                 NormalizedBookLevel(price="0.30", size="80"),
             ],
-        )
+        ),
+        Btc15mMarketSample(
+            token_id=TOKEN_UP,
+            outcome="Up",
+            event_type="last_trade_price",
+            source="polymarket_market_ws",
+            captured_at="2026-03-19T00:06:02Z",
+            observed_at="2026-03-19T00:06:02Z",
+            last_trade_price="0.31",
+        ),
+        Btc15mMarketSample(
+            token_id=TOKEN_DOWN,
+            outcome="Down",
+            event_type="last_trade_price",
+            source="polymarket_market_ws",
+            captured_at="2026-03-19T00:06:03Z",
+            observed_at="2026-03-19T00:06:03Z",
+            last_trade_price="0.69",
+        ),
     ]
 
 
@@ -1380,6 +1549,45 @@ def _liquidity_sample(window_id: str, market_slug: str) -> Btc15mLiquiditySample
                 spread="0.64",
                 visible_liquidity_030="10",
                 visible_liquidity_020="5",
+                visible_liquidity_010="0",
+            ),
+        ],
+        errors=[],
+    )
+
+
+def _wide_liquidity_sample(window_id: str, market_slug: str) -> Btc15mLiquiditySampleRecord:
+    return Btc15mLiquiditySampleRecord(
+        sample_id="sample-wide",
+        window_id=window_id,
+        condition_id=window_id.replace("btc15m:", ""),
+        market_slug=market_slug,
+        sample_kind="terminal",
+        sampled_at="2026-03-19T00:06:00Z",
+        scheduled_at="2026-03-19T00:06:00Z",
+        late_by_seconds=0,
+        binance=FakeBinanceService().sample_liquidity(),
+        polymarket=[
+            Btc15mPolymarketLiquidityLevel(
+                token_id=TOKEN_UP,
+                outcome="Up",
+                best_bid="0.20",
+                best_ask="0.35",
+                midpoint="0.275",
+                spread="0.15",
+                visible_liquidity_030="80",
+                visible_liquidity_020="50",
+                visible_liquidity_010="10",
+            ),
+            Btc15mPolymarketLiquidityLevel(
+                token_id=TOKEN_DOWN,
+                outcome="Down",
+                best_bid="0.60",
+                best_ask="0.80",
+                midpoint="0.70",
+                spread="0.20",
+                visible_liquidity_030="0",
+                visible_liquidity_020="0",
                 visible_liquidity_010="0",
             ),
         ],

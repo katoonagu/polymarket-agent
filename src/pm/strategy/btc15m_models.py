@@ -99,6 +99,7 @@ class Btc15mMarketSample(BaseModel):
     best_ask: str | None = None
     midpoint: str | None = None
     spread: str | None = None
+    last_trade_price: str | None = None
     bids: list[NormalizedBookLevel] = Field(default_factory=list)
     asks: list[NormalizedBookLevel] = Field(default_factory=list)
 
@@ -391,9 +392,24 @@ class Btc15mDashboardSideState(BaseModel):
     best_ask: str | None = None
     midpoint: str | None = None
     spread: str | None = None
+    last_trade_price: str | None = None
     visible_liquidity_030: str | None = None
     visible_liquidity_020: str | None = None
     visible_liquidity_010: str | None = None
+
+
+class Btc15mTerminalDisplayTruth(BaseModel):
+    """Operator-facing display layer kept separate from strategy state."""
+
+    display_price_to_beat: str | None = None
+    display_current_btc: str | None = None
+    display_up_price: str | None = None
+    display_down_price: str | None = None
+    display_countdown: str | None = None
+    display_source: str | None = None
+    display_window_label: str | None = None
+    display_url: str | None = None
+    display_notes: list[str] = Field(default_factory=list)
 
 
 class Btc15mDashboardSnapshotRecord(BaseModel):
@@ -413,6 +429,7 @@ class Btc15mDashboardSnapshotRecord(BaseModel):
     window_start_at: str | None = None
     window_end_at: str | None = None
     countdown_seconds: int | None = None
+    display: Btc15mTerminalDisplayTruth | None = None
     current_window_label: str | None = None
     page_parity_source: str | None = None
     page_parity_url: str | None = None
@@ -471,6 +488,7 @@ class Btc15mTerminalWindowTearSheet(BaseModel):
     stop_reason: str
     final_state: Btc15mTerminalState
     boundary_status: str = "pending"
+    display: Btc15mTerminalDisplayTruth | None = None
     current_window_label: str | None = None
     page_parity_source: str | None = None
     page_parity_url: str | None = None
@@ -519,6 +537,7 @@ class Btc15mTerminalSessionRecord(BaseModel):
     current_requested: bool = True
     window: Btc15mWindowIdentity | None = None
     boundary_status: str = "pending"
+    display: Btc15mTerminalDisplayTruth | None = None
     current_window_label: str | None = None
     page_parity_source: str | None = None
     page_parity_url: str | None = None

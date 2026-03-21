@@ -630,9 +630,13 @@ Richer human-readable tables are now implemented for selected operator commands 
   into observe-only rather than failing the attached session immediately
 - `pm strategy btc15m terminal --wait-next` remains bounded to exactly one next
   armed BTC15m window; it is not an auto-roll daemon
-- the BTC15m terminal now prioritizes the active Polymarket market display,
-  uses API-first page parity with lightweight public-page fallback, and keeps
-  Binance as a secondary diagnostics panel
+- the BTC15m terminal now prioritizes the active Polymarket market display and
+  keeps operator display truth separate from internal strategy state
+- displayed BTC, price-to-beat, and Up/Down page values are API-first by slug,
+  then fall back to lightweight public-page extraction and page-style public
+  CLOB emulation; strategy start proxies are not reused as display values
+- Binance remains a compact secondary diagnostics panel and may collapse when
+  Polymarket page-truth display is healthy
 - intelligence, strategy, ops, and execution remain separate modules; execution alone may place or cancel orders
 
 ## Operational Direction

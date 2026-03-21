@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from decimal import Decimal, InvalidOperation
+
 import typer
 from rich.console import Console, RenderableType
 from rich.layout import Layout
@@ -28,6 +30,7 @@ from pm.strategy import (
     Btc15mResolveCurrentResponse,
     Btc15mStateError,
     Btc15mStrategyService,
+    Btc15mTerminalDisplayTruth,
     Btc15mTerminalReplayResponse,
     Btc15mTerminalReportResponse,
     Btc15mTerminalResponse,
@@ -1051,22 +1054,81 @@ def _format_cents_label(value: str | None) -> str:
     normalized = value.strip()
     if not normalized:
         return "-"
-    if normalized.startswith("0."):
-        normalized = normalized[2:]
-    normalized = normalized.rstrip("0").rstrip(".")
-    return f"{normalized}c"
+    try:
+        cents = (Decimal(normalized) * Decimal("100")).quantize(Decimal("1"))
+    except InvalidOperation:
+        return f"{normalized}\u00a2"
+    return f"{cents}\u00a2"
+
+
+def _snapshot_display_truth(snapshot: Btc15mDashboardSnapshotRecord) -> Btc15mTerminalDisplayTruth:
+    if snapshot.display is not None:
+        return snapshot.display
+    return Btc15mTerminalDisplayTruth(
+        display_price_to_beat=snapshot.price_to_beat,
+        display_current_btc=snapshot.current_live_btc_price,
+        display_up_price=snapshot.up_price,
+        display_down_price=snapshot.down_price,
+        display_countdown=(
+            _format_countdown(snapshot.countdown_seconds)
+            if snapshot.countdown_seconds is not None
+            else None
+        ),
+        display_source=snapshot.page_parity_source,
+        display_window_label=snapshot.current_window_label,
+        display_url=snapshot.page_parity_url,
+        display_notes=[],
+    )
+
+
+def _record_display_truth(record: object) -> Btc15mTerminalDisplayTruth:
+    display = getattr(record, "display", None)
+    if isinstance(display, Btc15mTerminalDisplayTruth):
+        return display
+    countdown_seconds = getattr(record, "countdown_seconds", None)
+    return Btc15mTerminalDisplayTruth(
+        display_price_to_beat=getattr(record, "price_to_beat", None),
+        display_current_btc=getattr(record, "current_live_btc_price", None),
+        display_up_price=getattr(record, "up_price", None),
+        display_down_price=getattr(record, "down_price", None),
+        display_countdown=_format_countdown(countdown_seconds),
+        display_source=getattr(record, "page_parity_source", None),
+        display_window_label=getattr(record, "current_window_label", None),
+        display_url=getattr(record, "page_parity_url", None),
+        display_notes=[],
+    )
+
+
+def _format_countdown(countdown_seconds: int | None) -> str | None:
+    if countdown_seconds is None:
+        return None
+    if countdown_seconds < 0:
+        countdown_seconds = 0
+    minutes, seconds = divmod(countdown_seconds, 60)
+    hours, minutes = divmod(minutes, 60)
+    if hours:
+        return f"{hours:02d}:{minutes:02d}:{seconds:02d}"
+    return f"{minutes:02d}:{seconds:02d}"
 
 
 def _render_terminal_snapshot(snapshot: Btc15mDashboardSnapshotRecord) -> RenderableType:
+    display = _snapshot_display_truth(snapshot)
+    parity_healthy = (display.display_source or "unavailable") not in {
+        "degraded",
+        "unavailable",
+    }
+    binance_compact = parity_healthy and not any(
+        "binance" in flag or "divergence" in flag for flag in snapshot.manipulation_flags
+    )
     header = summary_table(
         title="Session",
         rows=[
             ("Market", snapshot.market_slug),
-            ("Window label", snapshot.current_window_label or "-"),
+            ("Window label", display.display_window_label or "-"),
             ("Mode", str(snapshot.mode)),
             ("Attach", snapshot.attach_mode),
             ("State", snapshot.window_status),
-            ("Countdown", str(snapshot.countdown_seconds or 0)),
+            ("Countdown", display.display_countdown or str(snapshot.countdown_seconds or 0)),
             ("Observe only", "yes" if snapshot.observe_only else "no"),
             ("Window", f"{snapshot.window_start_at or '-'} -> {snapshot.window_end_at or '-'}"),
         ],
@@ -1074,19 +1136,20 @@ def _render_terminal_snapshot(snapshot: Btc15mDashboardSnapshotRecord) -> Render
     market_focus = summary_table(
         title="Market",
         rows=[
-            ("Price to beat", snapshot.price_to_beat or "-"),
+            ("Price to beat", display.display_price_to_beat or "-"),
             (
                 "Live BTC",
-                snapshot.current_live_btc_price or snapshot.current_chainlink_price or "-",
+                display.display_current_btc or snapshot.current_chainlink_price or "-",
             ),
-            ("Up price", snapshot.up_price or "-"),
-            ("Down price", snapshot.down_price or "-"),
+            ("Up price", display.display_up_price or "-"),
+            ("Down price", display.display_down_price or "-"),
             ("Side", snapshot.selected_side or "-"),
+            ("Session result", snapshot.window_status),
             (
                 "Midpoint / spread",
                 f"{snapshot.current_midpoint or '-'} / {snapshot.current_spread or '-'}",
             ),
-            ("Parity source", snapshot.page_parity_source or "-"),
+            ("Display source", display.display_source or "-"),
         ],
     )
     boundary = summary_table(
@@ -1128,7 +1191,7 @@ def _render_terminal_snapshot(snapshot: Btc15mDashboardSnapshotRecord) -> Render
     )
     both_sides = row_table(
         title="Both Sides",
-        columns=("Side", "Bid", "Ask", "Mid", "Spread", "30c", "20c", "10c"),
+        columns=("Side", "Bid", "Ask", "Mid", "Spread", "30¢", "20¢", "10¢"),
         rows=[
             (
                 "Up",
@@ -1168,52 +1231,67 @@ def _render_terminal_snapshot(snapshot: Btc15mDashboardSnapshotRecord) -> Render
         title="Market Context",
         rows=[
             ("Target", snapshot.target_outcome or "-"),
-            ("Visible @30c", snapshot.visible_liquidity_030 or "-"),
-            ("Visible @20c", snapshot.visible_liquidity_020 or "-"),
-            ("Visible @10c", snapshot.visible_liquidity_010 or "-"),
+            ("Visible @30¢", snapshot.visible_liquidity_030 or "-"),
+            ("Visible @20¢", snapshot.visible_liquidity_020 or "-"),
+            ("Visible @10¢", snapshot.visible_liquidity_010 or "-"),
             ("Open interest", snapshot.market_open_interest or "-"),
             ("Volume", snapshot.market_volume or "-"),
         ],
     )
-    binance = summary_table(
-        title="Binance Diagnostics",
-        rows=[
-            ("Spot", snapshot.current_binance_price or "-"),
-            (
-                "Best bid / ask",
-                f"{snapshot.binance_best_bid or '-'} / {snapshot.binance_best_ask or '-'}",
-            ),
-            (
-                "Near-touch depth",
+    binance = (
+        summary_table(
+            title="Binance",
+            rows=[
+                ("Spot", snapshot.current_binance_price or "-"),
                 (
-                    f"{snapshot.binance_near_touch_bid_depth or '-'} / "
-                    f"{snapshot.binance_near_touch_ask_depth or '-'}"
+                    "Bid / ask",
+                    f"{snapshot.binance_best_bid or '-'} / {snapshot.binance_best_ask or '-'}",
                 ),
-            ),
-            ("Imbalance", snapshot.binance_near_touch_imbalance or "-"),
-            (
-                "Vol 1m / 3m",
+                ("Imbalance", snapshot.binance_near_touch_imbalance or "-"),
+            ],
+        )
+        if binance_compact
+        else summary_table(
+            title="Binance Diagnostics",
+            rows=[
+                ("Spot", snapshot.current_binance_price or "-"),
                 (
-                    f"{snapshot.binance_realized_vol_1m_bps or '-'} / "
-                    f"{snapshot.binance_realized_vol_3m_bps or '-'}"
+                    "Best bid / ask",
+                    f"{snapshot.binance_best_bid or '-'} / {snapshot.binance_best_ask or '-'}",
                 ),
-            ),
-            (
-                "Volume 1m / 3m",
-                f"{snapshot.binance_volume_1m or '-'} / {snapshot.binance_volume_3m or '-'}",
-            ),
-        ],
+                (
+                    "Near-touch depth",
+                    (
+                        f"{snapshot.binance_near_touch_bid_depth or '-'} / "
+                        f"{snapshot.binance_near_touch_ask_depth or '-'}"
+                    ),
+                ),
+                ("Imbalance", snapshot.binance_near_touch_imbalance or "-"),
+                (
+                    "Vol 1m / 3m",
+                    (
+                        f"{snapshot.binance_realized_vol_1m_bps or '-'} / "
+                        f"{snapshot.binance_realized_vol_3m_bps or '-'}"
+                    ),
+                ),
+                (
+                    "Volume 1m / 3m",
+                    f"{snapshot.binance_volume_1m or '-'} / {snapshot.binance_volume_3m or '-'}",
+                ),
+            ],
+        )
     )
     flags = summary_table(
         title="Flags",
         rows=[
             ("Flags", ", ".join(snapshot.manipulation_flags) or "-"),
-            ("Parity URL", snapshot.page_parity_url or "-"),
+            ("Parity URL", display.display_url or "-"),
+            ("Display notes", ", ".join(display.display_notes) or "-"),
             ("Errors", str(len(snapshot.errors))),
         ],
     )
     events = row_table(
-        title="Event Log",
+        title="Event Tape",
         columns=("At", "Kind", "Status", "Message"),
         rows=[
             (event.event_at, event.kind, event.status, event.message)
@@ -1224,31 +1302,34 @@ def _render_terminal_snapshot(snapshot: Btc15mDashboardSnapshotRecord) -> Render
     layout.split_column(
         Layout(Panel(header, title="BTC15m Terminal"), size=8),
         Layout(name="body"),
-        Layout(Panel(events, title="Event Log"), size=10),
+        Layout(Panel(events, title="Event Tape"), size=9),
     )
     layout["body"].split_row(
         Layout(
             render_group(
                 Panel(market_focus, title="Page Parity"),
-                Panel(boundary, title="Boundary"),
-                Panel(exposure, title="Exposure"),
-            ),
-            name="left",
-        ),
-        Layout(
-            render_group(
                 Panel(strategy, title="Strategy"),
                 Panel(both_sides, title="Both Sides"),
-                Panel(flags, title="Flags"),
             ),
-            name="center",
+            name="left",
+            ratio=2,
         ),
         Layout(
             render_group(
+                Panel(boundary, title="Boundary"),
+                Panel(exposure, title="Exposure"),
                 Panel(market_context, title="Polymarket"),
+            ),
+            name="center",
+            ratio=2,
+        ),
+        Layout(
+            render_group(
                 Panel(binance, title="Binance"),
+                Panel(flags, title="Flags"),
             ),
             name="right",
+            ratio=1,
         ),
     )
     return layout
@@ -1261,6 +1342,12 @@ def _render_terminal_response(response: Btc15mTerminalResponse) -> RenderableTyp
         response.session.window_tear_sheets[-1]
         if response.session is not None and response.session.window_tear_sheets
         else None
+    )
+    session_display = (
+        _record_display_truth(response.session) if response.session is not None else None
+    )
+    latest_sheet_display = (
+        _record_display_truth(latest_sheet) if latest_sheet is not None else None
     )
     summary = summary_table(
         title="Terminal Summary",
@@ -1281,11 +1368,14 @@ def _render_terminal_response(response: Btc15mTerminalResponse) -> RenderableTyp
         summary_table(
             title="Final Session",
             rows=[
-                ("Final state", response.session.final_state),
+                ("Final state", str(response.session.final_state)),
                 ("Observe only", "yes" if response.session.observe_only else "no"),
                 ("Side", response.session.selected_side or "-"),
                 ("Boundary", response.session.boundary_status),
-                ("Window label", response.session.current_window_label or "-"),
+                (
+                    "Window label",
+                    session_display.display_window_label or "-" if session_display else "-",
+                ),
                 (
                     "Filled / posted / cancelled",
                     (
@@ -1315,10 +1405,28 @@ def _render_terminal_response(response: Btc15mTerminalResponse) -> RenderableTyp
             title="Latest Tear Sheet",
             rows=[
                 ("Market", latest_sheet.window.market_slug),
-                ("Final state", latest_sheet.final_state),
-                ("Price to beat", latest_sheet.price_to_beat or "-"),
-                ("Live BTC", latest_sheet.current_live_btc_price or "-"),
-                ("Up / Down", f"{latest_sheet.up_price or '-'} / {latest_sheet.down_price or '-'}"),
+                ("Final state", str(latest_sheet.final_state)),
+                (
+                    "Price to beat",
+                    latest_sheet_display.display_price_to_beat or "-"
+                    if latest_sheet_display
+                    else "-",
+                ),
+                (
+                    "Live BTC",
+                    latest_sheet_display.display_current_btc or "-"
+                    if latest_sheet_display
+                    else "-",
+                ),
+                (
+                    "Up / Down",
+                    (
+                        f"{latest_sheet_display.display_up_price or '-'} / "
+                        f"{latest_sheet_display.display_down_price or '-'}"
+                    )
+                    if latest_sheet_display is not None
+                    else "- / -"
+                ),
                 (
                     "Realized PnL",
                     latest_sheet.latest_evaluation.realized_pnl_usdc
@@ -1373,6 +1481,7 @@ def _render_terminal_report_response(
             if response.session.window_tear_sheets
             else None
         )
+        session_display = _record_display_truth(response.session)
         summary = summary_table(
             title="Terminal Tear Sheet",
             rows=[
@@ -1400,9 +1509,9 @@ def _render_terminal_report_response(
                     (
                         item.window.market_slug,
                         item.final_state,
-                        item.price_to_beat or "-",
-                        item.up_price or "-",
-                        item.down_price or "-",
+                        _record_display_truth(item).display_price_to_beat or "-",
+                        _record_display_truth(item).display_up_price or "-",
+                        _record_display_truth(item).display_down_price or "-",
                         item.latest_evaluation.realized_pnl_usdc
                         if item.latest_evaluation is not None
                         else "-",
@@ -1425,7 +1534,25 @@ def _render_terminal_report_response(
         )
         return section_panel(
             "BTC15m Terminal Tear Sheet",
-            render_group(summary, windows, details),
+            render_group(
+                summary,
+                summary_table(
+                    title="Display Truth",
+                    rows=[
+                        ("Window label", session_display.display_window_label or "-"),
+                        ("Price to beat", session_display.display_price_to_beat or "-"),
+                        ("Current BTC", session_display.display_current_btc or "-"),
+                        (
+                            "Up / Down",
+                            f"{session_display.display_up_price or '-'} / "
+                            f"{session_display.display_down_price or '-'}",
+                        ),
+                        ("Display source", session_display.display_source or "-"),
+                    ],
+                ),
+                windows,
+                details,
+            ),
         )
     summary = summary_table(
         title="Terminal Summary",

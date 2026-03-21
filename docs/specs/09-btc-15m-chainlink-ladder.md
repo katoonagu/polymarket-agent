@@ -78,11 +78,22 @@ Current workflow notes:
   compatibility alias
 - the terminal now auto-rolls across BTC15m slugs while the operator stays
   attached and writes one tear sheet per completed window plus one session log
+- the terminal now persists a display-truth layer separate from strategy truth;
+  displayed price-to-beat, displayed BTC, displayed Up/Down prices, countdown,
+  and source metadata are distinct from Chainlink boundaries, start proxies,
+  direction lock, and ladder state
 - the primary operator view is page-parity-first: price to beat, current live
   BTC price, Up price, Down price, countdown, midpoint/spread, and visible
   liquidity are shown before Binance diagnostics
-- page parity is API-first with lightweight public event-page fallback only for
-  missing visible fields; fallback failure is non-fatal and explainable
+- page parity is API-first with lightweight public current-page fallback only
+  for missing visible fields; fallback failure is non-fatal and explainable
+- displayed Up/Down prices follow public page-style emulation rules when exact
+  visible page prices are unavailable: use midpoint when spread is `<= 0.10`,
+  otherwise use latest public last-trade price; if neither is safe, degrade to
+  persisted display values or explicit empty fields with notes
+- displayed price-to-beat must never reuse `start_price_proxy_v1`; it comes
+  only from exact page extraction or market-question/title parsing tied to the
+  active slug
 - late attach on `terminal --follow-current` now falls back into `OBSERVE_ONLY`
   instead of hard-stopping when the start boundary cannot be recovered, then
   continues forward into the next slug
@@ -92,6 +103,8 @@ Current workflow notes:
   before the next BTC15m bucket opens, arms that next window, and exits after a
   final tear sheet
 - `terminal --json` is snapshot-only and exits immediately
+- ladder prices render as `30¢ / 20¢ / 10¢` in human terminal views while JSON
+  stays numeric as `0.30 / 0.20 / 0.10`
 - `terminal --mode live --confirm` is the only BTC15m live execution surface on
   the current branch and still requires inline per-rung and cancellation
   confirms inside the attached terminal

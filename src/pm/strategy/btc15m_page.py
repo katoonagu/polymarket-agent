@@ -125,9 +125,9 @@ class Btc15mPageParityService:
 
 def _candidate_urls(base_url: str, market: NormalizedMarket) -> list[str]:
     urls: list[str] = []
+    urls.append(f"{base_url}/market/{market.market_slug}")
     if market.event_slug:
         urls.append(f"{base_url}/event/{market.event_slug}")
-    urls.append(f"{base_url}/market/{market.market_slug}")
     return urls
 
 
