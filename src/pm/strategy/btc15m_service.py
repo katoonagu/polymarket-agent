@@ -134,6 +134,7 @@ RUNG_NOTIONALS = (
     Decimal("15"),
     Decimal("15"),
 )
+DEFAULT_TERMINAL_BUDGET_USDC = sum(RUNG_NOTIONALS, Decimal("0"))
 
 
 class Btc15mValidationError(RuntimeError):
@@ -203,8 +204,11 @@ class _TerminalRuntime:
     attach_mode: str = "current"
     observe_only: bool = False
     follow_current: bool = False
+    arm_next: bool = False
     wait_next_target_start_dt: datetime | None = None
     stop_reason: str = "running"
+    paper_budget_usdc: Decimal = DEFAULT_TERMINAL_BUDGET_USDC
+    rung_notionals_usdc: tuple[Decimal, Decimal, Decimal] = RUNG_NOTIONALS
     events: list[Btc15mTerminalEventRecord] = field(default_factory=list)
     session_events: list[Btc15mTerminalEventRecord] = field(default_factory=list)
     errors: list[Btc15mSectionError] = field(default_factory=list)
@@ -486,6 +490,9 @@ class Btc15mStrategyService:
         mode: str = "paper",
         confirm: bool = False,
         observe_only: bool = False,
+        arm_next: bool = False,
+        budget_usdc: str | None = None,
+        rungs: str | None = None,
         snapshot_only: bool = False,
         session_window_limit: int | None = 1,
         on_snapshot: Callable[[Btc15mDashboardSnapshotRecord], None] | None = None,
@@ -507,6 +514,10 @@ class Btc15mStrategyService:
             )
 
         current = self._resolve_current_window()
+        paper_budget_usdc, rung_notionals_usdc = _resolve_terminal_paper_sizing(
+            budget_usdc=budget_usdc,
+            rungs=rungs,
+        )
         session_id = _make_id("btc15m_terminal")
         started_at_dt = self._now()
         runtime = self._create_terminal_runtime(
@@ -516,7 +527,10 @@ class Btc15mStrategyService:
             started_at_dt=started_at_dt,
             attach_mode="current_observe_only" if observe_only else "current",
             observe_only=observe_only,
+            arm_next=arm_next,
             follow_current=not snapshot_only,
+            paper_budget_usdc=paper_budget_usdc,
+            rung_notionals_usdc=rung_notionals_usdc,
         )
         if snapshot_only:
             snapshot = self._advance_terminal_runtime(runtime)
@@ -545,6 +559,8 @@ class Btc15mStrategyService:
         *,
         mode: str = "paper",
         confirm: bool = False,
+        budget_usdc: str | None = None,
+        rungs: str | None = None,
         snapshot_only: bool = False,
         session_window_limit: int | None = 1,
         on_snapshot: Callable[[Btc15mDashboardSnapshotRecord], None] | None = None,
@@ -567,6 +583,10 @@ class Btc15mStrategyService:
 
         now = self._now()
         current = self._resolve_current_window()
+        paper_budget_usdc, rung_notionals_usdc = _resolve_terminal_paper_sizing(
+            budget_usdc=budget_usdc,
+            rungs=rungs,
+        )
         current_bucket_start = _floor_btc15m_window_start(now)
         next_bucket_start = current_bucket_start + WINDOW_DURATION
         next_capture_at = next_bucket_start - timedelta(
@@ -599,6 +619,8 @@ class Btc15mStrategyService:
             observe_only=observe_only,
             wait_next_target_start_dt=wait_target_start_dt,
             follow_current=False,
+            paper_budget_usdc=paper_budget_usdc,
+            rung_notionals_usdc=rung_notionals_usdc,
         )
 
         if snapshot_only:
@@ -1971,7 +1993,10 @@ class Btc15mStrategyService:
         attach_mode: str = "current",
         observe_only: bool = False,
         follow_current: bool = False,
+        arm_next: bool = False,
         wait_next_target_start_dt: datetime | None = None,
+        paper_budget_usdc: Decimal = DEFAULT_TERMINAL_BUDGET_USDC,
+        rung_notionals_usdc: tuple[Decimal, Decimal, Decimal] = RUNG_NOTIONALS,
     ) -> _TerminalRuntime:
         runtime = _TerminalRuntime(
             session_id=session_id,
@@ -1988,7 +2013,10 @@ class Btc15mStrategyService:
             attach_mode=attach_mode,
             observe_only=observe_only,
             follow_current=follow_current,
+            arm_next=arm_next,
             wait_next_target_start_dt=wait_next_target_start_dt,
+            paper_budget_usdc=paper_budget_usdc,
+            rung_notionals_usdc=rung_notionals_usdc,
             window_started_at_dt=started_at_dt,
         )
         self._hydrate_terminal_runtime_for_window(runtime, resolved)
@@ -2017,6 +2045,13 @@ class Btc15mStrategyService:
                 kind="observe",
                 status="info",
                 message="Running BTC15m terminal in observe-only mode for the current window.",
+            )
+        if arm_next:
+            self._record_terminal_event(
+                runtime,
+                kind="arm_next",
+                status="info",
+                message="Will arm and trade the next eligible BTC15m window after the current one.",
             )
         return runtime
 
@@ -2069,6 +2104,9 @@ class Btc15mStrategyService:
         runtime.target_token_id = None
         runtime.target_outcome = None
         runtime.rungs = []
+        if latest_window is not None and len(latest_window.rung_notionals_usdc) == 3:
+            runtime.rung_notionals_usdc = _record_rung_notionals(latest_window)
+            runtime.paper_budget_usdc = _decimal(_record_paper_budget(latest_window))
         runtime.market_open_interest = getattr(latest_window, "market_open_interest", None)
         runtime.market_volume = getattr(latest_window, "market_volume", None)
         runtime.manipulation_flags = []
@@ -2108,7 +2146,11 @@ class Btc15mStrategyService:
                         rounding=ROUND_DOWN,
                     ),
                 )
-                for price, notional in zip(RUNG_PRICES, RUNG_NOTIONALS, strict=True)
+                for price, notional in zip(
+                    RUNG_PRICES,
+                    runtime.rung_notionals_usdc,
+                    strict=True,
+                )
             ]
         if latest_window is not None:
             runtime.manipulation_flags.extend(
@@ -2128,6 +2170,13 @@ class Btc15mStrategyService:
             runtime.liquidity_samples.extend(latest_window.liquidity_samples)
         latest_evaluation = self._latest_evaluation_for_window(resolved.window.window_id)
         if latest_evaluation is not None:
+            if len(latest_evaluation.rung_notionals_usdc) == 3:
+                runtime.rung_notionals_usdc = cast(
+                    tuple[Decimal, Decimal, Decimal],
+                    tuple(_decimal(value) for value in latest_evaluation.rung_notionals_usdc),
+                )
+            if latest_evaluation.paper_budget_usdc is not None:
+                runtime.paper_budget_usdc = _decimal(latest_evaluation.paper_budget_usdc)
             runtime.selected_side = latest_evaluation.decision
             runtime.decision_at = latest_evaluation.decision_at
             runtime.target_token_id = latest_evaluation.target_token_id
@@ -2612,7 +2661,11 @@ class Btc15mStrategyService:
                         rounding=ROUND_DOWN,
                     ),
                 )
-                for price, notional in zip(RUNG_PRICES, RUNG_NOTIONALS, strict=True)
+                for price, notional in zip(
+                    RUNG_PRICES,
+                    runtime.rung_notionals_usdc,
+                    strict=True,
+                )
             ]
 
         decision_record = self._build_terminal_window_record(runtime, recorded_at=now)
@@ -2985,6 +3038,7 @@ class Btc15mStrategyService:
             current_live_btc_price=display.display_current_btc,
             up_price=display.display_up_price,
             down_price=display.display_down_price,
+            display_volume=display.display_volume,
             selected_side=runtime.selected_side,
             current_chainlink_price=current_chainlink_price,
             current_binance_price=current_binance_price,
@@ -2995,6 +3049,10 @@ class Btc15mStrategyService:
             ),
             target_token_id=runtime.target_token_id,
             target_outcome=runtime.target_outcome,
+            paper_budget_usdc=_decimal_text(runtime.paper_budget_usdc),
+            rung_notionals_usdc=[
+                _decimal_text(notional) for notional in runtime.rung_notionals_usdc
+            ],
             avg_entry_price=avg_entry,
             exposure_quantity=_decimal_text(total_quantity) if total_quantity > 0 else None,
             exposure_notional_usdc=_decimal_text(total_cost) if total_cost > 0 else None,
@@ -3092,10 +3150,9 @@ class Btc15mStrategyService:
         )
         display_price_to_beat = fallback.price_to_beat
         if display_price_to_beat is not None:
-            field_sources["price_to_beat"] = _page_field_source(
-                fallback,
-                "price_to_beat",
-            )
+            source = _page_field_source(fallback, "price_to_beat")
+            if source != "page_unavailable":
+                field_sources["price_to_beat"] = source
         elif market is not None:
             display_price_to_beat = _extract_display_price_to_beat_from_market(market)
             if display_price_to_beat is not None:
@@ -3107,16 +3164,22 @@ class Btc15mStrategyService:
             notes.append("price_to_beat_unavailable")
         display_current_btc = fallback.current_live_btc_price
         if display_current_btc is not None:
-            field_sources["current_live_btc_price"] = _page_field_source(
-                fallback,
-                "current_live_btc_price",
-            )
+            source = _page_field_source(fallback, "current_live_btc_price")
+            if source == "page_exact":
+                field_sources["current_live_btc_price"] = source
+            else:
+                display_current_btc = None
+                notes.append("current_btc_exact_unavailable")
         else:
             notes.append("current_btc_page_unavailable")
         display_up_price = fallback.up_price
         display_down_price = fallback.down_price
         if display_up_price is not None:
-            field_sources["up_price"] = _page_field_source(fallback, "up_price")
+            source = _page_field_source(fallback, "up_price")
+            if source != "page_unavailable":
+                field_sources["up_price"] = source
+            else:
+                display_up_price = None
         else:
             display_up_price, field_sources["up_price"] = _emulate_terminal_display_price(
                 up_level,
@@ -3125,7 +3188,11 @@ class Btc15mStrategyService:
                 notes=notes,
             )
         if display_down_price is not None:
-            field_sources["down_price"] = _page_field_source(fallback, "down_price")
+            source = _page_field_source(fallback, "down_price")
+            if source != "page_unavailable":
+                field_sources["down_price"] = source
+            else:
+                display_down_price = None
         else:
             display_down_price, field_sources["down_price"] = _emulate_terminal_display_price(
                 down_level,
@@ -3133,6 +3200,15 @@ class Btc15mStrategyService:
                 side_name="down",
                 notes=notes,
             )
+        display_volume = fallback.volume
+        if display_volume is not None:
+            source = _page_field_source(fallback, "volume")
+            if source != "page_unavailable":
+                field_sources["volume"] = source
+            else:
+                display_volume = None
+        else:
+            notes.append("display_volume_unavailable")
         display_source = _display_source_from_field_sources(field_sources)
         return Btc15mTerminalDisplayTruth(
             display_price_to_beat=display_price_to_beat,
@@ -3140,6 +3216,7 @@ class Btc15mStrategyService:
             display_up_price=display_up_price,
             display_down_price=display_down_price,
             display_countdown=_format_terminal_countdown(countdown_seconds),
+            display_volume=display_volume,
             display_source=display_source,
             display_window_label=display_window_label,
             display_url=fallback.event_url or _market_page_url(market),
@@ -3209,6 +3286,10 @@ class Btc15mStrategyService:
             timing_controls=_default_timing_controls(),
             start_price_proxy_v1=runtime.start_price_proxy_v1,
             end_price_proxy_v1=runtime.end_price_proxy_v1,
+            paper_budget_usdc=_decimal_text(runtime.paper_budget_usdc),
+            rung_notionals_usdc=[
+                _decimal_text(notional) for notional in runtime.rung_notionals_usdc
+            ],
             decision=decision,
             decision_at=runtime.decision_at,
             resolution_result=resolution_result,
@@ -3283,9 +3364,14 @@ class Btc15mStrategyService:
             ),
             up_price=latest_display.display_up_price if latest_display is not None else None,
             down_price=latest_display.display_down_price if latest_display is not None else None,
+            display_volume=latest_display.display_volume if latest_display is not None else None,
             selected_side=runtime.selected_side,
             target_token_id=runtime.target_token_id,
             target_outcome=runtime.target_outcome,
+            paper_budget_usdc=_decimal_text(runtime.paper_budget_usdc),
+            rung_notionals_usdc=[
+                _decimal_text(notional) for notional in runtime.rung_notionals_usdc
+            ],
             avg_entry_price=avg_entry,
             exposure_quantity=_decimal_text(total_quantity) if total_quantity > 0 else None,
             exposure_notional_usdc=_decimal_text(total_cost) if total_cost > 0 else None,
@@ -3359,11 +3445,16 @@ class Btc15mStrategyService:
             ),
             up_price=latest_window.up_price if latest_window is not None else None,
             down_price=latest_window.down_price if latest_window is not None else None,
+            display_volume=latest_window.display_volume if latest_window is not None else None,
             selected_side=latest_window.selected_side if latest_window is not None else None,
             target_token_id=latest_window.target_token_id if latest_window is not None else None,
             target_outcome=latest_window.target_outcome if latest_window is not None else None,
             start_price_proxy_v1=runtime.start_price_proxy_v1,
             end_price_proxy_v1=runtime.end_price_proxy_v1,
+            paper_budget_usdc=_decimal_text(runtime.paper_budget_usdc),
+            rung_notionals_usdc=[
+                _decimal_text(notional) for notional in runtime.rung_notionals_usdc
+            ],
             avg_entry_price=latest_window.avg_entry_price if latest_window is not None else None,
             exposure_quantity=(
                 latest_window.exposure_quantity if latest_window is not None else None
@@ -4140,8 +4231,8 @@ class Btc15mStrategyService:
         filled_quantities: list[Decimal] = []
         total_cost = Decimal("0")
         first_fill_at: str | None = None
-
-        for price, notional in zip(RUNG_PRICES, RUNG_NOTIONALS, strict=True):
+        rung_notionals = _record_rung_notionals(record)
+        for price, notional in zip(RUNG_PRICES, rung_notionals, strict=True):
             quantity = (notional / price).quantize(Decimal("0.000001"), rounding=ROUND_DOWN)
             rung = Btc15mLadderRungResult(
                 price=_decimal_text(price),
@@ -4252,6 +4343,8 @@ class Btc15mStrategyService:
             reason_blocks=reasons + guard_reasons,
             start_price_proxy_v1=record.start_price_proxy_v1,
             end_price_proxy_v1=record.end_price_proxy_v1,
+            paper_budget_usdc=_record_paper_budget(record),
+            rung_notionals_usdc=[_decimal_text(value) for value in rung_notionals],
             rungs=rung_results,
             filled_rung_count=sum(1 for rung in rung_results if rung.status == "filled"),
             cancelled_rung_count=sum(1 for rung in rung_results if rung.status == "cancelled"),
@@ -5033,6 +5126,7 @@ def _snapshot_display_truth(
         display_up_price=snapshot.up_price,
         display_down_price=snapshot.down_price,
         display_countdown=_format_terminal_countdown(snapshot.countdown_seconds),
+        display_volume=snapshot.display_volume,
         display_source=snapshot.page_parity_source,
         display_window_label=snapshot.current_window_label,
         display_url=snapshot.page_parity_url,
@@ -5143,7 +5237,7 @@ def _page_field_source(page_data: Btc15mPageParityData, field_name: str) -> str:
     source = page_data.field_sources.get(field_name)
     if source in {"page_exact", "page_estimated"}:
         return source
-    return "page_estimated"
+    return "page_unavailable"
 
 
 def _display_source_from_field_sources(field_sources: dict[str, str]) -> str:
@@ -5164,6 +5258,71 @@ def _display_source_from_field_sources(field_sources: dict[str, str]) -> str:
     if "page_estimated" in normalized:
         return "page_estimated"
     return "page_unavailable"
+
+
+def _resolve_terminal_paper_sizing(
+    *,
+    budget_usdc: str | None,
+    rungs: str | None,
+) -> tuple[Decimal, tuple[Decimal, Decimal, Decimal]]:
+    if rungs is not None and not rungs.strip():
+        rungs = None
+    if budget_usdc is not None and not budget_usdc.strip():
+        budget_usdc = None
+    if rungs is None and budget_usdc is None:
+        return DEFAULT_TERMINAL_BUDGET_USDC, RUNG_NOTIONALS
+
+    try:
+        explicit_budget = _decimal(budget_usdc) if budget_usdc is not None else None
+    except InvalidOperation as exc:
+        raise Btc15mValidationError(
+            "BTC15m terminal --budget-usdc must be a decimal number."
+        ) from exc
+    if explicit_budget is not None and explicit_budget <= 0:
+        raise Btc15mValidationError("BTC15m terminal budget must be greater than zero.")
+
+    if rungs is None:
+        assert explicit_budget is not None
+        total_default = sum(RUNG_NOTIONALS, Decimal("0"))
+        scaled = tuple(
+            (explicit_budget * notional / total_default).quantize(Decimal("0.000001"))
+            for notional in RUNG_NOTIONALS
+        )
+        diff = explicit_budget - sum(scaled, Decimal("0"))
+        scaled_list = list(scaled)
+        scaled_list[-1] += diff
+        return explicit_budget, (scaled_list[0], scaled_list[1], scaled_list[2])
+
+    try:
+        parsed_rungs = tuple(_decimal(part.strip()) for part in rungs.split(","))
+    except InvalidOperation as exc:
+        raise Btc15mValidationError(
+            "BTC15m terminal --rungs must be comma-separated decimal values."
+        ) from exc
+    if len(parsed_rungs) != 3:
+        raise Btc15mValidationError("BTC15m terminal --rungs requires exactly three values.")
+    if any(value <= 0 for value in parsed_rungs):
+        raise Btc15mValidationError("BTC15m terminal rung notionals must be positive.")
+    rung_total = sum(parsed_rungs, Decimal("0"))
+    if explicit_budget is not None and rung_total != explicit_budget:
+        raise Btc15mValidationError(
+            "BTC15m terminal --rungs must sum exactly to --budget-usdc when both are set."
+        )
+    resolved_budget = explicit_budget if explicit_budget is not None else rung_total
+    return resolved_budget, (parsed_rungs[0], parsed_rungs[1], parsed_rungs[2])
+
+
+def _record_rung_notionals(record: Btc15mWindowRecord) -> tuple[Decimal, Decimal, Decimal]:
+    if len(record.rung_notionals_usdc) == 3:
+        values = tuple(_decimal(value) for value in record.rung_notionals_usdc)
+        return values[0], values[1], values[2]
+    return RUNG_NOTIONALS
+
+
+def _record_paper_budget(record: Btc15mWindowRecord) -> str:
+    if record.paper_budget_usdc is not None:
+        return record.paper_budget_usdc
+    return _decimal_text(sum(_record_rung_notionals(record), Decimal("0")))
 
 
 def _binance_near_touch_imbalance(snapshot: Any | None) -> str | None:

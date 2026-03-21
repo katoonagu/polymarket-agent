@@ -121,6 +121,11 @@ FOLLOW_CURRENT_OPTION = typer.Option(
     "--follow-current",
     help="Follow the current active BTC15m window and auto-roll across slugs.",
 )
+ARM_NEXT_OPTION = typer.Option(
+    False,
+    "--arm-next",
+    help="After the current BTC15m window, arm and trade the next eligible window too.",
+)
 WAIT_NEXT_OPTION = typer.Option(
     False,
     "--wait-next",
@@ -135,6 +140,16 @@ CONFIRM_OPTION = typer.Option(
     False,
     "--confirm",
     help="Required for BTC15m live terminal mode.",
+)
+TERMINAL_BUDGET_OPTION = typer.Option(
+    None,
+    "--budget-usdc",
+    help="Total terminal ladder budget in USDC. Defaults to 50 when omitted.",
+)
+TERMINAL_RUNGS_OPTION = typer.Option(
+    None,
+    "--rungs",
+    help="Comma-separated terminal rung notionals in USDC, for example 20,15,15.",
 )
 SESSION_ID_OPTION = typer.Option(
     ...,
@@ -330,10 +345,13 @@ def terminal_current(
     ctx: typer.Context,
     current: bool = CURRENT_OPTION,
     follow_current: bool = FOLLOW_CURRENT_OPTION,
+    arm_next: bool = ARM_NEXT_OPTION,
     wait_next: bool = WAIT_NEXT_OPTION,
     observe_only: bool = OBSERVE_ONLY_OPTION,
     mode: str = MODE_OPTION,
     confirm: bool = CONFIRM_OPTION,
+    budget_usdc: str | None = TERMINAL_BUDGET_OPTION,
+    rungs: str | None = TERMINAL_RUNGS_OPTION,
     json_output: bool = JSON_OPTION,
 ) -> None:
     """Run one dense BTC15m operator terminal session for the current window."""
@@ -360,6 +378,16 @@ def terminal_current(
             message="BTC15m terminal --observe-only is only supported with --current.",
             resource="btc15m",
             identifier="observe_only",
+            local_json_output=json_output,
+        )
+        raise typer.Exit(1)
+    if wait_next and arm_next:
+        emit_command_error(
+            ctx,
+            code="invalid_argument",
+            message="BTC15m terminal --arm-next is only supported with --follow-current/--current.",
+            resource="btc15m",
+            identifier="arm_next",
             local_json_output=json_output,
         )
         raise typer.Exit(1)
@@ -392,6 +420,9 @@ def terminal_current(
                     mode=mode,
                     confirm=confirm,
                     observe_only=observe_only,
+                    arm_next=arm_next,
+                    budget_usdc=budget_usdc,
+                    rungs=rungs,
                     snapshot_only=True,
                     session_window_limit=1,
                 )
@@ -399,6 +430,8 @@ def terminal_current(
                 else service.terminal_wait_next(
                     mode=mode,
                     confirm=confirm,
+                    budget_usdc=budget_usdc,
+                    rungs=rungs,
                     snapshot_only=True,
                     session_window_limit=1,
                 )
@@ -422,6 +455,9 @@ def terminal_current(
                         mode=mode,
                         confirm=confirm,
                         observe_only=observe_only,
+                        arm_next=arm_next,
+                        budget_usdc=budget_usdc,
+                        rungs=rungs,
                         session_window_limit=None,
                         on_snapshot=_on_snapshot,
                         confirm_action=_confirm_action if mode.strip().lower() == "live" else None,
@@ -430,6 +466,8 @@ def terminal_current(
                     else service.terminal_wait_next(
                         mode=mode,
                         confirm=confirm,
+                        budget_usdc=budget_usdc,
+                        rungs=rungs,
                         session_window_limit=1,
                         on_snapshot=_on_snapshot,
                         confirm_action=_confirm_action if mode.strip().lower() == "live" else None,
@@ -1061,6 +1099,13 @@ def _format_cents_label(value: str | None) -> str:
     return f"{cents}\u00a2"
 
 
+def _terminal_rung_counts(snapshot: Btc15mDashboardSnapshotRecord) -> str:
+    filled = sum(1 for item in snapshot.rungs if item.state == "filled")
+    posted = sum(1 for item in snapshot.rungs if item.state == "posted")
+    cancelled = sum(1 for item in snapshot.rungs if item.state == "cancelled")
+    return f"{filled} / {posted} / {cancelled}"
+
+
 def _snapshot_display_truth(snapshot: Btc15mDashboardSnapshotRecord) -> Btc15mTerminalDisplayTruth:
     if snapshot.display is not None:
         return snapshot.display
@@ -1074,6 +1119,7 @@ def _snapshot_display_truth(snapshot: Btc15mDashboardSnapshotRecord) -> Btc15mTe
             if snapshot.countdown_seconds is not None
             else None
         ),
+        display_volume=snapshot.display_volume,
         display_source=snapshot.page_parity_source,
         display_window_label=snapshot.current_window_label,
         display_url=snapshot.page_parity_url,
@@ -1092,6 +1138,7 @@ def _record_display_truth(record: object) -> Btc15mTerminalDisplayTruth:
         display_up_price=getattr(record, "up_price", None),
         display_down_price=getattr(record, "down_price", None),
         display_countdown=_format_countdown(countdown_seconds),
+        display_volume=getattr(record, "display_volume", None),
         display_source=getattr(record, "page_parity_source", None),
         display_window_label=getattr(record, "current_window_label", None),
         display_url=getattr(record, "page_parity_url", None),
@@ -1134,12 +1181,13 @@ def _render_terminal_snapshot(snapshot: Btc15mDashboardSnapshotRecord) -> Render
         ],
     )
     market_focus = summary_table(
-        title="Current Market",
+        title="Page Mirror",
         rows=[
             ("Price to beat", display.display_price_to_beat or "-"),
-            ("Current BTC", display.display_current_btc or "-"),
+            ("Current price", display.display_current_btc or "-"),
             ("Up", display.display_up_price or "-"),
             ("Down", display.display_down_price or "-"),
+            ("Countdown", display.display_countdown or "-"),
             ("Selected side", snapshot.selected_side or "-"),
             ("Status", snapshot.window_status),
             ("Display source", display.display_source or "-"),
@@ -1151,26 +1199,27 @@ def _render_terminal_snapshot(snapshot: Btc15mDashboardSnapshotRecord) -> Render
             ("Boundary", snapshot.boundary_status),
             ("Start proxy", snapshot.start_price_proxy_v1 or "-"),
             ("Direction", snapshot.direction_lock_status),
-            ("Chainlink", snapshot.current_chainlink_price or "-"),
+            ("Budget", snapshot.paper_budget_usdc or "-"),
             (
                 "Midpoint / spread",
                 f"{snapshot.current_midpoint or '-'} / {snapshot.current_spread or '-'}",
             ),
             ("Avg entry", snapshot.avg_entry_price or "-"),
             ("Exposure", snapshot.exposure_notional_usdc or "-"),
+            ("Filled / posted / cancelled", _terminal_rung_counts(snapshot)),
             ("MFE / MAE", f"{snapshot.mfe_usdc or '-'} / {snapshot.mae_usdc or '-'}"),
         ],
     )
     ladder = row_table(
         title="Ladder",
-        columns=("Level", "State", "Qty", "Fill", "Visible"),
+        columns=("Level", "State", "Notional", "Qty", "Fill"),
         rows=[
             (
                 _format_cents_label(rung.price),
                 rung.state,
+                rung.notional_usdc or "-",
                 rung.quantity or "-",
                 rung.fill_at or rung.cancellation_at or "-",
-                rung.visible_liquidity or "-",
             )
             for rung in snapshot.rungs
         ],
@@ -1216,7 +1265,6 @@ def _render_terminal_snapshot(snapshot: Btc15mDashboardSnapshotRecord) -> Render
     context_summary = summary_table(
         title="Market Context",
         rows=[
-            ("Chainlink", snapshot.current_chainlink_price or "-"),
             (
                 "Midpoint / spread",
                 f"{snapshot.current_midpoint or '-'} / {snapshot.current_spread or '-'}",
@@ -1225,7 +1273,7 @@ def _render_terminal_snapshot(snapshot: Btc15mDashboardSnapshotRecord) -> Render
             ("Visible @20¢", snapshot.visible_liquidity_020 or "-"),
             ("Visible @10¢", snapshot.visible_liquidity_010 or "-"),
             ("Open interest", snapshot.market_open_interest or "-"),
-            ("Volume", snapshot.market_volume or "-"),
+            ("Volume", display.display_volume or "-"),
             ("Flags", ", ".join(snapshot.manipulation_flags) or "-"),
             ("Notes", ", ".join(display.display_notes) or "-"),
         ],
@@ -1290,7 +1338,7 @@ def _render_terminal_snapshot(snapshot: Btc15mDashboardSnapshotRecord) -> Render
     layout["body"].split_row(
         Layout(
             render_group(
-                Panel(market_focus, title="Page Parity"),
+                Panel(market_focus, title="Page"),
                 Panel(ladder, title="Ladder"),
             ),
             name="left",
@@ -1300,7 +1348,7 @@ def _render_terminal_snapshot(snapshot: Btc15mDashboardSnapshotRecord) -> Render
             render_group(
                 Panel(market_context, title="Polymarket"),
                 Panel(strategy, title="Strategy"),
-                Panel(context_summary, title="Context"),
+                Panel(context_summary, title="Market"),
                 Panel(binance, title="Binance"),
             ),
             name="right",
@@ -1359,6 +1407,7 @@ def _render_terminal_response(response: Btc15mTerminalResponse) -> RenderableTyp
                         f"{response.session.cancelled_rung_count}"
                     ),
                 ),
+                ("Budget", response.session.paper_budget_usdc or "-"),
                 ("Exposure", response.session.exposure_notional_usdc or "-"),
                 ("Snapshots", str(response.session.total_snapshots)),
                 (
@@ -1390,6 +1439,12 @@ def _render_terminal_response(response: Btc15mTerminalResponse) -> RenderableTyp
                 (
                     "Live BTC",
                     latest_sheet_display.display_current_btc or "-"
+                    if latest_sheet_display
+                    else "-",
+                ),
+                (
+                    "Volume",
+                    latest_sheet_display.display_volume or "-"
                     if latest_sheet_display
                     else "-",
                 ),
@@ -1522,6 +1577,7 @@ def _render_terminal_report_response(
                             f"{session_display.display_up_price or '-'} / "
                             f"{session_display.display_down_price or '-'}",
                         ),
+                        ("Volume", session_display.display_volume or "-"),
                         ("Display source", session_display.display_source or "-"),
                     ],
                 ),

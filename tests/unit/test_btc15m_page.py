@@ -4,6 +4,7 @@ from dataclasses import dataclass
 
 from pm.market.models import NormalizedMarket
 from pm.strategy.btc15m_page import (
+    Btc15mPageParityData,
     Btc15mPageParityService,
     _extract_page_data,
 )
@@ -25,7 +26,8 @@ def test_extract_page_data_uses_structured_slug_matched_state() -> None:
                     "priceToBeat": "101234.5",
                     "currentLiveBtcPrice": "101240.1",
                     "upPrice": "0.33",
-                    "downPrice": "0.67"
+                    "downPrice": "0.67",
+                    "volume": "120K"
                   }
                 ]
               }
@@ -43,10 +45,12 @@ def test_extract_page_data_uses_structured_slug_matched_state() -> None:
     assert data.current_live_btc_price == "101240.1"
     assert data.up_price == "0.33"
     assert data.down_price == "0.67"
+    assert data.volume == "120K"
     assert data.field_sources["price_to_beat"] == "page_exact"
     assert data.field_sources["current_live_btc_price"] == "page_exact"
     assert data.field_sources["up_price"] == "page_exact"
     assert data.field_sources["down_price"] == "page_exact"
+    assert data.field_sources["volume"] == "page_exact"
 
 
 def test_extract_page_data_rejects_interval_text_false_positive() -> None:
@@ -145,6 +149,75 @@ def test_page_service_prefers_exact_market_page_over_estimated_event_page() -> N
     assert data.field_sources["down_price"] == "page_exact"
 
 
+def test_page_service_uses_browser_adapter_when_structured_page_is_unavailable() -> None:
+    market = _market()
+    client = _FakeClient(
+        {
+            "https://polymarket.com/event/btc-15m-event": _FakeResponse(
+                "<html><body></body></html>"
+            ),
+            "https://polymarket.com/market/btc-updown-15m-1774002600": _FakeResponse(
+                "<html><body><div>Loading...</div></body></html>"
+            ),
+        }
+    )
+    service = Btc15mPageParityService(
+        client=client,
+        browser_adapter=_FakeBrowserAdapter(
+            Btc15mPageParityData(
+                event_url="https://polymarket.com/market/btc-updown-15m-1774002600",
+                current_window_label="10:30 - 10:45 UTC",
+                price_to_beat="101234.5",
+                current_live_btc_price="101240.1",
+                up_price="0.33",
+                down_price="0.67",
+                volume="120K",
+                field_sources={
+                    "price_to_beat": "page_exact",
+                    "current_live_btc_price": "page_exact",
+                    "up_price": "page_exact",
+                    "down_price": "page_exact",
+                    "volume": "page_exact",
+                },
+                matched_market_slug=market.market_slug,
+                notes=["browser_exact_visible_match"],
+            )
+        ),
+    )
+
+    data = service.fetch(market)
+
+    assert data.field_sources["price_to_beat"] == "page_exact"
+    assert data.current_live_btc_price == "101240.1"
+    assert data.volume == "120K"
+    assert "browser_exact_visible_match" in data.notes
+
+
+def test_page_service_marks_browser_adapter_unavailable_without_false_exact() -> None:
+    market = _market()
+    client = _FakeClient(
+        {
+            "https://polymarket.com/event/btc-15m-event": _FakeResponse(
+                "<html><body>BTC 15 Minutes</body></html>"
+            ),
+            "https://polymarket.com/market/btc-updown-15m-1774002600": _FakeResponse(
+                "<html><body>Price to beat unavailable</body></html>"
+            ),
+        }
+    )
+    service = Btc15mPageParityService(
+        client=client,
+        browser_adapter=_FakeBrowserAdapter(
+            Btc15mPageParityData(notes=["browser_adapter_unavailable"])
+        ),
+    )
+
+    data = service.fetch(market)
+
+    assert data.field_sources.get("price_to_beat") != "page_exact"
+    assert "browser_adapter_unavailable" in data.notes
+
+
 def _market() -> NormalizedMarket:
     return NormalizedMarket(
         market_slug="btc-updown-15m-1774002600",
@@ -174,3 +247,13 @@ class _FakeClient:
 
     def get(self, url: str) -> _FakeResponse:
         return self._responses[url]
+
+
+class _FakeBrowserAdapter:
+    def __init__(self, data: Btc15mPageParityData) -> None:
+        self._data = data
+
+    def fetch(self, market: NormalizedMarket, *, urls: list[str]) -> Btc15mPageParityData:
+        _ = market
+        _ = urls
+        return self._data

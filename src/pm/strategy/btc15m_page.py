@@ -8,7 +8,8 @@ from collections.abc import Callable
 from dataclasses import dataclass, field
 from decimal import Decimal, InvalidOperation
 from html import unescape
-from typing import Any
+from importlib import import_module
+from typing import Any, Protocol
 
 import httpx
 
@@ -22,6 +23,14 @@ _CRITICAL_FIELDS = (
     "current_live_btc_price",
     "up_price",
     "down_price",
+)
+_DISPLAY_FIELDS = (
+    "current_window_label",
+    "price_to_beat",
+    "current_live_btc_price",
+    "up_price",
+    "down_price",
+    "volume",
 )
 _STRUCTURED_SOURCE = "page_exact"
 _ESTIMATED_SOURCE = "page_estimated"
@@ -50,6 +59,12 @@ _FIELD_ALIASES: dict[str, tuple[str, ...]] = {
     "down_price": (
         "downPrice",
         "down_price",
+    ),
+    "volume": (
+        "volume",
+        "displayVolume",
+        "marketVolume",
+        "display_volume",
     ),
 }
 _MARKET_SLUG_KEYS = ("marketSlug", "market_slug", "slug")
@@ -81,6 +96,41 @@ _VISIBLE_FIELD_PATTERNS: dict[str, tuple[re.Pattern[str], ...]] = {
         ),
     ),
 }
+_VISIBLE_FIELD_PATTERNS["volume"] = (
+    re.compile(
+        r"\bvolume\b[^0-9$]{0,24}\$?(?P<value>[0-9][0-9,\.]*(?:\s*[kmb])?)",
+        re.I,
+    ),
+)
+_BROWSER_EXACT_FIELD_PATTERNS: dict[str, tuple[re.Pattern[str], ...]] = {
+    "price_to_beat": (
+        re.compile(r"\bprice\s+to\s+beat\b[^0-9$]{0,20}\$?(?P<value>[0-9][0-9,\.]*)", re.I),
+    ),
+    "current_live_btc_price": (
+        re.compile(
+            r"\bcurrent(?:\s+price|\s+btc(?:/usd)?(?:\s+price)?)\b[^0-9$]{0,20}\$?(?P<value>[0-9][0-9,\.]*)",
+            re.I,
+        ),
+    ),
+    "up_price": (
+        re.compile(
+            r"\bup\b(?:\s+price)?[^0-9$Вў]{0,12}(?P<value>\d{1,2}\s*Вў|0?\.\d+)",
+            re.I,
+        ),
+    ),
+    "down_price": (
+        re.compile(
+            r"\bdown\b(?:\s+price)?[^0-9$Вў]{0,12}(?P<value>\d{1,2}\s*Вў|0?\.\d+)",
+            re.I,
+        ),
+    ),
+    "volume": (
+        re.compile(
+            r"\bvolume\b[^0-9$]{0,20}\$?(?P<value>[0-9][0-9,\.]*(?:\s*[kmb])?)",
+            re.I,
+        ),
+    ),
+}
 _SCRIPT_PATTERN = re.compile(
     r"<script\b[^>]*>(?P<body>.*?)</script>",
     re.I | re.S,
@@ -101,6 +151,7 @@ class Btc15mPageParityData:
     current_live_btc_price: str | None = None
     up_price: str | None = None
     down_price: str | None = None
+    volume: str | None = None
     field_sources: dict[str, str] = field(default_factory=dict)
     matched_market_slug: str | None = None
     notes: list[str] = field(default_factory=list)
@@ -116,14 +167,72 @@ class Btc15mPageParityData:
         """Return whether any operator-facing page field was extracted."""
         return any(
             getattr(self, field_name) is not None
-            for field_name in (
-                "current_window_label",
-                "price_to_beat",
-                "current_live_btc_price",
-                "up_price",
-                "down_price",
-            )
+            for field_name in _DISPLAY_FIELDS
         )
+
+
+class Btc15mPageBrowserAdapter(Protocol):
+    """Optional browser-rendered public page adapter for exact BTC15m parity."""
+
+    def fetch(self, market: NormalizedMarket, *, urls: list[str]) -> Btc15mPageParityData:
+        """Fetch exact visible public page values for one BTC15m market."""
+
+
+class PlaywrightBtc15mPageBrowserAdapter:
+    """Best-effort Playwright-backed adapter for exact visible public page state."""
+
+    def __init__(self, *, timeout: float = DEFAULT_TIMEOUT) -> None:
+        self._timeout_ms = max(1, int(timeout * 1000))
+
+    def fetch(self, market: NormalizedMarket, *, urls: list[str]) -> Btc15mPageParityData:
+        try:
+            sync_api = import_module("playwright.sync_api")
+        except ImportError:
+            return Btc15mPageParityData(notes=["browser_adapter_unavailable"])
+
+        sync_playwright = getattr(sync_api, "sync_playwright", None)
+        if sync_playwright is None:
+            return Btc15mPageParityData(notes=["browser_adapter_unavailable"])
+
+        best = Btc15mPageParityData(notes=["browser_exact_unavailable"])
+        best_rank = -1
+        try:
+            with sync_playwright() as playwright:
+                browser = playwright.chromium.launch(headless=True)
+                try:
+                    page = browser.new_page()
+                    for url in urls:
+                        try:
+                            page.goto(url, wait_until="domcontentloaded", timeout=self._timeout_ms)
+                            try:
+                                page.wait_for_load_state(
+                                    "networkidle",
+                                    timeout=min(self._timeout_ms, 2000),
+                                )
+                            except Exception:
+                                pass
+                            html = page.content()
+                            visible_text = page.locator("body").inner_text(timeout=self._timeout_ms)
+                        except Exception as exc:
+                            candidate = Btc15mPageParityData(notes=[f"browser_fetch_failed:{exc}"])
+                        else:
+                            candidate = _extract_browser_page_data(
+                                html,
+                                visible_text=visible_text,
+                                market=market,
+                            )
+                            candidate.event_url = url
+                        rank = _page_data_rank(candidate)
+                        if rank > best_rank:
+                            best = candidate
+                            best_rank = rank
+                        if _has_full_exact_critical_fields(candidate):
+                            return candidate
+                finally:
+                    browser.close()
+        except Exception as exc:
+            return Btc15mPageParityData(notes=[f"browser_adapter_unavailable:{exc}"])
+        return best
 
 
 class Btc15mPageParityService:
@@ -135,10 +244,14 @@ class Btc15mPageParityService:
         client: httpx.Client | None = None,
         base_url: str = DEFAULT_POLYMARKET_WEB_URL,
         timeout: float = DEFAULT_TIMEOUT,
+        browser_adapter: Btc15mPageBrowserAdapter | None = None,
     ) -> None:
         self._owns_client = client is None
         self._base_url = base_url.rstrip("/")
         self._client = client or httpx.Client(timeout=timeout)
+        self._browser_adapter = browser_adapter or PlaywrightBtc15mPageBrowserAdapter(
+            timeout=timeout
+        )
 
     def close(self) -> None:
         """Close the owned HTTP client."""
@@ -150,7 +263,8 @@ class Btc15mPageParityService:
         last_error: str | None = None
         best_data = Btc15mPageParityData()
         best_rank = -1
-        for url in _candidate_urls(self._base_url, market):
+        urls = _candidate_urls(self._base_url, market)
+        for url in urls:
             try:
                 response = self._client.get(url)
             except httpx.HTTPError as exc:
@@ -171,6 +285,16 @@ class Btc15mPageParityService:
                 last_error = "page_fields_partial"
             else:
                 last_error = "page_fields_unavailable"
+        browser_data = self._browser_adapter.fetch(market, urls=urls)
+        merged = _merge_page_data(best_data, browser_data)
+        merged_rank = _page_data_rank(merged)
+        if merged_rank >= best_rank:
+            best_data = merged
+            best_rank = merged_rank
+        else:
+            best_data.notes = _merge_notes(best_data.notes, browser_data.notes)
+        if _has_full_exact_critical_fields(best_data):
+            return best_data
         if best_data.has_fields():
             if last_error is not None and last_error not in best_data.notes:
                 best_data.notes.append(last_error)
@@ -209,6 +333,21 @@ def _extract_page_data(html: str, *, market: NormalizedMarket) -> Btc15mPagePari
             data.set_field(field_name, value, _ESTIMATED_SOURCE)
             break
     return data
+
+
+def _extract_browser_page_data(
+    html: str,
+    *,
+    visible_text: str,
+    market: NormalizedMarket,
+) -> Btc15mPageParityData:
+    structured = _extract_structured_page_data(unescape(html), market=market)
+    visible_exact = _extract_browser_visible_exact_data(
+        html,
+        visible_text=visible_text,
+        market=market,
+    )
+    return _merge_page_data(structured, visible_exact)
 
 
 def _extract_structured_page_data(text: str, *, market: NormalizedMarket) -> Btc15mPageParityData:
@@ -324,12 +463,47 @@ def _extract_market_exact_data(payload: Any, *, market: NormalizedMarket) -> Btc
         up_price, down_price = _extract_outcome_prices(node)
         candidate.set_field("up_price", up_price, _STRUCTURED_SOURCE)
         candidate.set_field("down_price", down_price, _STRUCTURED_SOURCE)
+        candidate.set_field(
+            "volume",
+            _find_field_value(node, "volume", normalizer=_normalize_volume_value),
+            _STRUCTURED_SOURCE,
+        )
         candidate.notes.append("structured_slug_match")
         rank = _page_data_rank(candidate)
         if rank > best_rank:
             best = candidate
             best_rank = rank
     return best
+
+
+def _extract_browser_visible_exact_data(
+    html: str,
+    *,
+    visible_text: str,
+    market: NormalizedMarket,
+) -> Btc15mPageParityData:
+    data = Btc15mPageParityData()
+    html_lower = html.lower()
+    if market.market_slug.lower() not in html_lower:
+        data.notes.append("browser_slug_unmatched")
+        return data
+    data.matched_market_slug = market.market_slug
+    for field_name, patterns in _BROWSER_EXACT_FIELD_PATTERNS.items():
+        for pattern in patterns:
+            match = pattern.search(visible_text)
+            if match is None:
+                continue
+            value = _normalize_browser_visible_field(field_name, match.group("value"))
+            if value is None:
+                data.notes.append(f"{field_name}_browser_visible_rejected")
+                break
+            data.set_field(field_name, value, _STRUCTURED_SOURCE)
+            break
+    if data.has_fields():
+        data.notes.append("browser_exact_visible_match")
+    else:
+        data.notes.append("browser_exact_unavailable")
+    return data
 
 
 def _iter_nodes(value: Any) -> list[Any]:
@@ -485,7 +659,13 @@ def _normalize_visible_field(field_name: str, value: str) -> str | None:
         return _normalize_btc_value(value)
     if field_name in {"up_price", "down_price"}:
         return _normalize_outcome_price(value)
+    if field_name == "volume":
+        return _normalize_volume_value(value)
     return _normalize_text_value(value)
+
+
+def _normalize_browser_visible_field(field_name: str, value: str) -> str | None:
+    return _normalize_visible_field(field_name, value)
 
 
 def _normalize_text_value(value: Any) -> str | None:
@@ -538,6 +718,20 @@ def _normalize_outcome_price(value: Any) -> str | None:
     return _trim_decimal(parsed)
 
 
+def _normalize_volume_value(value: Any) -> str | None:
+    if isinstance(value, (int, float)):
+        numeric = _normalize_numeric_text(value)
+        return numeric
+    if not isinstance(value, str):
+        return None
+    stripped = " ".join(value.strip().split()).replace("$", "")
+    if not stripped:
+        return None
+    if re.fullmatch(r"[0-9][0-9,\.]*(?:\s*[kmb])?", stripped, re.I):
+        return stripped.upper().replace(" ", "")
+    return None
+
+
 def _normalize_numeric_text(value: Any) -> str | None:
     if isinstance(value, (int, float)):
         return str(value)
@@ -556,6 +750,48 @@ def _trim_decimal(value: Decimal) -> str:
     return normalized.rstrip("0").rstrip(".")
 
 
+def _merge_page_data(
+    primary: Btc15mPageParityData,
+    secondary: Btc15mPageParityData,
+) -> Btc15mPageParityData:
+    merged = Btc15mPageParityData(
+        event_url=secondary.event_url or primary.event_url,
+        matched_market_slug=secondary.matched_market_slug or primary.matched_market_slug,
+        notes=_merge_notes(primary.notes, secondary.notes),
+    )
+    for field_name in _DISPLAY_FIELDS:
+        primary_source = primary.field_sources.get(field_name)
+        secondary_source = secondary.field_sources.get(field_name)
+        primary_value = getattr(primary, field_name)
+        secondary_value = getattr(secondary, field_name)
+        if _field_source_rank(secondary_source) > _field_source_rank(primary_source):
+            if secondary_value is not None:
+                merged.set_field(field_name, secondary_value, secondary_source or _ESTIMATED_SOURCE)
+                continue
+        if primary_value is not None:
+            merged.set_field(field_name, primary_value, primary_source or _ESTIMATED_SOURCE)
+            continue
+        if secondary_value is not None:
+            merged.set_field(field_name, secondary_value, secondary_source or _ESTIMATED_SOURCE)
+    return merged
+
+
+def _field_source_rank(source: str | None) -> int:
+    if source == _STRUCTURED_SOURCE:
+        return 2
+    if source == _ESTIMATED_SOURCE:
+        return 1
+    return 0
+
+
+def _merge_notes(primary: list[str], secondary: list[str]) -> list[str]:
+    merged: list[str] = []
+    for note in [*primary, *secondary]:
+        if note not in merged:
+            merged.append(note)
+    return merged
+
+
 def _page_data_rank(data: Btc15mPageParityData) -> int:
     exact = sum(
         1
@@ -568,7 +804,9 @@ def _page_data_rank(data: Btc15mPageParityData) -> int:
         if data.field_sources.get(field_name) == _ESTIMATED_SOURCE
     )
     label = 1 if data.current_window_label is not None else 0
-    return (exact * 100) + (estimated * 10) + label
+    volume_exact = 5 if data.field_sources.get("volume") == _STRUCTURED_SOURCE else 0
+    volume_estimated = 1 if data.field_sources.get("volume") == _ESTIMATED_SOURCE else 0
+    return (exact * 100) + (estimated * 10) + volume_exact + volume_estimated + label
 
 
 def _has_full_exact_critical_fields(data: Btc15mPageParityData) -> bool:

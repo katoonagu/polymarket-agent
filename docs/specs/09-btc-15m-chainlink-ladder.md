@@ -56,6 +56,7 @@ Current research commands:
 - `pm strategy btc15m campaign report`
 - `pm strategy btc15m terminal --follow-current [--observe-only] [--mode paper|live] [--confirm]`
 - `pm strategy btc15m terminal --current [--observe-only] [--mode paper|live] [--confirm]`
+- `pm strategy btc15m terminal --follow-current --arm-next [--mode paper|live] [--confirm] [--budget-usdc <n>] [--rungs <a,b,c>]`
 - `pm strategy btc15m terminal --wait-next [--mode paper|live] [--confirm]`
 - `pm strategy btc15m terminal replay --session-id <id>`
 - `pm strategy btc15m terminal report [--session-id <id>]`
@@ -79,15 +80,17 @@ Current workflow notes:
 - the terminal now auto-rolls across BTC15m slugs while the operator stays
   attached and writes one tear sheet per completed window plus one session log
 - the terminal now persists a display-truth layer separate from strategy truth;
-  displayed price-to-beat, displayed BTC, displayed Up/Down prices, countdown,
-  and source metadata are distinct from Chainlink boundaries, start proxies,
-  direction lock, and ladder state
+  displayed price-to-beat, displayed BTC, displayed Up/Down prices, displayed
+  volume, countdown, and source metadata are distinct from Chainlink
+  boundaries, start proxies, direction lock, and ladder state
 - the primary operator view is page-parity-first: price to beat, current live
   BTC price, Up price, Down price, countdown, midpoint/spread, and visible
   liquidity are shown before Binance diagnostics
 - page parity is slug-first and strict: `page_exact` requires structured public
-  page bootstrap or hydration state for the active slug; weaker paths are
-  labeled `page_estimated`, `clob_emulated`, or `page_unavailable`
+  page bootstrap or hydration state for the active slug, or exact
+  browser-rendered public page values when the optional `terminal-browser`
+  extra is installed; weaker paths are labeled `page_estimated`,
+  `clob_emulated`, or `page_unavailable`
 - displayed Up/Down prices follow public page-style emulation rules when exact
   visible page prices are unavailable: use midpoint when spread is `<= 0.10`,
   otherwise use latest public last-trade price; if neither is safe, show
@@ -100,9 +103,14 @@ Current workflow notes:
   continues forward into the next slug
 - `terminal --follow-current --observe-only` keeps the current session attached
   without arming the ladder
+- `terminal --follow-current --arm-next` keeps the current market on screen and
+  automatically arms the next eligible paper window when the current one is too
+  late or once the current tradeable window finishes
 - `terminal --wait-next` watches the current window, begins pre-start capture
   before the next BTC15m bucket opens, arms that next window, and exits after a
   final tear sheet
+- terminal paper sizing is explicit with `--budget-usdc` and `--rungs`; when
+  only budget is provided the default `20:15:15` ladder scales proportionally
 - `terminal --json` is snapshot-only and exits immediately
 - ladder prices render as `30¢ / 20¢ / 10¢` in human terminal views while JSON
   stays numeric as `0.30 / 0.20 / 0.10`

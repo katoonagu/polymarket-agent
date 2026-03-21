@@ -200,6 +200,8 @@ class Btc15mWindowRecord(BaseModel):
     timing_controls: Btc15mTimingControls = Field(default_factory=Btc15mTimingControls)
     start_price_proxy_v1: str | None = None
     end_price_proxy_v1: str | None = None
+    paper_budget_usdc: str | None = None
+    rung_notionals_usdc: list[str] = Field(default_factory=list)
     decision: str = "PENDING"
     decision_at: str | None = None
     resolution_result: str = "PENDING"
@@ -268,6 +270,8 @@ class Btc15mPaperEvaluation(BaseModel):
     reason_blocks: list[Btc15mReasonBlock] = Field(default_factory=list)
     start_price_proxy_v1: str | None = None
     end_price_proxy_v1: str | None = None
+    paper_budget_usdc: str | None = None
+    rung_notionals_usdc: list[str] = Field(default_factory=list)
     rungs: list[Btc15mLadderRungResult] = Field(default_factory=list)
     filled_rung_count: int = 0
     cancelled_rung_count: int = 0
@@ -406,6 +410,7 @@ class Btc15mTerminalDisplayTruth(BaseModel):
     display_up_price: str | None = None
     display_down_price: str | None = None
     display_countdown: str | None = None
+    display_volume: str | None = None
     display_source: str | None = None
     display_window_label: str | None = None
     display_url: str | None = None
@@ -436,6 +441,7 @@ class Btc15mDashboardSnapshotRecord(BaseModel):
     current_live_btc_price: str | None = None
     up_price: str | None = None
     down_price: str | None = None
+    display_volume: str | None = None
     selected_side: str | None = None
     current_chainlink_price: str | None = None
     current_binance_price: str | None = None
@@ -444,6 +450,8 @@ class Btc15mDashboardSnapshotRecord(BaseModel):
     direction_lock_status: str = "pending"
     target_token_id: str | None = None
     target_outcome: str | None = None
+    paper_budget_usdc: str | None = None
+    rung_notionals_usdc: list[str] = Field(default_factory=list)
     avg_entry_price: str | None = None
     exposure_quantity: str | None = None
     exposure_notional_usdc: str | None = None
@@ -496,9 +504,12 @@ class Btc15mTerminalWindowTearSheet(BaseModel):
     current_live_btc_price: str | None = None
     up_price: str | None = None
     down_price: str | None = None
+    display_volume: str | None = None
     selected_side: str | None = None
     target_token_id: str | None = None
     target_outcome: str | None = None
+    paper_budget_usdc: str | None = None
+    rung_notionals_usdc: list[str] = Field(default_factory=list)
     avg_entry_price: str | None = None
     exposure_quantity: str | None = None
     exposure_notional_usdc: str | None = None
@@ -545,11 +556,14 @@ class Btc15mTerminalSessionRecord(BaseModel):
     current_live_btc_price: str | None = None
     up_price: str | None = None
     down_price: str | None = None
+    display_volume: str | None = None
     selected_side: str | None = None
     target_token_id: str | None = None
     target_outcome: str | None = None
     start_price_proxy_v1: str | None = None
     end_price_proxy_v1: str | None = None
+    paper_budget_usdc: str | None = None
+    rung_notionals_usdc: list[str] = Field(default_factory=list)
     avg_entry_price: str | None = None
     exposure_quantity: str | None = None
     exposure_notional_usdc: str | None = None

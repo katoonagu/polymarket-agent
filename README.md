@@ -136,6 +136,7 @@ Strategy evaluation is still read-only and persists candidate intents plus revie
 .venv\Scripts\pm strategy btc15m terminal --current --json
 .venv\Scripts\pm strategy btc15m terminal --follow-current --observe-only --json
 .venv\Scripts\pm strategy btc15m terminal --wait-next --json
+.venv\Scripts\pm strategy btc15m terminal --follow-current --arm-next --mode paper --budget-usdc 100 --rungs 40,30,30
 .venv\Scripts\pm strategy btc15m terminal --follow-current --mode paper
 .venv\Scripts\pm strategy btc15m terminal --follow-current --mode live --confirm
 .venv\Scripts\pm strategy btc15m terminal --wait-next --mode live --confirm
@@ -156,14 +157,17 @@ Rules:
 - `campaign next-window --slug <market-slug>` and `campaign run --slug <market-slug>` target that exact market instead of relying on recurring discovery
 - `terminal --follow-current` is the canonical BTC15m operator session; `--current` remains a compatibility alias with the same current-window-first behavior
 - the terminal now prioritizes the live active BTC15m market immediately, keeps slug-first timing authoritative, and auto-rolls to the next slug while the operator stays attached
-- the terminal now keeps display truth separate from strategy truth: page-style `display_price_to_beat`, displayed BTC, displayed Up/Down prices, countdown, and source metadata are persisted independently from Chainlink boundary state, start proxies, and ladder state
+- the terminal now keeps display truth separate from strategy truth: page-style `display_price_to_beat`, displayed BTC, displayed Up/Down prices, displayed volume, countdown, and source metadata are persisted independently from Chainlink boundary state, start proxies, and ladder state
 - the primary terminal screen is page-parity-first: price to beat, live BTC price, Up price, Down price, countdown, midpoint/spread, and visible liquidity are shown before Binance diagnostics
-- page parity is slug-first and strict: `page_exact` now requires structured public page bootstrap or hydration state for the active slug, while weaker extraction paths are labeled `page_estimated`, `clob_emulated`, or `page_unavailable`
+- page parity is slug-first and strict: `page_exact` now requires structured public page bootstrap or hydration state for the active slug, or exact browser-rendered public page values on the optional `terminal-browser` extra; weaker extraction paths are labeled `page_estimated`, `clob_emulated`, or `page_unavailable`
 - displayed Up/Down prices now prefer exact page truth, then emulate Polymarket display rules from public CLOB state: midpoint when spread is `<= 0.10`, otherwise latest public last-trade price; if safe emulation is unavailable the terminal shows explicit unavailable markers instead of stale reused prices
+- displayed BTC and displayed volume stay page-truth-only on the terminal surface; when exact public page truth is unavailable the operator sees explicit unavailable markers plus source notes instead of Chainlink or Binance substitutions
 - Binance is now a secondary diagnostics strip and may collapse when page-truth display is healthy
 - late attach on `terminal --follow-current` now degrades into `OBSERVE_ONLY` instead of dying immediately when the start boundary is already unrecoverable, then continues forward into the next slug
 - `terminal --follow-current --observe-only` keeps the session attached for the rest of the active window without arming the ladder
 - `terminal --wait-next` watches the current tape, arms exactly one next BTC15m window when pre-start capture opens, writes a tear sheet, and exits
+- `terminal --follow-current --arm-next` keeps the current market on screen, then arms and runs the next eligible paper window without requiring reattach
+- terminal paper sizing is operator-configurable with `--budget-usdc <n>` and `--rungs <a,b,c>`; when only budget is provided the default `20:15:15` ladder scales proportionally
 - `terminal --json` is snapshot-only and exits immediately; it never tries to animate JSON
 - `terminal --mode live --confirm` is the only BTC15m live execution surface on this branch and still requires inline per-action confirmation before posting or cancelling any rung
 - `terminal replay --session-id` replays persisted terminal snapshots only and does not call live market or oracle endpoints

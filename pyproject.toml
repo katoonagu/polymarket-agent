@@ -24,6 +24,9 @@ dev = [
   "ruff>=0.4,<1.0",
   "mypy>=1.9,<2.0",
 ]
+terminal-browser = [
+  "playwright>=1.52,<2.0",
+]
 
 [project.scripts]
 pm = "pm.cli.app:main"

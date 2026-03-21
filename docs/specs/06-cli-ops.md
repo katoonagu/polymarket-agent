@@ -590,6 +590,7 @@ One strategy-specific exception now exists on the current branch:
 - `pm strategy btc15m terminal --follow-current`
 - `pm strategy btc15m terminal --current`
 - `pm strategy btc15m terminal --follow-current --observe-only`
+- `pm strategy btc15m terminal --follow-current --arm-next --mode paper --budget-usdc 100 --rungs 40,30,30`
 - `pm strategy btc15m terminal --wait-next`
 - `pm strategy btc15m terminal replay --session-id <id>`
 - `pm strategy btc15m terminal report [--session-id <id>]`
@@ -630,14 +631,20 @@ Richer human-readable tables are now implemented for selected operator commands 
   into observe-only rather than failing the attached session immediately
 - `pm strategy btc15m terminal --wait-next` remains bounded to exactly one next
   armed BTC15m window; it is not an auto-roll daemon
+- `pm strategy btc15m terminal --follow-current --arm-next` keeps the current
+  market attached, then arms and runs the next eligible paper window without
+  requiring a second attach
 - the BTC15m terminal now prioritizes the active Polymarket market display and
   keeps operator display truth separate from internal strategy state
 - displayed BTC, price-to-beat, and Up/Down page values are slug-first and
-  provenance-aware: `page_exact` requires structured public page state,
-  `page_estimated` covers bounded page-text fallback, `clob_emulated` covers
-  public CLOB display emulation, and `page_unavailable` is preferred over
-  misleading reused prices; strategy start proxies are never reused as display
-  values
+  provenance-aware: `page_exact` requires structured public page state or
+  exact browser-rendered public page values when the optional
+  `terminal-browser` extra is installed, `page_estimated` covers bounded
+  page-text fallback, `clob_emulated` covers public CLOB display emulation,
+  and `page_unavailable` is preferred over misleading reused prices; strategy
+  start proxies are never reused as display values
+- terminal paper sizing is explicit via `--budget-usdc` and `--rungs`; when
+  only budget is provided the default `20:15:15` ladder scales proportionally
 - Binance remains a compact secondary diagnostics panel and may collapse when
   Polymarket page-truth display is healthy
 - intelligence, strategy, ops, and execution remain separate modules; execution alone may place or cancel orders

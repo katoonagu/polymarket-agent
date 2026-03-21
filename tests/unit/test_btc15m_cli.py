@@ -200,6 +200,9 @@ class FakeBtc15mStrategyService:
         mode: str = "paper",
         confirm: bool = False,
         observe_only: bool = False,
+        arm_next: bool = False,
+        budget_usdc: str | None = None,
+        rungs: str | None = None,
         snapshot_only: bool = False,
         session_window_limit: int | None = 1,
         on_snapshot=None,
@@ -208,6 +211,9 @@ class FakeBtc15mStrategyService:
         _ = confirm
         _ = confirm_action
         _ = session_window_limit
+        _ = arm_next
+        resolved_budget = budget_usdc or "50"
+        resolved_rungs = (rungs.split(",") if rungs is not None else ["20", "15", "15"])
         snapshot = self.dashboard_current().latest_snapshot
         assert snapshot is not None
         snapshot = snapshot.model_copy(
@@ -218,6 +224,8 @@ class FakeBtc15mStrategyService:
                 "observe_only": observe_only,
                 "window_status": "OBSERVE_ONLY" if observe_only else "ENTRY_WINDOW_OPEN",
                 "selected_side": None if observe_only else "UP",
+                "paper_budget_usdc": resolved_budget,
+                "rung_notionals_usdc": resolved_rungs,
                 "latest_events": [],
             }
         )
@@ -245,11 +253,14 @@ class FakeBtc15mStrategyService:
                 boundary_status="complete",
                 display=_display_truth(),
                 current_window_label="10:30 - 10:45 UTC",
-                page_parity_source="api",
+                page_parity_source="page_exact",
                 price_to_beat="99.5",
                 current_live_btc_price="100",
                 up_price="0.31",
                 down_price="0.69",
+                display_volume="120K",
+                paper_budget_usdc=resolved_budget,
+                rung_notionals_usdc=resolved_rungs,
                 selected_side=None if observe_only else "UP",
                 latest_snapshot=snapshot,
                 latest_evaluation=None if observe_only else _evaluation(),
@@ -271,11 +282,14 @@ class FakeBtc15mStrategyService:
                         boundary_status="complete",
                         display=_display_truth(),
                         current_window_label="10:30 - 10:45 UTC",
-                        page_parity_source="api",
+                        page_parity_source="page_exact",
                         price_to_beat="99.5",
                         current_live_btc_price="100",
                         up_price="0.31",
                         down_price="0.69",
+                        display_volume="120K",
+                        paper_budget_usdc=resolved_budget,
+                        rung_notionals_usdc=resolved_rungs,
                         selected_side=None if observe_only else "UP",
                         latest_snapshot=snapshot,
                         latest_evaluation=None if observe_only else _evaluation(),
@@ -309,6 +323,8 @@ class FakeBtc15mStrategyService:
         *,
         mode: str = "paper",
         confirm: bool = False,
+        budget_usdc: str | None = None,
+        rungs: str | None = None,
         snapshot_only: bool = False,
         session_window_limit: int | None = 1,
         on_snapshot=None,
@@ -317,6 +333,8 @@ class FakeBtc15mStrategyService:
         _ = confirm
         _ = confirm_action
         _ = session_window_limit
+        resolved_budget = budget_usdc or "50"
+        resolved_rungs = (rungs.split(",") if rungs is not None else ["20", "15", "15"])
         snapshot = self.dashboard_current().latest_snapshot
         assert snapshot is not None
         snapshot = snapshot.model_copy(
@@ -326,6 +344,8 @@ class FakeBtc15mStrategyService:
                 "attach_mode": "wait_next",
                 "observe_only": True,
                 "window_status": "WAITING_FOR_NEXT_WINDOW",
+                "paper_budget_usdc": resolved_budget,
+                "rung_notionals_usdc": resolved_rungs,
                 "latest_events": [],
             }
         )
@@ -344,11 +364,14 @@ class FakeBtc15mStrategyService:
             window=_window_record().window,
             display=_display_truth(),
             current_window_label="10:30 - 10:45 UTC",
-            page_parity_source="api",
+            page_parity_source="page_exact",
             price_to_beat="99.5",
             current_live_btc_price="100",
             up_price="0.31",
             down_price="0.69",
+            display_volume="120K",
+            paper_budget_usdc=resolved_budget,
+            rung_notionals_usdc=resolved_rungs,
             selected_side="UP",
             latest_snapshot=snapshot,
             latest_evaluation=_evaluation(),
@@ -366,11 +389,14 @@ class FakeBtc15mStrategyService:
                     boundary_status="complete",
                     display=_display_truth(),
                     current_window_label="10:30 - 10:45 UTC",
-                    page_parity_source="api",
+                    page_parity_source="page_exact",
                     price_to_beat="99.5",
                     current_live_btc_price="100",
                     up_price="0.31",
                     down_price="0.69",
+                    display_volume="120K",
+                    paper_budget_usdc=resolved_budget,
+                    rung_notionals_usdc=resolved_rungs,
                     selected_side="UP",
                     latest_snapshot=snapshot,
                     latest_evaluation=_evaluation(),
@@ -1031,6 +1057,54 @@ def test_btc15m_terminal_follow_current_json(monkeypatch) -> None:
     assert payload["latest_snapshot"]["display"]["display_source"] == "page_exact"
 
 
+def test_btc15m_terminal_follow_current_arm_next_json(monkeypatch) -> None:
+    monkeypatch.setattr("pm.cli.strategy_btc15m.Btc15mStrategyService", FakeBtc15mStrategyService)
+
+    result = runner.invoke(
+        app,
+        [
+            "strategy",
+            "btc15m",
+            "terminal",
+            "--follow-current",
+            "--arm-next",
+            "--budget-usdc",
+            "100",
+            "--rungs",
+            "40,30,30",
+            "--json",
+        ],
+    )
+
+    assert result.exit_code == 0
+    payload = json.loads(result.stdout)
+    assert payload["latest_snapshot"]["paper_budget_usdc"] == "100"
+    assert payload["latest_snapshot"]["rung_notionals_usdc"] == ["40", "30", "30"]
+    assert payload["latest_snapshot"]["display"]["display_volume"] == "120K"
+
+
+def test_btc15m_terminal_wait_next_json_accepts_budget_controls(monkeypatch) -> None:
+    monkeypatch.setattr("pm.cli.strategy_btc15m.Btc15mStrategyService", FakeBtc15mStrategyService)
+
+    result = runner.invoke(
+        app,
+        [
+            "strategy",
+            "btc15m",
+            "terminal",
+            "--wait-next",
+            "--budget-usdc",
+            "60",
+            "--json",
+        ],
+    )
+
+    assert result.exit_code == 0
+    payload = json.loads(result.stdout)
+    assert payload["attach_mode"] == "wait_next"
+    assert payload["latest_snapshot"]["paper_budget_usdc"] == "60"
+
+
 def test_btc15m_terminal_requires_exactly_one_session_target(monkeypatch) -> None:
     monkeypatch.setattr("pm.cli.strategy_btc15m.Btc15mStrategyService", FakeBtc15mStrategyService)
 
@@ -1086,6 +1160,7 @@ def _display_truth() -> Btc15mTerminalDisplayTruth:
         display_up_price="0.31",
         display_down_price="0.69",
         display_countdown="09:00",
+        display_volume="120K",
         display_source="page_exact",
         display_window_label="10:30 - 10:45 UTC",
     )
