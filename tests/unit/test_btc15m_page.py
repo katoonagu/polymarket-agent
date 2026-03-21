@@ -218,6 +218,80 @@ def test_page_service_marks_browser_adapter_unavailable_without_false_exact() ->
     assert "browser_adapter_unavailable" in data.notes
 
 
+def test_page_service_terminal_current_prefers_browser_exact_snapshot() -> None:
+    market = _market()
+    service = Btc15mPageParityService(
+        client=_FakeClient({}),
+        browser_adapter=_FakeBrowserAdapter(
+            Btc15mPageParityData(
+                event_url="https://polymarket.com/market/btc-updown-15m-1774002600",
+                price_to_beat="101234.5",
+                current_live_btc_price="101240.1",
+                up_price="0.33",
+                down_price="0.67",
+                volume="120K",
+                field_sources={
+                    "price_to_beat": "page_exact",
+                    "current_live_btc_price": "page_exact",
+                    "up_price": "page_exact",
+                    "down_price": "page_exact",
+                    "volume": "page_exact",
+                },
+                matched_market_slug=market.market_slug,
+            )
+        ),
+    )
+
+    data = service.fetch_terminal_current(market)
+
+    assert data.price_to_beat == "101234.5"
+    assert data.current_live_btc_price == "101240.1"
+    assert data.up_price == "0.33"
+    assert data.down_price == "0.67"
+    assert data.volume == "120K"
+    assert data.stale is False
+    assert data.observed_at is not None
+
+
+def test_page_service_terminal_current_keeps_last_valid_exact_snapshot_when_browser_fails() -> None:
+    market = _market()
+    previous = Btc15mPageParityData(
+        event_url="https://polymarket.com/market/btc-updown-15m-1774002600",
+        price_to_beat="101234.5",
+        current_live_btc_price="101240.1",
+        up_price="0.33",
+        down_price="0.67",
+        volume="120K",
+        field_sources={
+            "price_to_beat": "page_exact",
+            "current_live_btc_price": "page_exact",
+            "up_price": "page_exact",
+            "down_price": "page_exact",
+            "volume": "page_exact",
+        },
+        matched_market_slug=market.market_slug,
+        observed_at="2026-03-20T10:39:00Z",
+    )
+    service = Btc15mPageParityService(
+        client=_FakeClient({}),
+        browser_adapter=_FakeBrowserAdapter(
+            Btc15mPageParityData(notes=["browser_adapter_unavailable"])
+        ),
+    )
+
+    data = service.fetch_terminal_current(market, previous=previous)
+
+    assert data.price_to_beat == "101234.5"
+    assert data.current_live_btc_price == "101240.1"
+    assert data.up_price == "0.33"
+    assert data.down_price == "0.67"
+    assert data.volume == "120K"
+    assert data.stale is True
+    assert data.observed_at == "2026-03-20T10:39:00Z"
+    assert "stale_last_valid_snapshot" in data.notes
+    assert "browser_adapter_unavailable" in data.notes
+
+
 def _market() -> NormalizedMarket:
     return NormalizedMarket(
         market_slug="btc-updown-15m-1774002600",

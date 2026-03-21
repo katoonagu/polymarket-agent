@@ -1142,6 +1142,8 @@ def _record_display_truth(record: object) -> Btc15mTerminalDisplayTruth:
         display_source=getattr(record, "page_parity_source", None),
         display_window_label=getattr(record, "current_window_label", None),
         display_url=getattr(record, "page_parity_url", None),
+        display_observed_at=None,
+        display_stale=False,
         display_notes=[],
     )
 
@@ -1160,11 +1162,11 @@ def _format_countdown(countdown_seconds: int | None) -> str | None:
 
 def _render_terminal_snapshot(snapshot: Btc15mDashboardSnapshotRecord) -> RenderableType:
     display = _snapshot_display_truth(snapshot)
-    parity_healthy = (display.display_source or "page_unavailable") in {
-        "page_exact",
-        "page_estimated",
-    }
-    binance_compact = parity_healthy and not any(
+    parity_healthy = (
+        (display.display_source or "page_unavailable") == "page_exact"
+        and not display.display_stale
+    )
+    show_binance = not parity_healthy or any(
         "binance" in flag or "divergence" in flag for flag in snapshot.manipulation_flags
     )
     header = summary_table(
@@ -1173,11 +1175,10 @@ def _render_terminal_snapshot(snapshot: Btc15mDashboardSnapshotRecord) -> Render
             ("Market", snapshot.market_slug),
             ("Window label", display.display_window_label or "-"),
             ("Mode", str(snapshot.mode)),
-            ("Attach", snapshot.attach_mode),
             ("State", snapshot.window_status),
             ("Countdown", display.display_countdown or str(snapshot.countdown_seconds or 0)),
+            ("Attach", snapshot.attach_mode),
             ("Observe only", "yes" if snapshot.observe_only else "no"),
-            ("Window", f"{snapshot.window_start_at or '-'} -> {snapshot.window_end_at or '-'}"),
         ],
     )
     market_focus = summary_table(
@@ -1188,26 +1189,24 @@ def _render_terminal_snapshot(snapshot: Btc15mDashboardSnapshotRecord) -> Render
             ("Up", display.display_up_price or "-"),
             ("Down", display.display_down_price or "-"),
             ("Countdown", display.display_countdown or "-"),
-            ("Selected side", snapshot.selected_side or "-"),
-            ("Status", snapshot.window_status),
+            ("Window", display.display_window_label or snapshot.market_slug),
             ("Display source", display.display_source or "-"),
+            ("Observed", display.display_observed_at or "-"),
+            ("Stale", "yes" if display.display_stale else "no"),
         ],
     )
     strategy = summary_table(
         title="Strategy",
         rows=[
+            ("Selected side", snapshot.selected_side or "-"),
+            ("Status", snapshot.direction_lock_status),
             ("Boundary", snapshot.boundary_status),
-            ("Start proxy", snapshot.start_price_proxy_v1 or "-"),
-            ("Direction", snapshot.direction_lock_status),
+            ("Chainlink start", snapshot.start_price_proxy_v1 or "-"),
+            ("Paper start", snapshot.paper_start_proxy_v1 or "-"),
             ("Budget", snapshot.paper_budget_usdc or "-"),
-            (
-                "Midpoint / spread",
-                f"{snapshot.current_midpoint or '-'} / {snapshot.current_spread or '-'}",
-            ),
             ("Avg entry", snapshot.avg_entry_price or "-"),
             ("Exposure", snapshot.exposure_notional_usdc or "-"),
             ("Filled / posted / cancelled", _terminal_rung_counts(snapshot)),
-            ("MFE / MAE", f"{snapshot.mfe_usdc or '-'} / {snapshot.mae_usdc or '-'}"),
         ],
     )
     ladder = row_table(
@@ -1266,8 +1265,8 @@ def _render_terminal_snapshot(snapshot: Btc15mDashboardSnapshotRecord) -> Render
         title="Market Context",
         rows=[
             (
-                "Midpoint / spread",
-                f"{snapshot.current_midpoint or '-'} / {snapshot.current_spread or '-'}",
+                "Spread / midpoint",
+                f"{snapshot.current_spread or '-'} / {snapshot.current_midpoint or '-'}",
             ),
             ("Visible @30¢", snapshot.visible_liquidity_030 or "-"),
             ("Visible @20¢", snapshot.visible_liquidity_020 or "-"),
@@ -1278,48 +1277,23 @@ def _render_terminal_snapshot(snapshot: Btc15mDashboardSnapshotRecord) -> Render
             ("Notes", ", ".join(display.display_notes) or "-"),
         ],
     )
-    binance = (
-        summary_table(
-            title="Binance",
-            rows=[
-                ("Spot", snapshot.current_binance_price or "-"),
+    binance = summary_table(
+        title="Binance Diagnostics",
+        rows=[
+            ("Spot", snapshot.current_binance_price or "-"),
+            (
+                "Best bid / ask",
+                f"{snapshot.binance_best_bid or '-'} / {snapshot.binance_best_ask or '-'}",
+            ),
+            (
+                "Near-touch depth",
                 (
-                    "Bid / ask",
-                    f"{snapshot.binance_best_bid or '-'} / {snapshot.binance_best_ask or '-'}",
+                    f"{snapshot.binance_near_touch_bid_depth or '-'} / "
+                    f"{snapshot.binance_near_touch_ask_depth or '-'}"
                 ),
-                ("Imbalance", snapshot.binance_near_touch_imbalance or "-"),
-            ],
-        )
-        if binance_compact
-        else summary_table(
-            title="Binance Diagnostics",
-            rows=[
-                ("Spot", snapshot.current_binance_price or "-"),
-                (
-                    "Best bid / ask",
-                    f"{snapshot.binance_best_bid or '-'} / {snapshot.binance_best_ask or '-'}",
-                ),
-                (
-                    "Near-touch depth",
-                    (
-                        f"{snapshot.binance_near_touch_bid_depth or '-'} / "
-                        f"{snapshot.binance_near_touch_ask_depth or '-'}"
-                    ),
-                ),
-                ("Imbalance", snapshot.binance_near_touch_imbalance or "-"),
-                (
-                    "Vol 1m / 3m",
-                    (
-                        f"{snapshot.binance_realized_vol_1m_bps or '-'} / "
-                        f"{snapshot.binance_realized_vol_3m_bps or '-'}"
-                    ),
-                ),
-                (
-                    "Volume 1m / 3m",
-                    f"{snapshot.binance_volume_1m or '-'} / {snapshot.binance_volume_3m or '-'}",
-                ),
-            ],
-        )
+            ),
+            ("Imbalance", snapshot.binance_near_touch_imbalance or "-"),
+        ],
     )
     events = row_table(
         title="Event Tape",
@@ -1339,6 +1313,7 @@ def _render_terminal_snapshot(snapshot: Btc15mDashboardSnapshotRecord) -> Render
         Layout(
             render_group(
                 Panel(market_focus, title="Page"),
+                Panel(strategy, title="Strategy"),
                 Panel(ladder, title="Ladder"),
             ),
             name="left",
@@ -1347,9 +1322,8 @@ def _render_terminal_snapshot(snapshot: Btc15mDashboardSnapshotRecord) -> Render
         Layout(
             render_group(
                 Panel(market_context, title="Polymarket"),
-                Panel(strategy, title="Strategy"),
                 Panel(context_summary, title="Market"),
-                Panel(binance, title="Binance"),
+                Panel(binance, title="Binance") if show_binance else empty_message(""),
             ),
             name="right",
             ratio=2,

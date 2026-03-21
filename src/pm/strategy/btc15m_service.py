@@ -103,7 +103,7 @@ DEFAULT_LIVE_TICK_CAPTURE_SECONDS = 1
 DEFAULT_TERMINAL_EVENT_LOG_LIMIT = 12
 DEFAULT_TERMINAL_SNAPSHOT_LOG_LIMIT = 8
 DEFAULT_TERMINAL_CONTEXT_REFRESH_SECONDS = 30
-DEFAULT_TERMINAL_PAGE_PARITY_REFRESH_SECONDS = 30
+DEFAULT_TERMINAL_PAGE_PARITY_REFRESH_SECONDS = 5
 DEFAULT_TERMINAL_REPLAY_REFRESH_SECONDS = 0.15
 DEFAULT_TERMINAL_SESSION_EVENT_LOG_LIMIT = 48
 DEFAULT_CAMPAIGN_WAIT_SECONDS = 15
@@ -223,6 +223,8 @@ class _TerminalRuntime:
     boundary_status: str = "pending"
     start_price_proxy_v1: str | None = None
     end_price_proxy_v1: str | None = None
+    paper_start_proxy_v1: str | None = None
+    paper_start_proxy_source: str | None = None
     selected_side: str | None = None
     decision_at: str | None = None
     target_token_id: str | None = None
@@ -2095,6 +2097,12 @@ class Btc15mStrategyService:
             if latest_window is not None
             else None
         )
+        runtime.paper_start_proxy_v1 = (
+            latest_window.paper_start_proxy_v1 if latest_window is not None else None
+        )
+        runtime.paper_start_proxy_source = (
+            latest_window.paper_start_proxy_source if latest_window is not None else None
+        )
         runtime.selected_side = (
             latest_window.decision
             if latest_window is not None and latest_window.decision in {"UP", "DOWN"}
@@ -2181,6 +2189,9 @@ class Btc15mStrategyService:
             runtime.decision_at = latest_evaluation.decision_at
             runtime.target_token_id = latest_evaluation.target_token_id
             runtime.target_outcome = latest_evaluation.target_outcome
+            if latest_evaluation.paper_start_proxy_v1 is not None:
+                runtime.paper_start_proxy_v1 = latest_evaluation.paper_start_proxy_v1
+                runtime.paper_start_proxy_source = latest_evaluation.paper_start_proxy_source
             runtime.favorable_marks.extend(latest_evaluation.max_favorable_path)
             runtime.mfe = _decimal(latest_evaluation.mfe_usdc)
             runtime.mae = _decimal(latest_evaluation.mae_usdc)
@@ -2409,16 +2420,45 @@ class Btc15mStrategyService:
         market = self._get_market_by_slug_or_none(runtime.resolved.window.market_slug)
         runtime.current_market = market
         if market is None:
-            runtime.page_parity_fallback = Btc15mPageParityData(
-                notes=["market_lookup_unavailable"],
-            )
+            if (
+                runtime.page_parity_fallback is not None
+                and runtime.page_parity_fallback.has_fields()
+            ):
+                runtime.page_parity_fallback = runtime.page_parity_fallback.stale_copy(
+                    "market_lookup_unavailable"
+                )
+            else:
+                runtime.page_parity_fallback = Btc15mPageParityData(
+                    stale=True,
+                    notes=["market_lookup_unavailable"],
+                )
             runtime.last_page_parity_refresh_at = sampled_at_dt
             return
         try:
-            runtime.page_parity_fallback = self._page_parity_service.fetch(market)
+            fetch_terminal_current = getattr(
+                self._page_parity_service,
+                "fetch_terminal_current",
+                None,
+            )
+            if callable(fetch_terminal_current):
+                runtime.page_parity_fallback = fetch_terminal_current(
+                    market,
+                    previous=runtime.page_parity_fallback,
+                )
+            else:
+                runtime.page_parity_fallback = self._page_parity_service.fetch(market)
         except Exception as exc:
             runtime.errors.append(_section_error("terminal_page_parity", exc))
-            runtime.page_parity_fallback = Btc15mPageParityData(notes=[str(exc)])
+            if (
+                runtime.page_parity_fallback is not None
+                and runtime.page_parity_fallback.has_fields()
+            ):
+                runtime.page_parity_fallback = runtime.page_parity_fallback.stale_copy(str(exc))
+            else:
+                runtime.page_parity_fallback = Btc15mPageParityData(
+                    stale=True,
+                    notes=[str(exc)],
+                )
         runtime.last_page_parity_refresh_at = sampled_at_dt
 
     def _update_terminal_boundaries(self, runtime: _TerminalRuntime) -> None:
@@ -2465,6 +2505,29 @@ class Btc15mStrategyService:
             seconds=timing_controls.post_end_grace_window_seconds
         )
         if runtime.start_price_proxy_v1 is None and now > post_start_deadline:
+            if runtime.paper_start_proxy_v1 is not None:
+                runtime.boundary_status = (
+                    "partial" if runtime.boundary_pre_start is not None else "pending"
+                )
+                return
+            if _should_use_terminal_paper_page_fallback(runtime):
+                fallback_price = _terminal_exact_page_price_to_beat(runtime.page_parity_fallback)
+                if fallback_price is not None:
+                    runtime.paper_start_proxy_v1 = fallback_price
+                    runtime.paper_start_proxy_source = "late_attach_page_fallback"
+                    runtime.boundary_status = (
+                        "partial" if runtime.boundary_pre_start is not None else "pending"
+                    )
+                    self._record_terminal_event(
+                        runtime,
+                        kind="paper_fallback",
+                        status="info",
+                        message=(
+                            "Using exact page Price to Beat as a paper-only late-attach "
+                            "start anchor."
+                        ),
+                    )
+                    return
             if runtime.attach_mode in {"current", "current_observe_only", "wait_next"}:
                 if "missing_start_proxy" not in runtime.skip_reasons:
                     runtime.skip_reasons.append("missing_start_proxy")
@@ -2497,7 +2560,7 @@ class Btc15mStrategyService:
             return
         if runtime.start_price_proxy_v1 is not None and runtime.end_price_proxy_v1 is not None:
             runtime.boundary_status = "complete"
-        elif runtime.start_price_proxy_v1 is not None:
+        elif _effective_terminal_start_proxy(runtime) is not None:
             runtime.boundary_status = "partial"
         else:
             runtime.boundary_status = "pending"
@@ -2519,6 +2582,7 @@ class Btc15mStrategyService:
         minute_five = start_dt + timedelta(seconds=timing_controls.direction_lock_offset_seconds)
         minute_ten = start_dt + timedelta(seconds=timing_controls.entry_window_end_offset_seconds)
         end_grace = end_dt + timedelta(seconds=timing_controls.post_end_grace_window_seconds)
+        effective_start_proxy = _effective_terminal_start_proxy(runtime)
         if runtime.wait_next_target_start_dt is not None:
             runtime.state = Btc15mTerminalState.WAITING_FOR_NEXT_WINDOW
             return
@@ -2529,7 +2593,7 @@ class Btc15mStrategyService:
             return
         if now < start_dt:
             runtime.state = Btc15mTerminalState.PRE_START_CAPTURE
-        elif runtime.start_price_proxy_v1 is None:
+        elif effective_start_proxy is None:
             runtime.state = Btc15mTerminalState.BOUNDARY_PENDING
         elif runtime.selected_side is None and now < minute_five:
             runtime.state = Btc15mTerminalState.DIRECTION_LOCK_PENDING
@@ -2612,7 +2676,7 @@ class Btc15mStrategyService:
         if runtime.selected_side in {"UP", "DOWN"}:
             return
         resolved = runtime.resolved
-        if resolved.window_start_dt is None or runtime.start_price_proxy_v1 is None:
+        if resolved.window_start_dt is None or _effective_terminal_start_proxy(runtime) is None:
             return
         decision_time = resolved.window_start_dt + MINUTE_FIVE_OFFSET
         if now < decision_time:
@@ -3043,6 +3107,8 @@ class Btc15mStrategyService:
             current_chainlink_price=current_chainlink_price,
             current_binance_price=current_binance_price,
             start_price_proxy_v1=runtime.start_price_proxy_v1,
+            paper_start_proxy_v1=runtime.paper_start_proxy_v1,
+            paper_start_proxy_source=runtime.paper_start_proxy_source,
             price_to_beat=display.display_price_to_beat,
             direction_lock_status=(
                 runtime.selected_side if runtime.selected_side is not None else runtime.state.value
@@ -3148,68 +3214,36 @@ class Btc15mStrategyService:
         display_window_label = fallback.current_window_label or _window_label(
             runtime.resolved.window
         )
-        display_price_to_beat = fallback.price_to_beat
+        display_price_to_beat = _page_exact_field_value(fallback, "price_to_beat")
         if display_price_to_beat is not None:
-            source = _page_field_source(fallback, "price_to_beat")
-            if source != "page_unavailable":
-                field_sources["price_to_beat"] = source
-        elif market is not None:
-            display_price_to_beat = _extract_display_price_to_beat_from_market(market)
-            if display_price_to_beat is not None:
-                field_sources["price_to_beat"] = "page_estimated"
-                notes.append("price_to_beat_market_text_fallback")
-            else:
-                notes.append("price_to_beat_unavailable")
+            field_sources["price_to_beat"] = "page_exact"
         else:
-            notes.append("price_to_beat_unavailable")
-        display_current_btc = fallback.current_live_btc_price
+            notes.append("price_to_beat_page_exact_unavailable")
+        display_current_btc = _page_exact_field_value(fallback, "current_live_btc_price")
         if display_current_btc is not None:
-            source = _page_field_source(fallback, "current_live_btc_price")
-            if source == "page_exact":
-                field_sources["current_live_btc_price"] = source
-            else:
-                display_current_btc = None
-                notes.append("current_btc_exact_unavailable")
+            field_sources["current_live_btc_price"] = "page_exact"
         else:
-            notes.append("current_btc_page_unavailable")
-        display_up_price = fallback.up_price
-        display_down_price = fallback.down_price
+            notes.append("current_btc_page_exact_unavailable")
+        display_up_price = _page_exact_field_value(fallback, "up_price")
         if display_up_price is not None:
-            source = _page_field_source(fallback, "up_price")
-            if source != "page_unavailable":
-                field_sources["up_price"] = source
-            else:
-                display_up_price = None
+            field_sources["up_price"] = "page_exact"
         else:
-            display_up_price, field_sources["up_price"] = _emulate_terminal_display_price(
-                up_level,
-                market_samples=runtime.market_samples,
-                side_name="up",
-                notes=notes,
-            )
+            notes.append("up_price_page_exact_unavailable")
+        display_down_price = _page_exact_field_value(fallback, "down_price")
         if display_down_price is not None:
-            source = _page_field_source(fallback, "down_price")
-            if source != "page_unavailable":
-                field_sources["down_price"] = source
-            else:
-                display_down_price = None
+            field_sources["down_price"] = "page_exact"
         else:
-            display_down_price, field_sources["down_price"] = _emulate_terminal_display_price(
-                down_level,
-                market_samples=runtime.market_samples,
-                side_name="down",
-                notes=notes,
-            )
-        display_volume = fallback.volume
+            notes.append("down_price_page_exact_unavailable")
+        display_volume = _page_exact_field_value(fallback, "volume")
         if display_volume is not None:
-            source = _page_field_source(fallback, "volume")
-            if source != "page_unavailable":
-                field_sources["volume"] = source
-            else:
-                display_volume = None
+            field_sources["volume"] = "page_exact"
         else:
-            notes.append("display_volume_unavailable")
-        display_source = _display_source_from_field_sources(field_sources)
+            notes.append("display_volume_page_exact_unavailable")
+        display_source = (
+            "page_exact"
+            if not fallback.stale and _terminal_display_has_full_exact_fields(field_sources)
+            else "page_unavailable"
+        )
         return Btc15mTerminalDisplayTruth(
             display_price_to_beat=display_price_to_beat,
             display_current_btc=display_current_btc,
@@ -3220,6 +3254,8 @@ class Btc15mStrategyService:
             display_source=display_source,
             display_window_label=display_window_label,
             display_url=fallback.event_url or _market_page_url(market),
+            display_observed_at=fallback.observed_at,
+            display_stale=fallback.stale,
             display_notes=notes,
         )
 
@@ -3232,6 +3268,10 @@ class Btc15mStrategyService:
             notes.append("Missing post-start Chainlink boundary tick.")
         if runtime.end_price_proxy_v1 is None:
             notes.append("Missing post-end Chainlink boundary tick.")
+        if runtime.paper_start_proxy_v1 is not None:
+            notes.append(
+                "Using paper-only late-attach start anchor from exact page truth."
+            )
         return Btc15mBoundaryDecisionRecord(
             window_id=runtime.resolved.window.window_id,
             condition_id=runtime.resolved.window.condition_id,
@@ -3246,6 +3286,8 @@ class Btc15mStrategyService:
             timing_controls=_default_timing_controls(),
             start_price_proxy_v1=runtime.start_price_proxy_v1,
             end_price_proxy_v1=runtime.end_price_proxy_v1,
+            paper_start_proxy_v1=runtime.paper_start_proxy_v1,
+            paper_start_proxy_source=runtime.paper_start_proxy_source,
             notes=notes,
         )
 
@@ -3256,7 +3298,10 @@ class Btc15mStrategyService:
         recorded_at: datetime,
     ) -> Btc15mWindowRecord:
         resolution_result = "PENDING"
-        if runtime.start_price_proxy_v1 is not None and runtime.end_price_proxy_v1 is not None:
+        if (
+            _effective_terminal_start_proxy(runtime) is not None
+            and runtime.end_price_proxy_v1 is not None
+        ):
             resolution_result = self._resolve_market_outcome(
                 self._build_terminal_boundary_decision(runtime)
             )
@@ -3286,6 +3331,8 @@ class Btc15mStrategyService:
             timing_controls=_default_timing_controls(),
             start_price_proxy_v1=runtime.start_price_proxy_v1,
             end_price_proxy_v1=runtime.end_price_proxy_v1,
+            paper_start_proxy_v1=runtime.paper_start_proxy_v1,
+            paper_start_proxy_source=runtime.paper_start_proxy_source,
             paper_budget_usdc=_decimal_text(runtime.paper_budget_usdc),
             rung_notionals_usdc=[
                 _decimal_text(notional) for notional in runtime.rung_notionals_usdc
@@ -3368,6 +3415,8 @@ class Btc15mStrategyService:
             selected_side=runtime.selected_side,
             target_token_id=runtime.target_token_id,
             target_outcome=runtime.target_outcome,
+            paper_start_proxy_v1=runtime.paper_start_proxy_v1,
+            paper_start_proxy_source=runtime.paper_start_proxy_source,
             paper_budget_usdc=_decimal_text(runtime.paper_budget_usdc),
             rung_notionals_usdc=[
                 _decimal_text(notional) for notional in runtime.rung_notionals_usdc
@@ -3451,6 +3500,8 @@ class Btc15mStrategyService:
             target_outcome=latest_window.target_outcome if latest_window is not None else None,
             start_price_proxy_v1=runtime.start_price_proxy_v1,
             end_price_proxy_v1=runtime.end_price_proxy_v1,
+            paper_start_proxy_v1=runtime.paper_start_proxy_v1,
+            paper_start_proxy_source=runtime.paper_start_proxy_source,
             paper_budget_usdc=_decimal_text(runtime.paper_budget_usdc),
             rung_notionals_usdc=[
                 _decimal_text(notional) for notional in runtime.rung_notionals_usdc
@@ -4010,8 +4061,9 @@ class Btc15mStrategyService:
         decision_at = _isoformat(decision_time)
         reasons: list[Btc15mReasonBlock] = []
         skip_reasons: list[str] = []
+        effective_start_proxy = _boundary_effective_start_proxy(boundary_decision)
 
-        if boundary_decision.start_price_proxy_v1 is None:
+        if effective_start_proxy is None:
             skip_reasons.append("missing_start_proxy")
             reasons.append(
                 Btc15mReasonBlock(
@@ -4066,7 +4118,7 @@ class Btc15mStrategyService:
             )
             return "SKIP", decision_at, skip_reasons, reasons
 
-        start_proxy = _decimal(boundary_decision.start_price_proxy_v1)
+        start_proxy = _decimal(effective_start_proxy)
         chainlink_price = _decimal(chainlink_tick.value)
         binance_price = _decimal(binance_tick.value)
         if chainlink_price > start_proxy and binance_price > start_proxy:
@@ -4099,12 +4151,10 @@ class Btc15mStrategyService:
         return "SKIP", decision_at, skip_reasons, reasons
 
     def _resolve_market_outcome(self, boundary_decision: Btc15mBoundaryDecisionRecord) -> str:
-        if (
-            boundary_decision.start_price_proxy_v1 is None
-            or boundary_decision.end_price_proxy_v1 is None
-        ):
+        start_proxy = _boundary_effective_start_proxy(boundary_decision)
+        if start_proxy is None or boundary_decision.end_price_proxy_v1 is None:
             return "PENDING"
-        start_price = _decimal(boundary_decision.start_price_proxy_v1)
+        start_price = _decimal(start_proxy)
         end_price = _decimal(boundary_decision.end_price_proxy_v1)
         if end_price > start_price:
             return "UP"
@@ -4343,6 +4393,8 @@ class Btc15mStrategyService:
             reason_blocks=reasons + guard_reasons,
             start_price_proxy_v1=record.start_price_proxy_v1,
             end_price_proxy_v1=record.end_price_proxy_v1,
+            paper_start_proxy_v1=record.paper_start_proxy_v1,
+            paper_start_proxy_source=record.paper_start_proxy_source,
             paper_budget_usdc=_record_paper_budget(record),
             rung_notionals_usdc=[_decimal_text(value) for value in rung_notionals],
             rungs=rung_results,
@@ -4478,6 +4530,8 @@ def _skip_evaluation(
         manipulation_flags=list(manipulation_flags or []),
         start_price_proxy_v1=record.start_price_proxy_v1,
         end_price_proxy_v1=record.end_price_proxy_v1,
+        paper_start_proxy_v1=record.paper_start_proxy_v1,
+        paper_start_proxy_source=record.paper_start_proxy_source,
         total_cost_usdc="0",
         settlement_value_usdc="0",
         realized_pnl_usdc="0",
@@ -4704,7 +4758,7 @@ def _evaluate_liquidity_guards(
                     )
                     manipulation_flags.append("binance_chainlink_directional_disagreement")
 
-    start_proxy = _decimal_optional(record.start_price_proxy_v1)
+    start_proxy = _decimal_optional(_record_effective_start_proxy(record))
     midpoint = _decimal_optional(target_level.midpoint if target_level is not None else None)
     if start_proxy is not None and midpoint is not None:
         latest_underlying = _latest_tick_before(
@@ -5130,8 +5184,63 @@ def _snapshot_display_truth(
         display_source=snapshot.page_parity_source,
         display_window_label=snapshot.current_window_label,
         display_url=snapshot.page_parity_url,
+        display_observed_at=None,
+        display_stale=False,
         display_notes=[],
     )
+
+
+def _page_exact_field_value(
+    page_data: Btc15mPageParityData | None,
+    field_name: str,
+) -> str | None:
+    if page_data is None:
+        return None
+    if page_data.field_sources.get(field_name) != "page_exact":
+        return None
+    value = getattr(page_data, field_name, None)
+    if not isinstance(value, str):
+        return None
+    stripped = value.strip()
+    return stripped or None
+
+
+def _terminal_display_has_full_exact_fields(field_sources: dict[str, str]) -> bool:
+    required = (
+        "price_to_beat",
+        "current_live_btc_price",
+        "up_price",
+        "down_price",
+        "volume",
+    )
+    return all(field_sources.get(field_name) == "page_exact" for field_name in required)
+
+
+def _terminal_exact_page_price_to_beat(
+    page_data: Btc15mPageParityData | None,
+) -> str | None:
+    return _page_exact_field_value(page_data, "price_to_beat")
+
+
+def _should_use_terminal_paper_page_fallback(runtime: _TerminalRuntime) -> bool:
+    return runtime.mode is Btc15mRunMode.PAPER and runtime.attach_mode in {
+        "current",
+        "current_observe_only",
+    }
+
+
+def _effective_terminal_start_proxy(runtime: _TerminalRuntime) -> str | None:
+    return runtime.start_price_proxy_v1 or runtime.paper_start_proxy_v1
+
+
+def _boundary_effective_start_proxy(
+    boundary_decision: Btc15mBoundaryDecisionRecord,
+) -> str | None:
+    return boundary_decision.start_price_proxy_v1 or boundary_decision.paper_start_proxy_v1
+
+
+def _record_effective_start_proxy(record: Btc15mWindowRecord) -> str | None:
+    return record.start_price_proxy_v1 or record.paper_start_proxy_v1
 
 
 def _format_terminal_countdown(countdown_seconds: int | None) -> str | None:

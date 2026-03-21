@@ -217,16 +217,19 @@ Define and validate the first market-specific recurring strategy track for BTC
   - current-window-first terminal behavior with automatic rollover across BTC15m
     slugs while the operator stays attached
   - explicit terminal display-truth layer separate from oracle and ladder state
-  - page-parity-first operator view with API-first Polymarket display fields,
-    slug-targeted public page fallback, optional browser-rendered exact page
-    mirroring on the `terminal-browser` extra, and page-style midpoint-or-last-trade
-    emulation when exact visible prices are unavailable
+  - browser-first page-parity operator view with rendered slug-matched public
+    page values on the optional `terminal-browser` extra, stale last-valid
+    snapshot retention when the mirror degrades, and explicit unavailable
+    markers instead of fake replacement numbers in the current-window page block
   - compact secondary Binance diagnostics with lower visual weight than the
     primary Polymarket operator display
   - bounded terminal-session history and report surface with per-window tear
     sheets and session-level rolling logs
   - late-attach fallback into observe-only instead of immediate terminal death,
     while keeping the session alive into the next slug
+  - paper-only late-attach fallback that can anchor the current window from
+    exact page Price to Beat as `paper_start_proxy_v1`, while true
+    `start_price_proxy_v1` stays Chainlink-only and live mode remains stricter
   - bounded `terminal --wait-next` flow that watches the current tape, arms one
     next BTC15m window, and exits with a tear sheet
   - `terminal --follow-current --arm-next` flow that stays current-window-first

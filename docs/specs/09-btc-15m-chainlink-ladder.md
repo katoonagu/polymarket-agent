@@ -75,8 +75,8 @@ Current workflow notes:
   recurring discovery is imperfect
 - `campaign run --slug` targets exactly one explicit window and then stops
 - `terminal --follow-current` is the canonical BTC15m operator session and
-  follows the active current market immediately; `--current` remains a
-  compatibility alias
+  follows the active current market immediately in paper-first mode;
+  `--current` remains a compatibility alias
 - the terminal now auto-rolls across BTC15m slugs while the operator stays
   attached and writes one tear sheet per completed window plus one session log
 - the terminal now persists a display-truth layer separate from strategy truth;
@@ -86,21 +86,24 @@ Current workflow notes:
 - the primary operator view is page-parity-first: price to beat, current live
   BTC price, Up price, Down price, countdown, midpoint/spread, and visible
   liquidity are shown before Binance diagnostics
-- page parity is slug-first and strict: `page_exact` requires structured public
-  page bootstrap or hydration state for the active slug, or exact
-  browser-rendered public page values when the optional `terminal-browser`
-  extra is installed; weaker paths are labeled `page_estimated`,
-  `clob_emulated`, or `page_unavailable`
-- displayed Up/Down prices follow public page-style emulation rules when exact
-  visible page prices are unavailable: use midpoint when spread is `<= 0.10`,
-  otherwise use latest public last-trade price; if neither is safe, show
-  explicit unavailable fields with notes instead of reusing stale display values
-- displayed price-to-beat must never reuse `start_price_proxy_v1`; it comes
-  only from exact page extraction or market-question/title parsing tied to the
-  active slug
+- attached current-window page truth is browser-first and strict:
+  `terminal-browser` uses Playwright-rendered slug-matched public page values
+  as the first-class source, and `page_exact` is emitted only when those exact
+  current values are truly extracted
+- if the browser page mirror degrades temporarily, the terminal keeps the last
+  valid exact page snapshot, marks it stale with `page_unavailable`, and shows
+  source notes instead of swapping in fake replacement numbers
+- displayed price-to-beat, displayed BTC, displayed Up/Down, and displayed
+  volume in the primary page block remain page-truth-only; they must never
+  reuse `start_price_proxy_v1` or inject Binance replacements
 - late attach on `terminal --follow-current` now falls back into `OBSERVE_ONLY`
   instead of hard-stopping when the start boundary cannot be recovered, then
   continues forward into the next slug
+- in `paper` mode only, a late attach with exact page Price to Beat may create
+  `paper_start_proxy_v1` with source `late_attach_page_fallback` so the
+  current window can still be paper-tested immediately; true
+  `start_price_proxy_v1` remains Chainlink-only and `live` never uses this
+  fallback
 - `terminal --follow-current --observe-only` keeps the current session attached
   without arming the ladder
 - `terminal --follow-current --arm-next` keeps the current market on screen and

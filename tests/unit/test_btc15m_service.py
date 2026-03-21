@@ -36,7 +36,6 @@ from pm.strategy import (
     WINDOWS_FILENAME,
     Btc15mBoundaryDecisionRecord,
     Btc15mLiquiditySampleRecord,
-    Btc15mMarketSample,
     Btc15mPaperRunRecord,
     Btc15mPolymarketLiquidityLevel,
     Btc15mRunMode,
@@ -338,6 +337,43 @@ class FakePageParityService:
         _ = market
         return self._data
 
+    def fetch_terminal_current(
+        self,
+        market: NormalizedMarket,
+        *,
+        previous: Btc15mPageParityData | None = None,
+    ) -> Btc15mPageParityData:
+        _ = previous
+        return self.fetch(market)
+
+
+class FakeTerminalPageParityService(FakePageParityService):
+    def __init__(self, responses: list[Btc15mPageParityData]) -> None:
+        super().__init__(responses[0] if responses else None)
+        self._responses = list(responses)
+
+    def fetch_terminal_current(
+        self,
+        market: NormalizedMarket,
+        *,
+        previous: Btc15mPageParityData | None = None,
+    ) -> Btc15mPageParityData:
+        _ = market
+        if self._responses:
+            response = self._responses.pop(0)
+            if (
+                previous is not None
+                and previous.field_sources.get("price_to_beat") == "page_exact"
+                and previous.field_sources.get("current_live_btc_price") == "page_exact"
+                and previous.field_sources.get("up_price") == "page_exact"
+                and previous.field_sources.get("down_price") == "page_exact"
+                and previous.field_sources.get("volume") == "page_exact"
+                and not response.has_fields()
+            ):
+                return previous.stale_copy(*response.notes)
+            return response
+        return self._data
+
 
 async def _noop_async_sleep(seconds: float) -> None:
     _ = seconds
@@ -369,6 +405,7 @@ def _service(
     market_intel_candidate: RecurringMarketCandidate | None | object = ...,
     order_lifecycle: FakeOrderLifecycle | None = None,
     page_parity_data: Btc15mPageParityData | None = None,
+    page_parity_service: FakePageParityService | None = None,
 ) -> Btc15mStrategyService:
     candidate = candidate or _candidate(COND_1, "btc-15m-up-down-1")
     FakeGammaClient.candidate = search_candidate or _search_candidate(candidate)
@@ -398,7 +435,7 @@ def _service(
             binance_events=binance_events or _binance_events(),
         ),
         binance_service=FakeBinanceService(),
-        page_parity_service=FakePageParityService(page_parity_data),
+        page_parity_service=page_parity_service or FakePageParityService(page_parity_data),
         order_lifecycle=order_lifecycle or FakeOrderLifecycle(),
         gamma_client_cls=FakeGammaClient,
         clob_client_cls=FakeClobClient,
@@ -736,6 +773,44 @@ def test_terminal_snapshot_late_attach_defaults_to_observe_only(tmp_path) -> Non
     assert "missing_start_proxy" in result.latest_snapshot.manipulation_flags
 
 
+def test_terminal_snapshot_late_attach_uses_paper_page_fallback_start_anchor(tmp_path) -> None:
+    candidate = _candidate(COND_1, "btc-updown-15m-1774002600")
+    service = _service(
+        tmp_path,
+        now=_dt("2026-03-20T10:31:05Z"),
+        candidate=candidate,
+        chainlink_events=[_crypto_event("chainlink", "2026-03-20T10:31:05Z", 101)],
+        binance_events=[_crypto_event("binance", "2026-03-20T10:31:05Z", 101)],
+        page_parity_data=Btc15mPageParityData(
+            event_url="https://polymarket.com/event/btc-15m-event",
+            current_window_label="BTC 15m active",
+            price_to_beat="101234.5",
+            current_live_btc_price="101240.1",
+            up_price="0.33",
+            down_price="0.67",
+            volume="120K",
+            field_sources={
+                "price_to_beat": "page_exact",
+                "current_live_btc_price": "page_exact",
+                "up_price": "page_exact",
+                "down_price": "page_exact",
+                "volume": "page_exact",
+            },
+            matched_market_slug="btc-updown-15m-1774002600",
+            observed_at="2026-03-20T10:31:05Z",
+        ),
+    )
+
+    result = service.terminal_current(snapshot_only=True)
+
+    assert result.latest_snapshot is not None
+    assert result.latest_snapshot.observe_only is False
+    assert result.latest_snapshot.paper_start_proxy_v1 == "101234.5"
+    assert result.latest_snapshot.paper_start_proxy_source == "late_attach_page_fallback"
+    assert result.latest_snapshot.start_price_proxy_v1 is None
+    assert result.latest_snapshot.window_status == Btc15mTerminalState.DIRECTION_LOCK_PENDING
+
+
 def test_terminal_snapshot_uses_page_parity_fallback_when_needed(tmp_path) -> None:
     candidate = _candidate(COND_1, "btc-updown-15m-1774002600")
     service = _service(
@@ -773,13 +848,16 @@ def test_terminal_snapshot_uses_page_parity_fallback_when_needed(tmp_path) -> No
     assert result.latest_snapshot.up_price == "0.33"
     assert result.latest_snapshot.down_price == "0.67"
     assert result.latest_snapshot.price_to_beat == "101234.5"
+    assert result.latest_snapshot.paper_start_proxy_v1 == "101234.5"
+    assert result.latest_snapshot.paper_start_proxy_source == "late_attach_page_fallback"
     assert result.latest_snapshot.start_price_proxy_v1 != result.latest_snapshot.price_to_beat
     assert result.latest_snapshot.display.display_price_to_beat == "101234.5"
     assert result.latest_snapshot.display.display_volume == "120K"
     assert result.latest_snapshot.display.display_source == "page_exact"
+    assert result.latest_snapshot.display.display_stale is False
 
 
-def test_terminal_snapshot_marks_partial_page_truth_as_estimated(tmp_path) -> None:
+def test_terminal_snapshot_marks_non_exact_page_truth_unavailable(tmp_path) -> None:
     candidate = _candidate(COND_1, "btc-updown-15m-1774002600")
     service = _service(
         tmp_path,
@@ -804,107 +882,62 @@ def test_terminal_snapshot_marks_partial_page_truth_as_estimated(tmp_path) -> No
 
     assert result.latest_snapshot is not None
     assert result.latest_snapshot.display is not None
-    assert result.latest_snapshot.display.display_source == "page_estimated"
-    assert result.latest_snapshot.display.display_current_btc is None
-
-
-def test_terminal_snapshot_emulates_display_prices_from_midpoint_when_spread_is_tight(
-    tmp_path,
-) -> None:
-    candidate = _candidate(COND_1, "btc-updown-15m-1774002600")
-    service = _service(
-        tmp_path,
-        now=_dt("2026-03-20T10:39:00Z"),
-        candidate=candidate,
-        chainlink_events=[_crypto_event("chainlink", "2026-03-20T10:39:00Z", 101)],
-        binance_events=[_crypto_event("binance", "2026-03-20T10:39:00Z", 102)],
-    )
-
-    result = service.terminal_current(snapshot_only=True)
-
-    assert result.latest_snapshot is not None
-    assert result.latest_snapshot.display is not None
-    assert result.latest_snapshot.display.display_source == "clob_emulated"
-    assert result.latest_snapshot.display.display_current_btc is None
-    assert result.latest_snapshot.display.display_up_price == "0.09"
-    assert result.latest_snapshot.display.display_down_price == "0.09"
-
-
-def test_terminal_snapshot_uses_last_trade_for_wide_spread_display(tmp_path) -> None:
-    candidate = _candidate(COND_1, "btc-updown-15m-1774002600")
-    service = _service(
-        tmp_path,
-        now=_dt("2026-03-20T10:39:00Z"),
-        candidate=candidate,
-    )
-    service._capture_liquidity_sample = lambda *args, **kwargs: _wide_liquidity_sample(  # type: ignore[attr-defined]
-        "btc15m:" + COND_1,
-        candidate.market_slug,
-    )
-    service._state.append_windows(  # type: ignore[attr-defined]
-        [
-            _window_record(
-                COND_1,
-                candidate.market_slug,
-                "2026-03-20T10:30:00Z",
-            ).model_copy(
-                update={
-                    "market_samples": [
-                        Btc15mMarketSample(
-                            token_id=TOKEN_UP,
-                            outcome="Up",
-                            event_type="last_trade_price",
-                            source="polymarket_market_ws",
-                            captured_at="2026-03-20T10:38:30Z",
-                            observed_at="2026-03-20T10:38:30Z",
-                            last_trade_price="0.29",
-                        ),
-                        Btc15mMarketSample(
-                            token_id=TOKEN_DOWN,
-                            outcome="Down",
-                            event_type="last_trade_price",
-                            source="polymarket_market_ws",
-                            captured_at="2026-03-20T10:38:31Z",
-                            observed_at="2026-03-20T10:38:31Z",
-                            last_trade_price="0.71",
-                        ),
-                    ]
-                }
-            )
-        ]
-    )
-
-    result = service.terminal_current(snapshot_only=True)
-
-    assert result.latest_snapshot is not None
-    assert result.latest_snapshot.display is not None
-    assert result.latest_snapshot.display.display_source == "clob_emulated"
-    assert result.latest_snapshot.display.display_up_price == "0.29"
-    assert result.latest_snapshot.display.display_down_price == "0.71"
-
-
-def test_terminal_snapshot_marks_wide_spread_without_last_trade_unavailable(tmp_path) -> None:
-    candidate = _candidate(COND_1, "btc-updown-15m-1774002600")
-    service = _service(
-        tmp_path,
-        now=_dt("2026-03-20T10:39:00Z"),
-        candidate=candidate,
-        market_events=[],
-    )
-    service._capture_liquidity_sample = lambda *args, **kwargs: _wide_liquidity_sample(  # type: ignore[attr-defined]
-        "btc15m:" + COND_1,
-        candidate.market_slug,
-    )
-
-    result = service.terminal_current(snapshot_only=True)
-
-    assert result.latest_snapshot is not None
-    assert result.latest_snapshot.display is not None
     assert result.latest_snapshot.display.display_source == "page_unavailable"
-    assert result.latest_snapshot.display.display_up_price is None
-    assert result.latest_snapshot.display.display_down_price is None
-    assert "up_display_last_trade_unavailable" in result.latest_snapshot.display.display_notes
-    assert "down_display_last_trade_unavailable" in result.latest_snapshot.display.display_notes
+    assert result.latest_snapshot.display.display_current_btc is None
+    assert result.latest_snapshot.display.display_price_to_beat is None
+
+
+def test_terminal_snapshot_keeps_last_valid_page_truth_when_browser_stalls(tmp_path) -> None:
+    candidate = _candidate(COND_1, "btc-updown-15m-1774002600")
+    service = _service(
+        tmp_path,
+        now=_dt("2026-03-20T10:39:00Z"),
+        candidate=candidate,
+        page_parity_service=FakeTerminalPageParityService(
+            [
+                Btc15mPageParityData(
+                    event_url="https://polymarket.com/event/btc-15m-event",
+                    current_window_label="BTC 15m active",
+                    price_to_beat="101234.5",
+                    current_live_btc_price="101240.1",
+                    up_price="0.33",
+                    down_price="0.67",
+                    volume="120K",
+                    field_sources={
+                        "price_to_beat": "page_exact",
+                        "current_live_btc_price": "page_exact",
+                        "up_price": "page_exact",
+                        "down_price": "page_exact",
+                        "volume": "page_exact",
+                    },
+                    matched_market_slug="btc-updown-15m-1774002600",
+                    observed_at="2026-03-20T10:39:00Z",
+                ),
+                Btc15mPageParityData(notes=["browser_adapter_unavailable"]),
+            ]
+        ),
+    )
+    current = service._resolve_current_window()  # type: ignore[attr-defined]
+    runtime = service._create_terminal_runtime(  # type: ignore[attr-defined]
+        session_id="terminal-stale-parity-test",
+        resolved=current.resolved,
+        mode=Btc15mRunMode.PAPER,
+        started_at_dt=_dt("2026-03-20T10:39:00Z"),
+        attach_mode="current",
+    )
+    first_snapshot = service._advance_terminal_runtime(runtime)  # type: ignore[attr-defined]
+    service._sleep(6)  # type: ignore[attr-defined]
+    result_snapshot = service._advance_terminal_runtime(runtime)  # type: ignore[attr-defined]
+
+    assert first_snapshot.display is not None
+    assert result_snapshot.display is not None
+    assert result_snapshot.display.display_source == "page_unavailable"
+    assert result_snapshot.display.display_stale is True
+    assert result_snapshot.display.display_price_to_beat == "101234.5"
+    assert result_snapshot.display.display_current_btc == "101240.1"
+    assert result_snapshot.display.display_up_price == "0.33"
+    assert result_snapshot.display.display_down_price == "0.67"
+    assert "stale_last_valid_snapshot" in result_snapshot.display.display_notes
 
 
 def test_terminal_wait_next_snapshot_stays_waiting_until_next_capture_opens(tmp_path) -> None:

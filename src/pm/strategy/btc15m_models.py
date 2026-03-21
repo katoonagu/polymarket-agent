@@ -172,6 +172,8 @@ class Btc15mBoundaryDecisionRecord(BaseModel):
     timing_controls: Btc15mTimingControls = Field(default_factory=Btc15mTimingControls)
     start_price_proxy_v1: str | None = None
     end_price_proxy_v1: str | None = None
+    paper_start_proxy_v1: str | None = None
+    paper_start_proxy_source: str | None = None
     notes: list[str] = Field(default_factory=list)
 
 
@@ -200,6 +202,8 @@ class Btc15mWindowRecord(BaseModel):
     timing_controls: Btc15mTimingControls = Field(default_factory=Btc15mTimingControls)
     start_price_proxy_v1: str | None = None
     end_price_proxy_v1: str | None = None
+    paper_start_proxy_v1: str | None = None
+    paper_start_proxy_source: str | None = None
     paper_budget_usdc: str | None = None
     rung_notionals_usdc: list[str] = Field(default_factory=list)
     decision: str = "PENDING"
@@ -270,6 +274,8 @@ class Btc15mPaperEvaluation(BaseModel):
     reason_blocks: list[Btc15mReasonBlock] = Field(default_factory=list)
     start_price_proxy_v1: str | None = None
     end_price_proxy_v1: str | None = None
+    paper_start_proxy_v1: str | None = None
+    paper_start_proxy_source: str | None = None
     paper_budget_usdc: str | None = None
     rung_notionals_usdc: list[str] = Field(default_factory=list)
     rungs: list[Btc15mLadderRungResult] = Field(default_factory=list)
@@ -414,6 +420,8 @@ class Btc15mTerminalDisplayTruth(BaseModel):
     display_source: str | None = None
     display_window_label: str | None = None
     display_url: str | None = None
+    display_observed_at: str | None = None
+    display_stale: bool = False
     display_notes: list[str] = Field(default_factory=list)
 
 
@@ -446,6 +454,8 @@ class Btc15mDashboardSnapshotRecord(BaseModel):
     current_chainlink_price: str | None = None
     current_binance_price: str | None = None
     start_price_proxy_v1: str | None = None
+    paper_start_proxy_v1: str | None = None
+    paper_start_proxy_source: str | None = None
     price_to_beat: str | None = None
     direction_lock_status: str = "pending"
     target_token_id: str | None = None
@@ -508,6 +518,8 @@ class Btc15mTerminalWindowTearSheet(BaseModel):
     selected_side: str | None = None
     target_token_id: str | None = None
     target_outcome: str | None = None
+    paper_start_proxy_v1: str | None = None
+    paper_start_proxy_source: str | None = None
     paper_budget_usdc: str | None = None
     rung_notionals_usdc: list[str] = Field(default_factory=list)
     avg_entry_price: str | None = None
@@ -562,6 +574,8 @@ class Btc15mTerminalSessionRecord(BaseModel):
     target_outcome: str | None = None
     start_price_proxy_v1: str | None = None
     end_price_proxy_v1: str | None = None
+    paper_start_proxy_v1: str | None = None
+    paper_start_proxy_source: str | None = None
     paper_budget_usdc: str | None = None
     rung_notionals_usdc: list[str] = Field(default_factory=list)
     avg_entry_price: str | None = None

@@ -155,15 +155,16 @@ Rules:
 - `--mode live` remains reserved on the recorder, replay, campaign, dashboard, and paper-run flows; bounded live execution exists only inside `pm strategy btc15m terminal --follow-current --mode live --confirm`
 - `paper-run --slug <market-slug>` is the direct explicit-market paper testing path for one live window
 - `campaign next-window --slug <market-slug>` and `campaign run --slug <market-slug>` target that exact market instead of relying on recurring discovery
-- `terminal --follow-current` is the canonical BTC15m operator session; `--current` remains a compatibility alias with the same current-window-first behavior
+- `terminal --follow-current --mode paper` is the practical default BTC15m operator session; `--current` remains a compatibility alias with the same current-window-first behavior
 - the terminal now prioritizes the live active BTC15m market immediately, keeps slug-first timing authoritative, and auto-rolls to the next slug while the operator stays attached
 - the terminal now keeps display truth separate from strategy truth: page-style `display_price_to_beat`, displayed BTC, displayed Up/Down prices, displayed volume, countdown, and source metadata are persisted independently from Chainlink boundary state, start proxies, and ladder state
-- the primary terminal screen is page-parity-first: price to beat, live BTC price, Up price, Down price, countdown, midpoint/spread, and visible liquidity are shown before Binance diagnostics
-- page parity is slug-first and strict: `page_exact` now requires structured public page bootstrap or hydration state for the active slug, or exact browser-rendered public page values on the optional `terminal-browser` extra; weaker extraction paths are labeled `page_estimated`, `clob_emulated`, or `page_unavailable`
-- displayed Up/Down prices now prefer exact page truth, then emulate Polymarket display rules from public CLOB state: midpoint when spread is `<= 0.10`, otherwise latest public last-trade price; if safe emulation is unavailable the terminal shows explicit unavailable markers instead of stale reused prices
-- displayed BTC and displayed volume stay page-truth-only on the terminal surface; when exact public page truth is unavailable the operator sees explicit unavailable markers plus source notes instead of Chainlink or Binance substitutions
+- the primary terminal screen is browser-page-truth-first: Price to Beat, Current Price, Up, Down, Countdown, and displayed volume come from the current rendered public page when available and stay visually ahead of strategy diagnostics
+- attached current-window page truth is browser-first on the optional `terminal-browser` extra: Playwright-rendered slug-matched public page values are the first-class source, and `page_exact` is emitted only when those exact current values are truly extracted
+- if the browser page mirror degrades temporarily, the terminal keeps the last valid exact page snapshot, marks it stale with `page_unavailable`, and shows source notes instead of swapping in fake replacement numbers from CLOB, Chainlink, or Binance
+- displayed BTC and displayed volume stay page-truth-only on the terminal surface; when exact public page truth is unavailable the operator sees explicit stale or unavailable markers instead of substitutions
 - Binance is now a secondary diagnostics strip and may collapse when page-truth display is healthy
-- late attach on `terminal --follow-current` now degrades into `OBSERVE_ONLY` instead of dying immediately when the start boundary is already unrecoverable, then continues forward into the next slug
+- late attach on `terminal --follow-current` still degrades into `OBSERVE_ONLY` when the real Chainlink start boundary is unrecoverable, but in `paper` mode the current window may now anchor on exact page Price to Beat via `paper_start_proxy_v1` with source `late_attach_page_fallback`
+- `start_price_proxy_v1` remains Chainlink-only strategy truth; the paper late-attach fallback never applies in `live`
 - `terminal --follow-current --observe-only` keeps the session attached for the rest of the active window without arming the ladder
 - `terminal --wait-next` watches the current tape, arms exactly one next BTC15m window when pre-start capture opens, writes a tear sheet, and exits
 - `terminal --follow-current --arm-next` keeps the current market on screen, then arms and runs the next eligible paper window without requiring reattach
