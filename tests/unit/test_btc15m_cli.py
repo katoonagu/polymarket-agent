@@ -135,7 +135,7 @@ class FakeBtc15mStrategyService:
             window_end_at="2026-03-20T10:45:00Z",
             display=_display_truth(),
             current_window_label="10:30 - 10:45 UTC",
-            page_parity_source="api",
+            page_parity_source="page_exact",
             current_live_btc_price="100",
             up_price="0.31",
             down_price="0.69",

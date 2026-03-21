@@ -1113,9 +1113,9 @@ def _format_countdown(countdown_seconds: int | None) -> str | None:
 
 def _render_terminal_snapshot(snapshot: Btc15mDashboardSnapshotRecord) -> RenderableType:
     display = _snapshot_display_truth(snapshot)
-    parity_healthy = (display.display_source or "unavailable") not in {
-        "degraded",
-        "unavailable",
+    parity_healthy = (display.display_source or "page_unavailable") in {
+        "page_exact",
+        "page_estimated",
     }
     binance_compact = parity_healthy and not any(
         "binance" in flag or "divergence" in flag for flag in snapshot.manipulation_flags
@@ -1134,63 +1134,49 @@ def _render_terminal_snapshot(snapshot: Btc15mDashboardSnapshotRecord) -> Render
         ],
     )
     market_focus = summary_table(
-        title="Market",
+        title="Current Market",
         rows=[
             ("Price to beat", display.display_price_to_beat or "-"),
-            (
-                "Live BTC",
-                display.display_current_btc or snapshot.current_chainlink_price or "-",
-            ),
-            ("Up price", display.display_up_price or "-"),
-            ("Down price", display.display_down_price or "-"),
-            ("Side", snapshot.selected_side or "-"),
-            ("Session result", snapshot.window_status),
+            ("Current BTC", display.display_current_btc or "-"),
+            ("Up", display.display_up_price or "-"),
+            ("Down", display.display_down_price or "-"),
+            ("Selected side", snapshot.selected_side or "-"),
+            ("Status", snapshot.window_status),
+            ("Display source", display.display_source or "-"),
+        ],
+    )
+    strategy = summary_table(
+        title="Strategy",
+        rows=[
+            ("Boundary", snapshot.boundary_status),
+            ("Start proxy", snapshot.start_price_proxy_v1 or "-"),
+            ("Direction", snapshot.direction_lock_status),
+            ("Chainlink", snapshot.current_chainlink_price or "-"),
             (
                 "Midpoint / spread",
                 f"{snapshot.current_midpoint or '-'} / {snapshot.current_spread or '-'}",
             ),
-            ("Display source", display.display_source or "-"),
+            ("Avg entry", snapshot.avg_entry_price or "-"),
+            ("Exposure", snapshot.exposure_notional_usdc or "-"),
+            ("MFE / MAE", f"{snapshot.mfe_usdc or '-'} / {snapshot.mae_usdc or '-'}"),
         ],
     )
-    boundary = summary_table(
-        title="Boundary / Lock",
-        rows=[
-            ("Boundary status", snapshot.boundary_status),
-            ("Start proxy", snapshot.start_price_proxy_v1 or "-"),
-            ("Chainlink", snapshot.current_chainlink_price or "-"),
-            ("Direction", snapshot.direction_lock_status),
-            ("Selected side", snapshot.selected_side or "-"),
-        ],
-    )
-    strategy = row_table(
+    ladder = row_table(
         title="Ladder",
-        columns=("Price", "State", "Qty", "Order", "Fill", "Visible"),
+        columns=("Level", "State", "Qty", "Fill", "Visible"),
         rows=[
             (
                 _format_cents_label(rung.price),
                 rung.state,
                 rung.quantity or "-",
-                rung.order_id or "-",
                 rung.fill_at or rung.cancellation_at or "-",
                 rung.visible_liquidity or "-",
             )
             for rung in snapshot.rungs
         ],
     )
-    exposure = summary_table(
-        title="Exposure / PnL",
-        rows=[
-            ("Avg entry", snapshot.avg_entry_price or "-"),
-            ("Exposure qty", snapshot.exposure_quantity or "-"),
-            ("Exposure USDC", snapshot.exposure_notional_usdc or "-"),
-            ("MFE", snapshot.mfe_usdc or "-"),
-            ("MAE", snapshot.mae_usdc or "-"),
-            ("Peak price", snapshot.max_favorable_price or "-"),
-            ("Time to peak", str(snapshot.time_to_peak_seconds or 0)),
-        ],
-    )
-    both_sides = row_table(
-        title="Both Sides",
+    market_context = row_table(
+        title="Polymarket",
         columns=("Side", "Bid", "Ask", "Mid", "Spread", "30¢", "20¢", "10¢"),
         rows=[
             (
@@ -1227,15 +1213,21 @@ def _render_terminal_snapshot(snapshot: Btc15mDashboardSnapshotRecord) -> Render
             ),
         ],
     )
-    market_context = summary_table(
+    context_summary = summary_table(
         title="Market Context",
         rows=[
-            ("Target", snapshot.target_outcome or "-"),
+            ("Chainlink", snapshot.current_chainlink_price or "-"),
+            (
+                "Midpoint / spread",
+                f"{snapshot.current_midpoint or '-'} / {snapshot.current_spread or '-'}",
+            ),
             ("Visible @30¢", snapshot.visible_liquidity_030 or "-"),
             ("Visible @20¢", snapshot.visible_liquidity_020 or "-"),
             ("Visible @10¢", snapshot.visible_liquidity_010 or "-"),
             ("Open interest", snapshot.market_open_interest or "-"),
             ("Volume", snapshot.market_volume or "-"),
+            ("Flags", ", ".join(snapshot.manipulation_flags) or "-"),
+            ("Notes", ", ".join(display.display_notes) or "-"),
         ],
     )
     binance = (
@@ -1281,15 +1273,6 @@ def _render_terminal_snapshot(snapshot: Btc15mDashboardSnapshotRecord) -> Render
             ],
         )
     )
-    flags = summary_table(
-        title="Flags",
-        rows=[
-            ("Flags", ", ".join(snapshot.manipulation_flags) or "-"),
-            ("Parity URL", display.display_url or "-"),
-            ("Display notes", ", ".join(display.display_notes) or "-"),
-            ("Errors", str(len(snapshot.errors))),
-        ],
-    )
     events = row_table(
         title="Event Tape",
         columns=("At", "Kind", "Status", "Message"),
@@ -1308,28 +1291,20 @@ def _render_terminal_snapshot(snapshot: Btc15mDashboardSnapshotRecord) -> Render
         Layout(
             render_group(
                 Panel(market_focus, title="Page Parity"),
-                Panel(strategy, title="Strategy"),
-                Panel(both_sides, title="Both Sides"),
+                Panel(ladder, title="Ladder"),
             ),
             name="left",
             ratio=2,
         ),
         Layout(
             render_group(
-                Panel(boundary, title="Boundary"),
-                Panel(exposure, title="Exposure"),
                 Panel(market_context, title="Polymarket"),
-            ),
-            name="center",
-            ratio=2,
-        ),
-        Layout(
-            render_group(
+                Panel(strategy, title="Strategy"),
+                Panel(context_summary, title="Context"),
                 Panel(binance, title="Binance"),
-                Panel(flags, title="Flags"),
             ),
             name="right",
-            ratio=1,
+            ratio=2,
         ),
     )
     return layout

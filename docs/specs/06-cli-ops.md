@@ -632,9 +632,12 @@ Richer human-readable tables are now implemented for selected operator commands 
   armed BTC15m window; it is not an auto-roll daemon
 - the BTC15m terminal now prioritizes the active Polymarket market display and
   keeps operator display truth separate from internal strategy state
-- displayed BTC, price-to-beat, and Up/Down page values are API-first by slug,
-  then fall back to lightweight public-page extraction and page-style public
-  CLOB emulation; strategy start proxies are not reused as display values
+- displayed BTC, price-to-beat, and Up/Down page values are slug-first and
+  provenance-aware: `page_exact` requires structured public page state,
+  `page_estimated` covers bounded page-text fallback, `clob_emulated` covers
+  public CLOB display emulation, and `page_unavailable` is preferred over
+  misleading reused prices; strategy start proxies are never reused as display
+  values
 - Binance remains a compact secondary diagnostics panel and may collapse when
   Polymarket page-truth display is healthy
 - intelligence, strategy, ops, and execution remain separate modules; execution alone may place or cancel orders

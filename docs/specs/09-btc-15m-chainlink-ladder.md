@@ -85,12 +85,13 @@ Current workflow notes:
 - the primary operator view is page-parity-first: price to beat, current live
   BTC price, Up price, Down price, countdown, midpoint/spread, and visible
   liquidity are shown before Binance diagnostics
-- page parity is API-first with lightweight public current-page fallback only
-  for missing visible fields; fallback failure is non-fatal and explainable
+- page parity is slug-first and strict: `page_exact` requires structured public
+  page bootstrap or hydration state for the active slug; weaker paths are
+  labeled `page_estimated`, `clob_emulated`, or `page_unavailable`
 - displayed Up/Down prices follow public page-style emulation rules when exact
   visible page prices are unavailable: use midpoint when spread is `<= 0.10`,
-  otherwise use latest public last-trade price; if neither is safe, degrade to
-  persisted display values or explicit empty fields with notes
+  otherwise use latest public last-trade price; if neither is safe, show
+  explicit unavailable fields with notes instead of reusing stale display values
 - displayed price-to-beat must never reuse `start_price_proxy_v1`; it comes
   only from exact page extraction or market-question/title parsing tied to the
   active slug

@@ -158,8 +158,8 @@ Rules:
 - the terminal now prioritizes the live active BTC15m market immediately, keeps slug-first timing authoritative, and auto-rolls to the next slug while the operator stays attached
 - the terminal now keeps display truth separate from strategy truth: page-style `display_price_to_beat`, displayed BTC, displayed Up/Down prices, countdown, and source metadata are persisted independently from Chainlink boundary state, start proxies, and ladder state
 - the primary terminal screen is page-parity-first: price to beat, live BTC price, Up price, Down price, countdown, midpoint/spread, and visible liquidity are shown before Binance diagnostics
-- page parity is API-first by current slug, with lightweight public market-page fallback and page-style price emulation from public CLOB state when exact visible fields are missing
-- displayed Up/Down prices now prefer page truth, then emulate Polymarket display rules from public state: midpoint when spread is `<= 0.10`, otherwise latest public last-trade price; degraded empties or persisted display values are used when safe emulation is unavailable
+- page parity is slug-first and strict: `page_exact` now requires structured public page bootstrap or hydration state for the active slug, while weaker extraction paths are labeled `page_estimated`, `clob_emulated`, or `page_unavailable`
+- displayed Up/Down prices now prefer exact page truth, then emulate Polymarket display rules from public CLOB state: midpoint when spread is `<= 0.10`, otherwise latest public last-trade price; if safe emulation is unavailable the terminal shows explicit unavailable markers instead of stale reused prices
 - Binance is now a secondary diagnostics strip and may collapse when page-truth display is healthy
 - late attach on `terminal --follow-current` now degrades into `OBSERVE_ONLY` instead of dying immediately when the start boundary is already unrecoverable, then continues forward into the next slug
 - `terminal --follow-current --observe-only` keeps the session attached for the rest of the active window without arming the ladder

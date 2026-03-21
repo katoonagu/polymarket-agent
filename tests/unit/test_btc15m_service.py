@@ -34,7 +34,6 @@ from pm.strategy import (
     TERMINAL_SESSIONS_FILENAME,
     WINDOWS_FILENAME,
     Btc15mBoundaryDecisionRecord,
-    Btc15mDashboardSnapshotRecord,
     Btc15mLiquiditySampleRecord,
     Btc15mMarketSample,
     Btc15mPaperRunRecord,
@@ -751,6 +750,13 @@ def test_terminal_snapshot_uses_page_parity_fallback_when_needed(tmp_path) -> No
             current_live_btc_price="101240.1",
             up_price="0.33",
             down_price="0.67",
+            field_sources={
+                "price_to_beat": "page_exact",
+                "current_live_btc_price": "page_exact",
+                "up_price": "page_exact",
+                "down_price": "page_exact",
+            },
+            matched_market_slug="btc-updown-15m-1774002600",
         ),
     )
 
@@ -769,6 +775,35 @@ def test_terminal_snapshot_uses_page_parity_fallback_when_needed(tmp_path) -> No
     assert result.latest_snapshot.display.display_source == "page_exact"
 
 
+def test_terminal_snapshot_marks_partial_page_truth_as_estimated(tmp_path) -> None:
+    candidate = _candidate(COND_1, "btc-updown-15m-1774002600")
+    service = _service(
+        tmp_path,
+        now=_dt("2026-03-20T10:39:00Z"),
+        candidate=candidate,
+        chainlink_events=[],
+        binance_events=[],
+        page_parity_data=Btc15mPageParityData(
+            event_url="https://polymarket.com/event/btc-15m-event",
+            price_to_beat="101234.5",
+            up_price="0.33",
+            down_price="0.67",
+            field_sources={
+                "price_to_beat": "page_estimated",
+                "up_price": "page_estimated",
+                "down_price": "page_estimated",
+            },
+        ),
+    )
+
+    result = service.terminal_current(snapshot_only=True)
+
+    assert result.latest_snapshot is not None
+    assert result.latest_snapshot.display is not None
+    assert result.latest_snapshot.display.display_source == "page_estimated"
+    assert result.latest_snapshot.display.display_current_btc is None
+
+
 def test_terminal_snapshot_emulates_display_prices_from_midpoint_when_spread_is_tight(
     tmp_path,
 ) -> None:
@@ -785,8 +820,8 @@ def test_terminal_snapshot_emulates_display_prices_from_midpoint_when_spread_is_
 
     assert result.latest_snapshot is not None
     assert result.latest_snapshot.display is not None
-    assert result.latest_snapshot.display.display_source == "emulated_midpoint"
-    assert result.latest_snapshot.display.display_current_btc == "101"
+    assert result.latest_snapshot.display.display_source == "clob_emulated"
+    assert result.latest_snapshot.display.display_current_btc is None
     assert result.latest_snapshot.display.display_up_price == "0.09"
     assert result.latest_snapshot.display.display_down_price == "0.09"
 
@@ -839,12 +874,12 @@ def test_terminal_snapshot_uses_last_trade_for_wide_spread_display(tmp_path) -> 
 
     assert result.latest_snapshot is not None
     assert result.latest_snapshot.display is not None
-    assert result.latest_snapshot.display.display_source == "emulated_last_trade"
+    assert result.latest_snapshot.display.display_source == "clob_emulated"
     assert result.latest_snapshot.display.display_up_price == "0.29"
     assert result.latest_snapshot.display.display_down_price == "0.71"
 
 
-def test_terminal_snapshot_degrades_when_wide_spread_has_no_last_trade(tmp_path) -> None:
+def test_terminal_snapshot_marks_wide_spread_without_last_trade_unavailable(tmp_path) -> None:
     candidate = _candidate(COND_1, "btc-updown-15m-1774002600")
     service = _service(
         tmp_path,
@@ -856,31 +891,16 @@ def test_terminal_snapshot_degrades_when_wide_spread_has_no_last_trade(tmp_path)
         "btc15m:" + COND_1,
         candidate.market_slug,
     )
-    service._state.append_dashboard_snapshots(  # type: ignore[attr-defined]
-        [
-            Btc15mDashboardSnapshotRecord(
-                snapshot_id="persisted-display-1",
-                session_id="older-session",
-                window_id="btc15m:" + COND_1,
-                market_slug=candidate.market_slug,
-                sampled_at="2026-03-20T10:37:00Z",
-                view_kind="terminal",
-                window_status="ENTRY_WINDOW_OPEN",
-                up_price="0.28",
-                down_price="0.72",
-                price_to_beat="101200",
-            )
-        ]
-    )
 
     result = service.terminal_current(snapshot_only=True)
 
     assert result.latest_snapshot is not None
     assert result.latest_snapshot.display is not None
-    assert result.latest_snapshot.display.display_source == "degraded"
-    assert result.latest_snapshot.display.display_up_price == "0.28"
-    assert result.latest_snapshot.display.display_down_price == "0.72"
-    assert "up_display_reused_persisted" in result.latest_snapshot.display.display_notes
+    assert result.latest_snapshot.display.display_source == "page_unavailable"
+    assert result.latest_snapshot.display.display_up_price is None
+    assert result.latest_snapshot.display.display_down_price is None
+    assert "up_display_last_trade_unavailable" in result.latest_snapshot.display.display_notes
+    assert "down_display_last_trade_unavailable" in result.latest_snapshot.display.display_notes
 
 
 def test_terminal_wait_next_snapshot_stays_waiting_until_next_capture_opens(tmp_path) -> None:

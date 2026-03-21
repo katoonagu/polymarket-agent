@@ -3086,63 +3086,54 @@ class Btc15mStrategyService:
         if market is None:
             market = self._get_market_by_slug_or_none(runtime.resolved.window.market_slug)
             runtime.current_market = market
-        persisted_display = self._latest_persisted_terminal_display(runtime)
+        field_sources: dict[str, str] = {}
         display_window_label = fallback.current_window_label or _window_label(
             runtime.resolved.window
         )
         display_price_to_beat = fallback.price_to_beat
-        if display_price_to_beat is None and market is not None:
+        if display_price_to_beat is not None:
+            field_sources["price_to_beat"] = _page_field_source(
+                fallback,
+                "price_to_beat",
+            )
+        elif market is not None:
             display_price_to_beat = _extract_display_price_to_beat_from_market(market)
             if display_price_to_beat is not None:
+                field_sources["price_to_beat"] = "page_estimated"
                 notes.append("price_to_beat_market_text_fallback")
-        display_current_btc = fallback.current_live_btc_price or current_chainlink_price
-        if fallback.current_live_btc_price is None and current_chainlink_price is not None:
-            notes.append("current_btc_chainlink_fallback")
+            else:
+                notes.append("price_to_beat_unavailable")
+        else:
+            notes.append("price_to_beat_unavailable")
+        display_current_btc = fallback.current_live_btc_price
+        if display_current_btc is not None:
+            field_sources["current_live_btc_price"] = _page_field_source(
+                fallback,
+                "current_live_btc_price",
+            )
+        else:
+            notes.append("current_btc_page_unavailable")
         display_up_price = fallback.up_price
         display_down_price = fallback.down_price
-        if display_up_price is not None and display_down_price is not None:
-            display_source = "page_exact"
+        if display_up_price is not None:
+            field_sources["up_price"] = _page_field_source(fallback, "up_price")
         else:
-            up_source = None
-            down_source = None
-            if display_up_price is None:
-                display_up_price, up_source = _emulate_terminal_display_price(
-                    up_level,
-                    market_samples=runtime.market_samples,
-                    persisted_value=(
-                        persisted_display.display_up_price
-                        if persisted_display is not None
-                        else None
-                    ),
-                    side_name="up",
-                    notes=notes,
-                )
-            if display_down_price is None:
-                display_down_price, down_source = _emulate_terminal_display_price(
-                    down_level,
-                    market_samples=runtime.market_samples,
-                    persisted_value=(
-                        persisted_display.display_down_price
-                        if persisted_display is not None
-                        else None
-                    ),
-                    side_name="down",
-                    notes=notes,
-                )
-            display_source = _display_source_from_modes(
-                up_source,
-                down_source,
-                has_display_context=any(
-                    value is not None
-                    for value in (
-                        display_window_label,
-                        display_price_to_beat,
-                        display_current_btc,
-                        display_up_price,
-                        display_down_price,
-                    )
-                ),
+            display_up_price, field_sources["up_price"] = _emulate_terminal_display_price(
+                up_level,
+                market_samples=runtime.market_samples,
+                side_name="up",
+                notes=notes,
             )
+        if display_down_price is not None:
+            field_sources["down_price"] = _page_field_source(fallback, "down_price")
+        else:
+            display_down_price, field_sources["down_price"] = _emulate_terminal_display_price(
+                down_level,
+                market_samples=runtime.market_samples,
+                side_name="down",
+                notes=notes,
+            )
+        display_source = _display_source_from_field_sources(field_sources)
         return Btc15mTerminalDisplayTruth(
             display_price_to_beat=display_price_to_beat,
             display_current_btc=display_current_btc,
@@ -3154,18 +3145,6 @@ class Btc15mStrategyService:
             display_url=fallback.event_url or _market_page_url(market),
             display_notes=notes,
         )
-
-    def _latest_persisted_terminal_display(
-        self,
-        runtime: _TerminalRuntime,
-    ) -> Btc15mTerminalDisplayTruth | None:
-        if runtime.latest_snapshot is not None:
-            return _snapshot_display_truth(runtime.latest_snapshot)
-        for item in reversed(self._state.list_dashboard_snapshots()):
-            if item.window_id != runtime.resolved.window.window_id:
-                continue
-            return _snapshot_display_truth(item)
-        return None
 
     def _build_terminal_boundary_decision(
         self,
@@ -5134,16 +5113,12 @@ def _emulate_terminal_display_price(
     level: Btc15mPolymarketLiquidityLevel | None,
     *,
     market_samples: list[Btc15mMarketSample],
-    persisted_value: str | None,
     side_name: str,
     notes: list[str],
-) -> tuple[str | None, str | None]:
+) -> tuple[str | None, str]:
     if level is None:
-        if persisted_value is not None:
-            notes.append(f"{side_name}_display_reused_persisted")
-            return persisted_value, "degraded"
         notes.append(f"{side_name}_display_level_unavailable")
-        return None, "degraded"
+        return None, "page_unavailable"
     spread = _display_price_emulation_source(level)
     if spread is not None and spread <= Decimal("0.10"):
         midpoint = _coalesce_price(
@@ -5151,37 +5126,44 @@ def _emulate_terminal_display_price(
             _midpoint_optional_text(level.best_bid, level.best_ask),
         )
         if midpoint is not None:
-            return midpoint, "emulated_midpoint"
+            notes.append(f"{side_name}_display_midpoint_emulated")
+            return midpoint, "clob_midpoint"
     if spread is not None and spread > Decimal("0.10"):
         last_trade_price = _latest_market_sample_last_trade_price(market_samples, level.token_id)
         if last_trade_price is not None:
-            return last_trade_price, "emulated_last_trade"
-        if persisted_value is not None:
-            notes.append(f"{side_name}_display_reused_persisted")
-            return persisted_value, "degraded"
+            notes.append(f"{side_name}_display_last_trade_emulated")
+            return last_trade_price, "clob_last_trade"
         notes.append(f"{side_name}_display_last_trade_unavailable")
-        return None, "degraded"
-    if persisted_value is not None:
-        notes.append(f"{side_name}_display_reused_persisted")
-        return persisted_value, "degraded"
+        return None, "page_unavailable"
     notes.append(f"{side_name}_display_spread_unavailable")
-    return None, "degraded"
+    return None, "page_unavailable"
 
 
-def _display_source_from_modes(
-    *modes: str | None,
-    has_display_context: bool,
-) -> str:
-    normalized = {mode for mode in modes if mode is not None}
-    if "degraded" in normalized:
-        return "degraded"
-    if "emulated_last_trade" in normalized:
-        return "emulated_last_trade"
-    if "emulated_midpoint" in normalized:
-        return "emulated_midpoint"
-    if has_display_context:
-        return "degraded"
-    return "unavailable"
+def _page_field_source(page_data: Btc15mPageParityData, field_name: str) -> str:
+    source = page_data.field_sources.get(field_name)
+    if source in {"page_exact", "page_estimated"}:
+        return source
+    return "page_estimated"
+
+
+def _display_source_from_field_sources(field_sources: dict[str, str]) -> str:
+    critical_fields = (
+        "price_to_beat",
+        "current_live_btc_price",
+        "up_price",
+        "down_price",
+    )
+    exact_flags = [
+        field_sources.get(field_name) == "page_exact" for field_name in critical_fields
+    ]
+    if all(exact_flags):
+        return "page_exact"
+    normalized = {value for value in field_sources.values() if value is not None}
+    if "clob_midpoint" in normalized or "clob_last_trade" in normalized:
+        return "clob_emulated"
+    if "page_estimated" in normalized:
+        return "page_estimated"
+    return "page_unavailable"
 
 
 def _binance_near_touch_imbalance(snapshot: Any | None) -> str | None:
