@@ -45,6 +45,7 @@ from pm.strategy import (
     Btc15mTerminalState,
     Btc15mWindowRecord,
 )
+from pm.strategy.btc15m_page import Btc15mPageParityData
 from pm.stream.models import (
     BoundedStreamSession,
     CapturedStreamEvent,
@@ -327,6 +328,15 @@ class FakeOrderLifecycle:
         return type("FakeCancelResponse", (), {"decision": "CANCELLED"})()
 
 
+class FakePageParityService:
+    def __init__(self, data: Btc15mPageParityData | None = None) -> None:
+        self._data = data or Btc15mPageParityData()
+
+    def fetch(self, market: NormalizedMarket) -> Btc15mPageParityData:
+        _ = market
+        return self._data
+
+
 async def _noop_async_sleep(seconds: float) -> None:
     _ = seconds
 
@@ -355,6 +365,7 @@ def _service(
     binance_events: list[CapturedStreamEvent] | None = None,
     market_intel_candidate: RecurringMarketCandidate | None | object = ...,
     order_lifecycle: FakeOrderLifecycle | None = None,
+    page_parity_data: Btc15mPageParityData | None = None,
 ) -> Btc15mStrategyService:
     candidate = candidate or _candidate(COND_1, "btc-15m-up-down-1")
     FakeGammaClient.candidate = search_candidate or _search_candidate(candidate)
@@ -384,6 +395,7 @@ def _service(
             binance_events=binance_events or _binance_events(),
         ),
         binance_service=FakeBinanceService(),
+        page_parity_service=FakePageParityService(page_parity_data),
         order_lifecycle=order_lifecycle or FakeOrderLifecycle(),
         gamma_client_cls=FakeGammaClient,
         clob_client_cls=FakeClobClient,
@@ -700,6 +712,7 @@ def test_terminal_snapshot_only_returns_terminal_view(tmp_path) -> None:
     assert result.latest_snapshot.start_price_proxy_v1 == "100"
     assert result.latest_snapshot.observe_only is False
     assert result.latest_snapshot.attach_mode == "current"
+    assert result.latest_snapshot.window_status != Btc15mTerminalState.WAITING_FOR_NEXT_WINDOW
 
 
 def test_terminal_snapshot_late_attach_defaults_to_observe_only(tmp_path) -> None:
@@ -718,6 +731,35 @@ def test_terminal_snapshot_late_attach_defaults_to_observe_only(tmp_path) -> Non
     assert result.latest_snapshot.window_status == Btc15mTerminalState.OBSERVE_ONLY
     assert result.latest_snapshot.observe_only is True
     assert "missing_start_proxy" in result.latest_snapshot.manipulation_flags
+
+
+def test_terminal_snapshot_uses_page_parity_fallback_when_needed(tmp_path) -> None:
+    candidate = _candidate(COND_1, "btc-updown-15m-1774002600")
+    service = _service(
+        tmp_path,
+        now=_dt("2026-03-20T10:39:00Z"),
+        candidate=candidate,
+        chainlink_events=[],
+        binance_events=[],
+        page_parity_data=Btc15mPageParityData(
+            event_url="https://polymarket.com/event/btc-15m-event",
+            current_window_label="BTC 15m active",
+            price_to_beat="101234.5",
+            current_live_btc_price="101240.1",
+            up_price="0.33",
+            down_price="0.67",
+        ),
+    )
+
+    result = service.terminal_current(snapshot_only=True)
+
+    assert result.latest_snapshot is not None
+    assert result.latest_snapshot.page_parity_source == "mixed"
+    assert result.latest_snapshot.current_window_label == "10:30 - 10:45 UTC"
+    assert result.latest_snapshot.current_live_btc_price == "101240.1"
+    assert result.latest_snapshot.up_price == "0.09"
+    assert result.latest_snapshot.down_price == "0.09"
+    assert result.latest_snapshot.price_to_beat == "101234.5"
 
 
 def test_terminal_wait_next_snapshot_stays_waiting_until_next_capture_opens(tmp_path) -> None:
@@ -861,6 +903,54 @@ def test_terminal_wait_next_arms_next_window_when_capture_opens(tmp_path) -> Non
         Btc15mTerminalState.BOUNDARY_PENDING,
         Btc15mTerminalState.DIRECTION_LOCK_PENDING,
     }
+
+
+def test_terminal_follow_current_rolls_to_next_window(tmp_path) -> None:
+    current_candidate = _candidate(COND_1, "btc-updown-15m-1774002600")
+    next_candidate = _candidate(COND_2, "btc-updown-15m-1774003500")
+    service = _service(
+        tmp_path,
+        now=_dt("2026-03-20T10:46:00Z"),
+        candidate=current_candidate,
+    )
+    current_resolved = service._resolve_window_from_candidate(  # type: ignore[attr-defined]
+        current_candidate,
+        selection_source="current_exact",
+        target_slug=current_candidate.market_slug,
+    )
+    next_resolved = service._resolve_window_from_candidate(  # type: ignore[attr-defined]
+        next_candidate,
+        selection_source="current_exact",
+        target_slug=next_candidate.market_slug,
+    )
+    runtime = service._create_terminal_runtime(  # type: ignore[attr-defined]
+        session_id="terminal-follow-test",
+        resolved=current_resolved,
+        mode=Btc15mRunMode.PAPER,
+        started_at_dt=_dt("2026-03-20T10:46:00Z"),
+        attach_mode="current",
+        follow_current=True,
+    )
+    runtime.window_finalized = True
+    service._resolve_current_window = lambda: type(  # type: ignore[attr-defined]
+        "CurrentResolution",
+        (),
+        {
+            "resolved": next_resolved,
+            "status": "live",
+            "seconds_to_start": 0,
+            "seconds_to_end": 840,
+        },
+    )()
+
+    rolled = service._roll_terminal_session_forward(runtime)  # type: ignore[attr-defined]
+
+    assert rolled is True
+    assert runtime.resolved.window.market_slug == next_candidate.market_slug
+    assert runtime.rollover_history == [
+        f"{current_candidate.market_slug}->{next_candidate.market_slug}"
+    ]
+    assert runtime.window_finalized is False
 
 
 def test_terminal_snapshot_includes_both_market_sides(tmp_path) -> None:

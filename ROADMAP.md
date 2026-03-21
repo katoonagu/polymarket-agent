@@ -213,9 +213,15 @@ Define and validate the first market-specific recurring strategy track for BTC
   - bounded campaign runner for sequential full-window paper research
   - Binance REST overlay for `bookTicker`, `depth`, and closed `1m` klines
   - decision-time liquidity and anti-manipulation guards for paper evaluation
-  - dense BTC15m terminal session at `pm strategy btc15m terminal --current`
-  - bounded terminal-session history and report surface for current-window review
-  - late-attach fallback into observe-only instead of immediate terminal death
+  - dense BTC15m terminal session at `pm strategy btc15m terminal --follow-current`
+  - current-window-first terminal behavior with automatic rollover across BTC15m
+    slugs while the operator stays attached
+  - page-parity-first operator view with API-first Polymarket display fields and
+    lightweight public event-page fallback for missing visible fields
+  - bounded terminal-session history and report surface with per-window tear
+    sheets and session-level rolling logs
+  - late-attach fallback into observe-only instead of immediate terminal death,
+    while keeping the session alive into the next slug
   - bounded `terminal --wait-next` flow that watches the current tape, arms one
     next BTC15m window, and exits with a tear sheet
   - replayable terminal sessions and session-scoped tear-sheet reporting

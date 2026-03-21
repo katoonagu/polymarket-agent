@@ -413,6 +413,12 @@ class Btc15mDashboardSnapshotRecord(BaseModel):
     window_start_at: str | None = None
     window_end_at: str | None = None
     countdown_seconds: int | None = None
+    current_window_label: str | None = None
+    page_parity_source: str | None = None
+    page_parity_url: str | None = None
+    current_live_btc_price: str | None = None
+    up_price: str | None = None
+    down_price: str | None = None
     selected_side: str | None = None
     current_chainlink_price: str | None = None
     current_binance_price: str | None = None
@@ -453,6 +459,50 @@ class Btc15mDashboardSnapshotRecord(BaseModel):
     errors: list[Btc15mSectionError] = Field(default_factory=list)
 
 
+class Btc15mTerminalWindowTearSheet(BaseModel):
+    """One finalized BTC15m terminal window within a longer attached session."""
+
+    window: Btc15mWindowIdentity
+    started_at: str
+    ended_at: str
+    mode: Btc15mRunMode = Btc15mRunMode.PAPER
+    attach_mode: str = "current"
+    observe_only: bool = False
+    stop_reason: str
+    final_state: Btc15mTerminalState
+    boundary_status: str = "pending"
+    current_window_label: str | None = None
+    page_parity_source: str | None = None
+    page_parity_url: str | None = None
+    price_to_beat: str | None = None
+    current_live_btc_price: str | None = None
+    up_price: str | None = None
+    down_price: str | None = None
+    selected_side: str | None = None
+    target_token_id: str | None = None
+    target_outcome: str | None = None
+    avg_entry_price: str | None = None
+    exposure_quantity: str | None = None
+    exposure_notional_usdc: str | None = None
+    filled_rung_count: int = 0
+    posted_rung_count: int = 0
+    cancelled_rung_count: int = 0
+    total_snapshots: int = 0
+    market_open_interest: str | None = None
+    market_volume: str | None = None
+    manipulation_flags: list[str] = Field(default_factory=list)
+    skip_reasons: list[str] = Field(default_factory=list)
+    latest_snapshot: Btc15mDashboardSnapshotRecord | None = None
+    latest_evaluation: Btc15mPaperEvaluation | None = None
+    rungs: list[Btc15mDashboardRungState] = Field(default_factory=list)
+    operator_events: list[Btc15mTerminalEventRecord] = Field(default_factory=list)
+    mfe_usdc: str | None = None
+    mae_usdc: str | None = None
+    max_favorable_price: str | None = None
+    time_to_peak_seconds: int | None = None
+    errors: list[Btc15mSectionError] = Field(default_factory=list)
+
+
 class Btc15mTerminalSessionRecord(BaseModel):
     """Append-only bounded BTC15m terminal session summary."""
 
@@ -463,11 +513,19 @@ class Btc15mTerminalSessionRecord(BaseModel):
     mode: Btc15mRunMode = Btc15mRunMode.PAPER
     attach_mode: str = "current"
     observe_only: bool = False
+    follow_current: bool = False
     stop_reason: str
     final_state: Btc15mTerminalState
     current_requested: bool = True
     window: Btc15mWindowIdentity | None = None
     boundary_status: str = "pending"
+    current_window_label: str | None = None
+    page_parity_source: str | None = None
+    page_parity_url: str | None = None
+    price_to_beat: str | None = None
+    current_live_btc_price: str | None = None
+    up_price: str | None = None
+    down_price: str | None = None
     selected_side: str | None = None
     target_token_id: str | None = None
     target_outcome: str | None = None
@@ -486,6 +544,9 @@ class Btc15mTerminalSessionRecord(BaseModel):
     latest_snapshot: Btc15mDashboardSnapshotRecord | None = None
     latest_evaluation: Btc15mPaperEvaluation | None = None
     rungs: list[Btc15mDashboardRungState] = Field(default_factory=list)
+    window_tear_sheets: list[Btc15mTerminalWindowTearSheet] = Field(default_factory=list)
+    rollover_history: list[str] = Field(default_factory=list)
+    rollover_count: int = 0
     operator_events: list[Btc15mTerminalEventRecord] = Field(default_factory=list)
     errors: list[Btc15mSectionError] = Field(default_factory=list)
 

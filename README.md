@@ -132,11 +132,12 @@ Strategy evaluation is still read-only and persists candidate intents plus revie
 .venv\Scripts\pm strategy btc15m campaign run --hours 2 --json
 .venv\Scripts\pm strategy btc15m campaign run --hours 2 --slug <market-slug> --mode paper --json
 .venv\Scripts\pm strategy btc15m campaign report --json
+.venv\Scripts\pm strategy btc15m terminal --follow-current --json
 .venv\Scripts\pm strategy btc15m terminal --current --json
-.venv\Scripts\pm strategy btc15m terminal --current --observe-only --json
+.venv\Scripts\pm strategy btc15m terminal --follow-current --observe-only --json
 .venv\Scripts\pm strategy btc15m terminal --wait-next --json
-.venv\Scripts\pm strategy btc15m terminal --current --mode paper
-.venv\Scripts\pm strategy btc15m terminal --current --mode live --confirm
+.venv\Scripts\pm strategy btc15m terminal --follow-current --mode paper
+.venv\Scripts\pm strategy btc15m terminal --follow-current --mode live --confirm
 .venv\Scripts\pm strategy btc15m terminal --wait-next --mode live --confirm
 .venv\Scripts\pm strategy btc15m terminal replay --session-id <session-id> --json
 .venv\Scripts\pm strategy btc15m terminal report --json
@@ -149,19 +150,23 @@ Rules:
 - the runtime implementation name is `btc_15m_chainlink_directional_ladder_v1`
 - this surface is paper/research only and stays outside the generic strategy review and dispatch registry in this phase
 - `--mode paper` is the default and uses live public market/oracle data with simulated fills and PnL only
-- `--mode live` remains reserved on the recorder, replay, campaign, dashboard, and paper-run flows; bounded live execution exists only inside `pm strategy btc15m terminal --current --mode live --confirm`
+- live data stays on in both `paper` and `live`; the mode switch changes execution behavior only
+- `--mode live` remains reserved on the recorder, replay, campaign, dashboard, and paper-run flows; bounded live execution exists only inside `pm strategy btc15m terminal --follow-current --mode live --confirm`
 - `paper-run --slug <market-slug>` is the direct explicit-market paper testing path for one live window
 - `campaign next-window --slug <market-slug>` and `campaign run --slug <market-slug>` target that exact market instead of relying on recurring discovery
-- `terminal --current` is the dense bounded operator session for the current BTC15m window and reuses slug-first timing as the authoritative source
-- late attach on `terminal --current` now degrades into `OBSERVE_ONLY` instead of dying immediately when the start boundary is already unrecoverable
-- `terminal --current --observe-only` keeps the session attached for the rest of the active window without arming the ladder
+- `terminal --follow-current` is the canonical BTC15m operator session; `--current` remains a compatibility alias with the same current-window-first behavior
+- the terminal now prioritizes the live active BTC15m market immediately, keeps slug-first timing authoritative, and auto-rolls to the next slug while the operator stays attached
+- the primary terminal screen is page-parity-first: price to beat, live BTC price, Up price, Down price, countdown, midpoint/spread, and visible liquidity are shown before Binance diagnostics
+- page parity is API-first with lightweight public event-page fallback only for missing visible fields; fallback failure is non-fatal
+- late attach on `terminal --follow-current` now degrades into `OBSERVE_ONLY` instead of dying immediately when the start boundary is already unrecoverable, then continues forward into the next slug
+- `terminal --follow-current --observe-only` keeps the session attached for the rest of the active window without arming the ladder
 - `terminal --wait-next` watches the current tape, arms exactly one next BTC15m window when pre-start capture opens, writes a tear sheet, and exits
 - `terminal --json` is snapshot-only and exits immediately; it never tries to animate JSON
 - `terminal --mode live --confirm` is the only BTC15m live execution surface on this branch and still requires inline per-action confirmation before posting or cancelling any rung
 - `terminal replay --session-id` replays persisted terminal snapshots only and does not call live market or oracle endpoints
 - `terminal report --session-id` returns one persisted tear sheet, while bare `terminal report` remains the aggregate history view
 - recorder artifacts persist under `.pm/state/` as dedicated BTC15m boundary, window, replay, liquidity-sample, campaign-run, and paper-run state
-- terminal summaries now persist under `.pm/state/btc-15m-chainlink-terminal-sessions.json`, while per-refresh terminal snapshots reuse the BTC15m dashboard snapshot log with `view_kind="terminal"`
+- terminal summaries now persist under `.pm/state/btc-15m-chainlink-terminal-sessions.json`, while per-refresh rolling terminal snapshots reuse the BTC15m dashboard snapshot log with `view_kind="terminal"`
 - start and end boundaries persist the last Chainlink tick before or at the boundary and the first Chainlink tick at or after the boundary
 - `start_price_proxy_v1` and `end_price_proxy_v1` now use the first Chainlink tick at or after the relevant boundary, with bounded grace windows and explainable partial skips when the post-boundary tick is missing
 - the minute-5 directional lock uses recorded Chainlink and Binance context against the hardened Chainlink start proxy

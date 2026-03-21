@@ -37,6 +37,7 @@ from pm.strategy import (
     Btc15mTerminalResponse,
     Btc15mTerminalSessionRecord,
     Btc15mTerminalState,
+    Btc15mTerminalWindowTearSheet,
     Btc15mWindowIdentity,
     Btc15mWindowRecord,
 )
@@ -130,9 +131,15 @@ class FakeBtc15mStrategyService:
             window_status="current_monitor",
             window_start_at="2026-03-20T10:30:00Z",
             window_end_at="2026-03-20T10:45:00Z",
+            current_window_label="10:30 - 10:45 UTC",
+            page_parity_source="api",
+            current_live_btc_price="100",
+            up_price="0.31",
+            down_price="0.69",
             current_chainlink_price="100",
             current_binance_price="100.1",
             start_price_proxy_v1="99.5",
+            price_to_beat="99.5",
             direction_lock_status="UP",
             current_midpoint="0.28",
             current_spread="0.03",
@@ -191,11 +198,13 @@ class FakeBtc15mStrategyService:
         confirm: bool = False,
         observe_only: bool = False,
         snapshot_only: bool = False,
+        session_window_limit: int | None = 1,
         on_snapshot=None,
         confirm_action=None,
     ) -> Btc15mTerminalResponse:
         _ = confirm
         _ = confirm_action
+        _ = session_window_limit
         snapshot = self.dashboard_current().latest_snapshot
         assert snapshot is not None
         snapshot = snapshot.model_copy(
@@ -222,6 +231,7 @@ class FakeBtc15mStrategyService:
                 mode=mode,
                 attach_mode="current_observe_only" if observe_only else "current",
                 observe_only=observe_only,
+                follow_current=True,
                 stop_reason="observe_only_complete" if observe_only else "window_complete",
                 final_state=(
                     Btc15mTerminalState.OBSERVE_ONLY
@@ -230,10 +240,43 @@ class FakeBtc15mStrategyService:
                 ),
                 window=_window_record().window,
                 boundary_status="complete",
+                current_window_label="10:30 - 10:45 UTC",
+                page_parity_source="api",
+                price_to_beat="99.5",
+                current_live_btc_price="100",
+                up_price="0.31",
+                down_price="0.69",
                 selected_side=None if observe_only else "UP",
                 latest_snapshot=snapshot,
                 latest_evaluation=None if observe_only else _evaluation(),
                 total_snapshots=1,
+                window_tear_sheets=[
+                    Btc15mTerminalWindowTearSheet(
+                        window=_window_record().window,
+                        started_at="2026-03-20T10:36:00Z",
+                        ended_at="2026-03-20T10:45:00Z",
+                        mode=Btc15mRunMode(mode),
+                        attach_mode="current_observe_only" if observe_only else "current",
+                        observe_only=observe_only,
+                        stop_reason="observe_only_complete" if observe_only else "window_complete",
+                        final_state=(
+                            Btc15mTerminalState.OBSERVE_ONLY
+                            if observe_only
+                            else Btc15mTerminalState.RESOLVED
+                        ),
+                        boundary_status="complete",
+                        current_window_label="10:30 - 10:45 UTC",
+                        page_parity_source="api",
+                        price_to_beat="99.5",
+                        current_live_btc_price="100",
+                        up_price="0.31",
+                        down_price="0.69",
+                        selected_side=None if observe_only else "UP",
+                        latest_snapshot=snapshot,
+                        latest_evaluation=None if observe_only else _evaluation(),
+                        total_snapshots=1,
+                    )
+                ],
             )
         )
         return Btc15mTerminalResponse(
@@ -262,11 +305,13 @@ class FakeBtc15mStrategyService:
         mode: str = "paper",
         confirm: bool = False,
         snapshot_only: bool = False,
+        session_window_limit: int | None = 1,
         on_snapshot=None,
         confirm_action=None,
     ) -> Btc15mTerminalResponse:
         _ = confirm
         _ = confirm_action
+        _ = session_window_limit
         snapshot = self.dashboard_current().latest_snapshot
         assert snapshot is not None
         snapshot = snapshot.model_copy(
@@ -292,10 +337,39 @@ class FakeBtc15mStrategyService:
             stop_reason="window_complete",
             final_state=Btc15mTerminalState.RESOLVED,
             window=_window_record().window,
+            current_window_label="10:30 - 10:45 UTC",
+            page_parity_source="api",
+            price_to_beat="99.5",
+            current_live_btc_price="100",
+            up_price="0.31",
+            down_price="0.69",
             selected_side="UP",
             latest_snapshot=snapshot,
             latest_evaluation=_evaluation(),
             total_snapshots=2,
+            window_tear_sheets=[
+                Btc15mTerminalWindowTearSheet(
+                    window=_window_record().window,
+                    started_at="2026-03-20T10:36:00Z",
+                    ended_at="2026-03-20T11:15:00Z",
+                    mode=Btc15mRunMode(mode),
+                    attach_mode="wait_next",
+                    observe_only=False,
+                    stop_reason="window_complete",
+                    final_state=Btc15mTerminalState.RESOLVED,
+                    boundary_status="complete",
+                    current_window_label="10:30 - 10:45 UTC",
+                    page_parity_source="api",
+                    price_to_beat="99.5",
+                    current_live_btc_price="100",
+                    up_price="0.31",
+                    down_price="0.69",
+                    selected_side="UP",
+                    latest_snapshot=snapshot,
+                    latest_evaluation=_evaluation(),
+                    total_snapshots=2,
+                )
+            ],
         )
         return Btc15mTerminalResponse(
             session_id="terminal-wait-1",
@@ -332,8 +406,37 @@ class FakeBtc15mStrategyService:
                 stop_reason="window_complete",
                 final_state=Btc15mTerminalState.RESOLVED,
                 window=_window_record().window,
+                current_window_label="10:30 - 10:45 UTC",
+                page_parity_source="api",
+                price_to_beat="99.5",
+                current_live_btc_price="100",
+                up_price="0.31",
+                down_price="0.69",
                 latest_snapshot=snapshot,
                 latest_evaluation=_evaluation(),
+                window_tear_sheets=[
+                    Btc15mTerminalWindowTearSheet(
+                        window=_window_record().window,
+                        started_at="2026-03-20T10:36:00Z",
+                        ended_at="2026-03-20T10:45:00Z",
+                        mode=Btc15mRunMode.PAPER,
+                        attach_mode="current",
+                        observe_only=False,
+                        stop_reason="window_complete",
+                        final_state=Btc15mTerminalState.RESOLVED,
+                        boundary_status="complete",
+                        current_window_label="10:30 - 10:45 UTC",
+                        page_parity_source="api",
+                        price_to_beat="99.5",
+                        current_live_btc_price="100",
+                        up_price="0.31",
+                        down_price="0.69",
+                        selected_side="UP",
+                        latest_snapshot=snapshot,
+                        latest_evaluation=_evaluation(),
+                        total_snapshots=2,
+                    )
+                ],
             ),
             first_snapshot=snapshot,
             latest_snapshot=snapshot,
@@ -364,9 +467,38 @@ class FakeBtc15mStrategyService:
                     stop_reason="window_complete",
                     final_state=Btc15mTerminalState.RESOLVED,
                     window=_window_record().window,
+                    current_window_label="10:30 - 10:45 UTC",
+                    page_parity_source="api",
+                    price_to_beat="99.5",
+                    current_live_btc_price="100",
+                    up_price="0.31",
+                    down_price="0.69",
                     selected_side="UP",
                     latest_snapshot=self.dashboard_current().latest_snapshot,
                     latest_evaluation=_evaluation(),
+                    window_tear_sheets=[
+                        Btc15mTerminalWindowTearSheet(
+                            window=_window_record().window,
+                            started_at="2026-03-20T10:36:00Z",
+                            ended_at="2026-03-20T10:45:00Z",
+                            mode=Btc15mRunMode.PAPER,
+                            attach_mode="current",
+                            observe_only=False,
+                            stop_reason="window_complete",
+                            final_state=Btc15mTerminalState.RESOLVED,
+                            boundary_status="complete",
+                            current_window_label="10:30 - 10:45 UTC",
+                            page_parity_source="api",
+                            price_to_beat="99.5",
+                            current_live_btc_price="100",
+                            up_price="0.31",
+                            down_price="0.69",
+                            selected_side="UP",
+                            latest_snapshot=self.dashboard_current().latest_snapshot,
+                            latest_evaluation=_evaluation(),
+                            total_snapshots=1,
+                        )
+                    ],
                 )
                 if session_id is not None
                 else None
@@ -382,6 +514,12 @@ class FakeBtc15mStrategyService:
                     stop_reason="window_complete",
                     final_state=Btc15mTerminalState.RESOLVED,
                     window=_window_record().window,
+                    current_window_label="10:30 - 10:45 UTC",
+                    page_parity_source="api",
+                    price_to_beat="99.5",
+                    current_live_btc_price="100",
+                    up_price="0.31",
+                    down_price="0.69",
                     selected_side="UP",
                     latest_evaluation=_evaluation(),
                 )
@@ -864,6 +1002,22 @@ def test_btc15m_terminal_current_observe_only_json(monkeypatch) -> None:
     assert payload["latest_snapshot"]["observe_only"] is True
 
 
+def test_btc15m_terminal_follow_current_json(monkeypatch) -> None:
+    monkeypatch.setattr("pm.cli.strategy_btc15m.Btc15mStrategyService", FakeBtc15mStrategyService)
+
+    result = runner.invoke(
+        app,
+        ["strategy", "btc15m", "terminal", "--follow-current", "--json"],
+    )
+
+    assert result.exit_code == 0
+    payload = json.loads(result.stdout)
+    assert payload["attach_mode"] == "current"
+    assert payload["latest_snapshot"]["current_window_label"] == "10:30 - 10:45 UTC"
+    assert payload["latest_snapshot"]["up_price"] == "0.31"
+    assert payload["latest_snapshot"]["down_price"] == "0.69"
+
+
 def test_btc15m_terminal_requires_exactly_one_session_target(monkeypatch) -> None:
     monkeypatch.setattr("pm.cli.strategy_btc15m.Btc15mStrategyService", FakeBtc15mStrategyService)
 
@@ -884,6 +1038,7 @@ def test_btc15m_terminal_human_mode_runs(monkeypatch) -> None:
 
     assert result.exit_code == 0
     assert "BTC15m Terminal" in result.stdout
+    assert "30c" in result.stdout
 
 
 def _window_record() -> Btc15mWindowRecord:

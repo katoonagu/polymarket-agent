@@ -54,6 +54,7 @@ Current research commands:
 - `pm strategy btc15m campaign next-window [--slug <market_slug>] [--mode paper|live]`
 - `pm strategy btc15m campaign run --hours <n> [--slug <market_slug>] [--mode paper|live]`
 - `pm strategy btc15m campaign report`
+- `pm strategy btc15m terminal --follow-current [--observe-only] [--mode paper|live] [--confirm]`
 - `pm strategy btc15m terminal --current [--observe-only] [--mode paper|live] [--confirm]`
 - `pm strategy btc15m terminal --wait-next [--mode paper|live] [--confirm]`
 - `pm strategy btc15m terminal replay --session-id <id>`
@@ -64,17 +65,28 @@ Current workflow notes:
 
 - `paper` is the default mode and uses live public market plus oracle inputs
   with simulated fills and PnL only
+- live data stays on in both `paper` and `live`; the mode switch changes
+  execution behavior only
 - `live` remains reserved on the recorder, replay, campaign, dashboard, and
   paper-run surfaces; bounded live execution now exists only inside
-  `pm strategy btc15m terminal --current --mode live --confirm`
+  `pm strategy btc15m terminal --follow-current --mode live --confirm`
 - `paper-run --slug` is the direct explicit-market paper testing path when
   recurring discovery is imperfect
 - `campaign run --slug` targets exactly one explicit window and then stops
-- `terminal --current` is the dense bounded operator session for the current
-  BTC15m window and uses slug-derived timing as the authoritative session clock
-- late attach on `terminal --current` now falls back into `OBSERVE_ONLY`
-  instead of hard-stopping when the start boundary cannot be recovered
-- `terminal --current --observe-only` keeps the current session attached
+- `terminal --follow-current` is the canonical BTC15m operator session and
+  follows the active current market immediately; `--current` remains a
+  compatibility alias
+- the terminal now auto-rolls across BTC15m slugs while the operator stays
+  attached and writes one tear sheet per completed window plus one session log
+- the primary operator view is page-parity-first: price to beat, current live
+  BTC price, Up price, Down price, countdown, midpoint/spread, and visible
+  liquidity are shown before Binance diagnostics
+- page parity is API-first with lightweight public event-page fallback only for
+  missing visible fields; fallback failure is non-fatal and explainable
+- late attach on `terminal --follow-current` now falls back into `OBSERVE_ONLY`
+  instead of hard-stopping when the start boundary cannot be recovered, then
+  continues forward into the next slug
+- `terminal --follow-current --observe-only` keeps the current session attached
   without arming the ladder
 - `terminal --wait-next` watches the current window, begins pre-start capture
   before the next BTC15m bucket opens, arms that next window, and exits after a

@@ -66,10 +66,12 @@ from pm.strategy.btc15m_models import (
     Btc15mTerminalResponse,
     Btc15mTerminalSessionRecord,
     Btc15mTerminalState,
+    Btc15mTerminalWindowTearSheet,
     Btc15mTimingControls,
     Btc15mWindowIdentity,
     Btc15mWindowRecord,
 )
+from pm.strategy.btc15m_page import Btc15mPageParityData, Btc15mPageParityService
 from pm.strategy.btc15m_state import Btc15mStateError, Btc15mStateService
 from pm.stream.market import MarketWebSocketClient
 from pm.stream.models import (
@@ -100,7 +102,9 @@ DEFAULT_LIVE_TICK_CAPTURE_SECONDS = 1
 DEFAULT_TERMINAL_EVENT_LOG_LIMIT = 12
 DEFAULT_TERMINAL_SNAPSHOT_LOG_LIMIT = 8
 DEFAULT_TERMINAL_CONTEXT_REFRESH_SECONDS = 30
+DEFAULT_TERMINAL_PAGE_PARITY_REFRESH_SECONDS = 30
 DEFAULT_TERMINAL_REPLAY_REFRESH_SECONDS = 0.15
+DEFAULT_TERMINAL_SESSION_EVENT_LOG_LIMIT = 48
 DEFAULT_CAMPAIGN_WAIT_SECONDS = 15
 DEFAULT_CAMPAIGN_MAX_WAIT_SECONDS = 20 * 60
 DEFAULT_CAMPAIGN_SAMPLE_CADENCE_SECONDS = 30
@@ -197,9 +201,11 @@ class _TerminalRuntime:
     state: Btc15mTerminalState
     attach_mode: str = "current"
     observe_only: bool = False
+    follow_current: bool = False
     wait_next_target_start_dt: datetime | None = None
     stop_reason: str = "running"
     events: list[Btc15mTerminalEventRecord] = field(default_factory=list)
+    session_events: list[Btc15mTerminalEventRecord] = field(default_factory=list)
     errors: list[Btc15mSectionError] = field(default_factory=list)
     chainlink_ticks: list[Btc15mPriceTick] = field(default_factory=list)
     binance_ticks: list[Btc15mPriceTick] = field(default_factory=list)
@@ -220,6 +226,8 @@ class _TerminalRuntime:
     market_open_interest: str | None = None
     market_volume: str | None = None
     last_market_context_refresh_at: datetime | None = None
+    last_page_parity_refresh_at: datetime | None = None
+    page_parity_fallback: Btc15mPageParityData | None = None
     manipulation_flags: list[str] = field(default_factory=list)
     skip_reasons: list[str] = field(default_factory=list)
     reason_blocks: list[Btc15mReasonBlock] = field(default_factory=list)
@@ -230,6 +238,12 @@ class _TerminalRuntime:
     max_favorable_price: str | None = None
     time_to_peak_seconds: int | None = None
     first_fill_at: str | None = None
+    total_snapshots: int = 0
+    current_window_snapshots: int = 0
+    window_started_at_dt: datetime | None = None
+    tear_sheets: list[Btc15mTerminalWindowTearSheet] = field(default_factory=list)
+    rollover_history: list[str] = field(default_factory=list)
+    window_finalized: bool = False
 
 
 class Btc15mStrategyService:
@@ -243,6 +257,7 @@ class Btc15mStrategyService:
         market_client: MarketWebSocketClient | None = None,
         crypto_client: RTDSClient | None = None,
         binance_service: BinanceService | None = None,
+        page_parity_service: Btc15mPageParityService | None = None,
         order_lifecycle: OrderLifecycleService | None = None,
         gamma_client_cls: type[GammaClient] = GammaClient,
         clob_client_cls: type[ClobClient] = ClobClient,
@@ -255,6 +270,7 @@ class Btc15mStrategyService:
         self._market_client = market_client or MarketWebSocketClient()
         self._crypto_client = crypto_client or RTDSClient()
         self._binance_service = binance_service or BinanceService()
+        self._page_parity_service = page_parity_service or Btc15mPageParityService()
         self._order_lifecycle = order_lifecycle or OrderLifecycleService()
         self._gamma_client_cls = gamma_client_cls
         self._clob_client_cls = clob_client_cls
@@ -469,6 +485,7 @@ class Btc15mStrategyService:
         confirm: bool = False,
         observe_only: bool = False,
         snapshot_only: bool = False,
+        session_window_limit: int | None = 1,
         on_snapshot: Callable[[Btc15mDashboardSnapshotRecord], None] | None = None,
         confirm_action: Callable[[str], bool | None] | None = None,
     ) -> Btc15mTerminalResponse:
@@ -497,6 +514,7 @@ class Btc15mStrategyService:
             started_at_dt=started_at_dt,
             attach_mode="current_observe_only" if observe_only else "current",
             observe_only=observe_only,
+            follow_current=not snapshot_only,
         )
         if snapshot_only:
             snapshot = self._advance_terminal_runtime(runtime)
@@ -515,6 +533,7 @@ class Btc15mStrategyService:
             )
         return self._run_terminal_session(
             runtime,
+            session_window_limit=session_window_limit,
             on_snapshot=on_snapshot,
             confirm_action=confirm_action,
         )
@@ -525,6 +544,7 @@ class Btc15mStrategyService:
         mode: str = "paper",
         confirm: bool = False,
         snapshot_only: bool = False,
+        session_window_limit: int | None = 1,
         on_snapshot: Callable[[Btc15mDashboardSnapshotRecord], None] | None = None,
         confirm_action: Callable[[str], bool | None] | None = None,
     ) -> Btc15mTerminalResponse:
@@ -576,6 +596,7 @@ class Btc15mStrategyService:
             attach_mode=attach_mode,
             observe_only=observe_only,
             wait_next_target_start_dt=wait_target_start_dt,
+            follow_current=False,
         )
 
         if snapshot_only:
@@ -595,6 +616,7 @@ class Btc15mStrategyService:
             )
         return self._run_terminal_session(
             runtime,
+            session_window_limit=session_window_limit,
             on_snapshot=on_snapshot,
             confirm_action=confirm_action,
         )
@@ -693,30 +715,61 @@ class Btc15mStrategyService:
         self,
         runtime: _TerminalRuntime,
         *,
+        session_window_limit: int | None = 1,
         on_snapshot: Callable[[Btc15mDashboardSnapshotRecord], None] | None = None,
         confirm_action: Callable[[str], bool | None] | None = None,
     ) -> Btc15mTerminalResponse:
         """Run a bounded terminal session until the active phase completes."""
         snapshots: list[Btc15mDashboardSnapshotRecord] = []
 
-        while True:
-            iteration_started = self._now()
-            snapshot = self._advance_terminal_runtime(runtime, confirm_action=confirm_action)
-            snapshots.append(snapshot)
-            if on_snapshot is not None:
-                on_snapshot(snapshot)
-            if self._terminal_runtime_complete(runtime, iteration_started):
-                break
-            remaining = DEFAULT_DASHBOARD_REFRESH_SECONDS - max(
-                0.0,
-                (self._now() - iteration_started).total_seconds(),
+        try:
+            while True:
+                iteration_started = self._now()
+                snapshot = self._advance_terminal_runtime(runtime, confirm_action=confirm_action)
+                snapshots.append(snapshot)
+                self._state.append_dashboard_snapshots([snapshot])
+                if on_snapshot is not None:
+                    on_snapshot(snapshot)
+                if self._terminal_runtime_complete(runtime, iteration_started):
+                    if not runtime.window_finalized:
+                        runtime.tear_sheets.append(
+                            self._finalize_terminal_window(
+                                runtime,
+                                total_snapshots=runtime.current_window_snapshots,
+                            )
+                        )
+                    should_continue = runtime.follow_current and (
+                        session_window_limit is None
+                        or len(runtime.tear_sheets) < session_window_limit
+                    )
+                    if should_continue and self._roll_terminal_session_forward(runtime):
+                        continue
+                    if runtime.stop_reason == "running":
+                        runtime.stop_reason = "session_complete"
+                    break
+                remaining = DEFAULT_DASHBOARD_REFRESH_SECONDS - max(
+                    0.0,
+                    (self._now() - iteration_started).total_seconds(),
+                )
+                if remaining > 0:
+                    self._sleep(remaining)
+        except KeyboardInterrupt:
+            runtime.stop_reason = "operator_interrupt"
+            self._record_terminal_event(
+                runtime,
+                kind="session",
+                status="info",
+                message="Operator interrupted the BTC15m terminal session.",
             )
-            if remaining > 0:
-                self._sleep(remaining)
+            if runtime.current_window_snapshots > 0 and not runtime.window_finalized:
+                runtime.tear_sheets.append(
+                    self._finalize_terminal_window(
+                        runtime,
+                        total_snapshots=runtime.current_window_snapshots,
+                    )
+                )
 
-        if snapshots:
-            self._state.append_dashboard_snapshots(snapshots)
-        session = self._finalize_terminal_session(runtime, total_snapshots=len(snapshots))
+        session = self._finalize_terminal_session(runtime)
         self._state.append_terminal_session(session)
         return Btc15mTerminalResponse(
             session_id=runtime.session_id,
@@ -725,8 +778,8 @@ class Btc15mStrategyService:
             mode=runtime.mode,
             attach_mode=runtime.attach_mode,
             stop_reason=session.stop_reason,
-            window=runtime.resolved.window,
-            total_snapshots=len(snapshots),
+            window=session.window,
+            total_snapshots=runtime.total_snapshots,
             latest_snapshot=snapshots[-1] if snapshots else None,
             session=session,
             errors=session.errors,
@@ -1915,6 +1968,7 @@ class Btc15mStrategyService:
         started_at_dt: datetime,
         attach_mode: str = "current",
         observe_only: bool = False,
+        follow_current: bool = False,
         wait_next_target_start_dt: datetime | None = None,
     ) -> _TerminalRuntime:
         runtime = _TerminalRuntime(
@@ -1931,7 +1985,9 @@ class Btc15mStrategyService:
             ),
             attach_mode=attach_mode,
             observe_only=observe_only,
+            follow_current=follow_current,
             wait_next_target_start_dt=wait_next_target_start_dt,
+            window_started_at_dt=started_at_dt,
         )
         self._hydrate_terminal_runtime_for_window(runtime, resolved)
         self._update_terminal_state(runtime, started_at_dt)
@@ -2027,6 +2083,11 @@ class Btc15mStrategyService:
         runtime.time_to_peak_seconds = None
         runtime.first_fill_at = None
         runtime.last_market_context_refresh_at = None
+        runtime.last_page_parity_refresh_at = None
+        runtime.page_parity_fallback = None
+        runtime.current_window_snapshots = 0
+        runtime.window_started_at_dt = self._now()
+        runtime.window_finalized = False
         if runtime.selected_side in {"UP", "DOWN"}:
             target = _resolve_target_token(
                 resolved.window.token_ids,
@@ -2095,15 +2156,52 @@ class Btc15mStrategyService:
         observe_only: bool,
     ) -> None:
         """Switch one terminal runtime to a newly armed BTC15m window."""
+        previous_slug = runtime.resolved.window.market_slug
         runtime.observe_only = observe_only
         runtime.wait_next_target_start_dt = None
+        runtime.events = []
         self._hydrate_terminal_runtime_for_window(runtime, resolved)
+        runtime.rollover_history.append(f"{previous_slug}->{resolved.window.market_slug}")
         self._record_terminal_event(
             runtime,
-            kind="session",
+            kind="rollover",
             status="info",
             message=f"Armed BTC15m terminal on {resolved.window.market_slug}.",
         )
+
+    def _roll_terminal_session_forward(self, runtime: _TerminalRuntime) -> bool:
+        try:
+            current = self._resolve_current_window()
+        except Btc15mOperatorHintError:
+            next_start = None
+            if runtime.resolved.window_start_dt is not None:
+                next_start = runtime.resolved.window_start_dt + WINDOW_DURATION
+            runtime.wait_next_target_start_dt = next_start
+            runtime.state = Btc15mTerminalState.WAITING_FOR_NEXT_WINDOW
+            runtime.observe_only = True
+            runtime.events = []
+            runtime.current_window_snapshots = 0
+            self._record_terminal_event(
+                runtime,
+                kind="wait_next",
+                status="info",
+                message="Waiting for the next live BTC15m market to appear.",
+            )
+            return True
+        next_resolved = current.resolved
+        if next_resolved.window.window_id == runtime.resolved.window.window_id:
+            runtime.state = Btc15mTerminalState.WAITING_FOR_NEXT_WINDOW
+            runtime.observe_only = True
+            runtime.wait_next_target_start_dt = (
+                runtime.resolved.window_start_dt + WINDOW_DURATION
+                if runtime.resolved.window_start_dt is not None
+                else None
+            )
+            return True
+        self._switch_terminal_runtime_to_window(runtime, next_resolved, observe_only=False)
+        runtime.stop_reason = "running"
+        self._update_terminal_state(runtime, self._now())
+        return True
 
     def _advance_terminal_runtime(
         self,
@@ -2118,8 +2216,9 @@ class Btc15mStrategyService:
             _append_tick_if_new(runtime.chainlink_ticks, chainlink_tick)
         if binance_tick is not None:
             _append_tick_if_new(runtime.binance_ticks, binance_tick)
-        self._maybe_refresh_terminal_market_context(runtime, sampled_at_dt)
         self._maybe_arm_wait_next_window(runtime, sampled_at_dt)
+        self._maybe_refresh_terminal_market_context(runtime, sampled_at_dt)
+        self._maybe_refresh_terminal_page_parity(runtime, sampled_at_dt)
         self._update_terminal_boundaries(runtime)
         if runtime.state is not Btc15mTerminalState.SKIPPED:
             self._update_terminal_state(runtime, sampled_at_dt)
@@ -2156,6 +2255,9 @@ class Btc15mStrategyService:
             self._update_terminal_state(runtime, sampled_at_dt)
         snapshot = self._build_terminal_snapshot(runtime, sampled_at_dt)
         runtime.latest_snapshot = snapshot
+        runtime.total_snapshots += 1
+        if not runtime.window_finalized:
+            runtime.current_window_snapshots += 1
         return snapshot
 
     def _maybe_arm_wait_next_window(
@@ -2227,6 +2329,30 @@ class Btc15mStrategyService:
         runtime.market_open_interest = runtime.market_open_interest or None
         runtime.market_volume = runtime.market_volume or _binance_volume_proxy(sample, minutes=3)
         runtime.last_market_context_refresh_at = sampled_at_dt
+
+    def _maybe_refresh_terminal_page_parity(
+        self,
+        runtime: _TerminalRuntime,
+        sampled_at_dt: datetime,
+    ) -> None:
+        refresh_due = runtime.last_page_parity_refresh_at is None or (
+            sampled_at_dt - runtime.last_page_parity_refresh_at
+        ).total_seconds() >= DEFAULT_TERMINAL_PAGE_PARITY_REFRESH_SECONDS
+        if runtime.page_parity_fallback is not None and not refresh_due:
+            return
+        market = self._get_market_by_slug_or_none(runtime.resolved.window.market_slug)
+        if market is None:
+            runtime.page_parity_fallback = Btc15mPageParityData(
+                notes=["market_lookup_unavailable"],
+            )
+            runtime.last_page_parity_refresh_at = sampled_at_dt
+            return
+        try:
+            runtime.page_parity_fallback = self._page_parity_service.fetch(market)
+        except Exception as exc:
+            runtime.errors.append(_section_error("terminal_page_parity", exc))
+            runtime.page_parity_fallback = Btc15mPageParityData(notes=[str(exc)])
+        runtime.last_page_parity_refresh_at = sampled_at_dt
 
     def _update_terminal_boundaries(self, runtime: _TerminalRuntime) -> None:
         resolved = runtime.resolved
@@ -2369,8 +2495,13 @@ class Btc15mStrategyService:
                 message=message,
             )
         )
+        runtime.session_events.append(runtime.events[-1])
         if len(runtime.events) > DEFAULT_TERMINAL_EVENT_LOG_LIMIT:
             runtime.events[:] = runtime.events[-DEFAULT_TERMINAL_EVENT_LOG_LIMIT:]
+        if len(runtime.session_events) > DEFAULT_TERMINAL_SESSION_EVENT_LOG_LIMIT:
+            runtime.session_events[:] = runtime.session_events[
+                -DEFAULT_TERMINAL_SESSION_EVENT_LOG_LIMIT:
+            ]
 
     def _mark_terminal_skipped(
         self,
@@ -2807,6 +2938,13 @@ class Btc15mStrategyService:
         current_binance_price = (
             runtime.binance_ticks[-1].value if runtime.binance_ticks else None
         )
+        page_parity = self._terminal_page_parity_fields(
+            runtime,
+            current_chainlink_price=current_chainlink_price,
+            current_binance_price=current_binance_price,
+            up_level=up_level,
+            down_level=down_level,
+        )
         return Btc15mDashboardSnapshotRecord(
             snapshot_id=_make_id("btc15m_terminal_snapshot"),
             session_id=runtime.session_id,
@@ -2822,11 +2960,17 @@ class Btc15mStrategyService:
             window_start_at=runtime.resolved.window.window_start_at,
             window_end_at=runtime.resolved.window.window_end_at,
             countdown_seconds=countdown,
+            current_window_label=page_parity["current_window_label"],
+            page_parity_source=page_parity["page_parity_source"],
+            page_parity_url=page_parity["page_parity_url"],
+            current_live_btc_price=page_parity["current_live_btc_price"],
+            up_price=page_parity["up_price"],
+            down_price=page_parity["down_price"],
             selected_side=runtime.selected_side,
             current_chainlink_price=current_chainlink_price,
             current_binance_price=current_binance_price,
             start_price_proxy_v1=runtime.start_price_proxy_v1,
-            price_to_beat=runtime.start_price_proxy_v1,
+            price_to_beat=page_parity["price_to_beat"],
             direction_lock_status=(
                 runtime.selected_side if runtime.selected_side is not None else runtime.state.value
             ),
@@ -2895,6 +3039,72 @@ class Btc15mStrategyService:
             errors=list(runtime.errors)
             + (latest_liquidity.errors if latest_liquidity is not None else []),
         )
+
+    def _terminal_page_parity_fields(
+        self,
+        runtime: _TerminalRuntime,
+        *,
+        current_chainlink_price: str | None,
+        current_binance_price: str | None,
+        up_level: Btc15mPolymarketLiquidityLevel | None,
+        down_level: Btc15mPolymarketLiquidityLevel | None,
+    ) -> dict[str, str | None]:
+        fallback = runtime.page_parity_fallback or Btc15mPageParityData()
+        api_label = _window_label(runtime.resolved.window)
+        api_up_price = _coalesce_price(
+            up_level.midpoint if up_level is not None else None,
+            up_level.best_ask if up_level is not None else None,
+            up_level.best_bid if up_level is not None else None,
+        )
+        api_down_price = _coalesce_price(
+            down_level.midpoint if down_level is not None else None,
+            down_level.best_ask if down_level is not None else None,
+            down_level.best_bid if down_level is not None else None,
+        )
+        values = {
+            "current_window_label": api_label or fallback.current_window_label,
+            "price_to_beat": runtime.start_price_proxy_v1 or fallback.price_to_beat,
+            "current_live_btc_price": (
+                fallback.current_live_btc_price
+                or current_chainlink_price
+                or current_binance_price
+            ),
+            "up_price": api_up_price or fallback.up_price,
+            "down_price": api_down_price or fallback.down_price,
+            "page_parity_url": fallback.event_url,
+        }
+        api_used = any(
+            value is not None
+            for value in (
+                api_label,
+                runtime.start_price_proxy_v1,
+                current_chainlink_price,
+                api_up_price,
+                api_down_price,
+            )
+        )
+        fallback_used = any(
+            (
+                (api_label is None and fallback.current_window_label is not None),
+                (runtime.start_price_proxy_v1 is None and fallback.price_to_beat is not None),
+                (
+                    current_chainlink_price is None
+                    and current_binance_price is None
+                    and fallback.current_live_btc_price is not None
+                ),
+                (api_up_price is None and fallback.up_price is not None),
+                (api_down_price is None and fallback.down_price is not None),
+            )
+        )
+        if api_used and fallback_used:
+            values["page_parity_source"] = "mixed"
+        elif fallback_used:
+            values["page_parity_source"] = "page_fallback"
+        elif api_used:
+            values["page_parity_source"] = "api"
+        else:
+            values["page_parity_source"] = "unavailable"
+        return values
 
     def _build_terminal_boundary_decision(
         self,
@@ -2968,12 +3178,12 @@ class Btc15mStrategyService:
             errors=list(runtime.errors),
         )
 
-    def _finalize_terminal_session(
+    def _finalize_terminal_window(
         self,
         runtime: _TerminalRuntime,
         *,
         total_snapshots: int = 0,
-    ) -> Btc15mTerminalSessionRecord:
+    ) -> Btc15mTerminalWindowTearSheet:
         finalized_at = self._now()
         boundary_decision = self._build_terminal_boundary_decision(runtime)
         self._state.append_boundary_observations(_terminal_boundary_observations(runtime))
@@ -3003,23 +3213,35 @@ class Btc15mStrategyService:
                     )
                 )
         total_quantity, total_cost, avg_entry = _terminal_position_summary(runtime.rungs)
-        return Btc15mTerminalSessionRecord(
-            session_id=runtime.session_id,
-            created_at=_isoformat(finalized_at),
-            started_at=_isoformat(runtime.started_at_dt),
+        latest_snapshot = runtime.latest_snapshot
+        tear_sheet = Btc15mTerminalWindowTearSheet(
+            window=runtime.resolved.window,
+            started_at=_isoformat(runtime.window_started_at_dt or runtime.started_at_dt),
             ended_at=_isoformat(finalized_at),
             mode=runtime.mode,
             attach_mode=runtime.attach_mode,
             observe_only=runtime.observe_only,
             stop_reason=runtime.stop_reason,
             final_state=runtime.state,
-            window=runtime.resolved.window,
             boundary_status=runtime.boundary_status,
+            current_window_label=(
+                latest_snapshot.current_window_label if latest_snapshot is not None else None
+            ),
+            page_parity_source=(
+                latest_snapshot.page_parity_source if latest_snapshot is not None else None
+            ),
+            page_parity_url=(
+                latest_snapshot.page_parity_url if latest_snapshot is not None else None
+            ),
+            price_to_beat=latest_snapshot.price_to_beat if latest_snapshot is not None else None,
+            current_live_btc_price=(
+                latest_snapshot.current_live_btc_price if latest_snapshot is not None else None
+            ),
+            up_price=latest_snapshot.up_price if latest_snapshot is not None else None,
+            down_price=latest_snapshot.down_price if latest_snapshot is not None else None,
             selected_side=runtime.selected_side,
             target_token_id=runtime.target_token_id,
             target_outcome=runtime.target_outcome,
-            start_price_proxy_v1=runtime.start_price_proxy_v1,
-            end_price_proxy_v1=runtime.end_price_proxy_v1,
             avg_entry_price=avg_entry,
             exposure_quantity=_decimal_text(total_quantity) if total_quantity > 0 else None,
             exposure_notional_usdc=_decimal_text(total_cost) if total_cost > 0 else None,
@@ -3030,7 +3252,8 @@ class Btc15mStrategyService:
             market_open_interest=runtime.market_open_interest,
             market_volume=runtime.market_volume,
             manipulation_flags=sorted(set(runtime.manipulation_flags + runtime.skip_reasons)),
-            latest_snapshot=runtime.latest_snapshot,
+            skip_reasons=list(runtime.skip_reasons),
+            latest_snapshot=latest_snapshot,
             latest_evaluation=evaluation,
             rungs=[
                 Btc15mDashboardRungState(
@@ -3046,6 +3269,83 @@ class Btc15mStrategyService:
                 for item in runtime.rungs
             ],
             operator_events=list(runtime.events),
+            mfe_usdc=_decimal_text(runtime.mfe) if runtime.favorable_marks else None,
+            mae_usdc=_decimal_text(runtime.mae) if runtime.favorable_marks else None,
+            max_favorable_price=runtime.max_favorable_price,
+            time_to_peak_seconds=runtime.time_to_peak_seconds,
+            errors=list(runtime.errors),
+        )
+        runtime.window_finalized = True
+        return tear_sheet
+
+    def _finalize_terminal_session(self, runtime: _TerminalRuntime) -> Btc15mTerminalSessionRecord:
+        finalized_at = self._now()
+        latest_window = runtime.tear_sheets[-1] if runtime.tear_sheets else None
+        return Btc15mTerminalSessionRecord(
+            session_id=runtime.session_id,
+            created_at=_isoformat(finalized_at),
+            started_at=_isoformat(runtime.started_at_dt),
+            ended_at=_isoformat(finalized_at),
+            mode=runtime.mode,
+            attach_mode=runtime.attach_mode,
+            observe_only=runtime.observe_only,
+            follow_current=runtime.follow_current,
+            stop_reason=runtime.stop_reason,
+            final_state=runtime.state,
+            current_requested=runtime.attach_mode != "wait_next",
+            window=latest_window.window if latest_window is not None else runtime.resolved.window,
+            boundary_status=(
+                latest_window.boundary_status
+                if latest_window is not None
+                else runtime.boundary_status
+            ),
+            current_window_label=(
+                latest_window.current_window_label if latest_window is not None else None
+            ),
+            page_parity_source=(
+                latest_window.page_parity_source if latest_window is not None else None
+            ),
+            page_parity_url=(
+                latest_window.page_parity_url if latest_window is not None else None
+            ),
+            price_to_beat=latest_window.price_to_beat if latest_window is not None else None,
+            current_live_btc_price=(
+                latest_window.current_live_btc_price if latest_window is not None else None
+            ),
+            up_price=latest_window.up_price if latest_window is not None else None,
+            down_price=latest_window.down_price if latest_window is not None else None,
+            selected_side=latest_window.selected_side if latest_window is not None else None,
+            target_token_id=latest_window.target_token_id if latest_window is not None else None,
+            target_outcome=latest_window.target_outcome if latest_window is not None else None,
+            start_price_proxy_v1=runtime.start_price_proxy_v1,
+            end_price_proxy_v1=runtime.end_price_proxy_v1,
+            avg_entry_price=latest_window.avg_entry_price if latest_window is not None else None,
+            exposure_quantity=(
+                latest_window.exposure_quantity if latest_window is not None else None
+            ),
+            exposure_notional_usdc=(
+                latest_window.exposure_notional_usdc if latest_window is not None else None
+            ),
+            filled_rung_count=latest_window.filled_rung_count if latest_window is not None else 0,
+            posted_rung_count=latest_window.posted_rung_count if latest_window is not None else 0,
+            cancelled_rung_count=(
+                latest_window.cancelled_rung_count if latest_window is not None else 0
+            ),
+            total_snapshots=runtime.total_snapshots,
+            market_open_interest=latest_window.market_open_interest if latest_window else None,
+            market_volume=latest_window.market_volume if latest_window else None,
+            manipulation_flags=(
+                latest_window.manipulation_flags if latest_window is not None else []
+            ),
+            latest_snapshot=runtime.latest_snapshot,
+            latest_evaluation=(
+                latest_window.latest_evaluation if latest_window is not None else None
+            ),
+            rungs=latest_window.rungs if latest_window is not None else [],
+            window_tear_sheets=list(runtime.tear_sheets),
+            rollover_history=list(runtime.rollover_history),
+            rollover_count=max(0, len(runtime.tear_sheets) - 1),
+            operator_events=list(runtime.session_events),
             errors=list(runtime.errors),
         )
 
@@ -3130,6 +3430,16 @@ class Btc15mStrategyService:
         total_quantity = Decimal("0")
         total_cost = Decimal("0")
         avg_entry = None
+        up_snapshot = (
+            _polymarket_level_by_outcome(liquidity_sample, "up")
+            if liquidity_sample is not None
+            else None
+        )
+        down_snapshot = (
+            _polymarket_level_by_outcome(liquidity_sample, "down")
+            if liquidity_sample is not None
+            else None
+        )
         if latest_evaluation is not None:
             for rung in latest_evaluation.rungs:
                 if rung.status != "filled":
@@ -3168,12 +3478,30 @@ class Btc15mStrategyService:
                 ),
                 sampled_at_dt,
             ),
+            current_window_label=_window_label(resolved.window),
+            page_parity_source="api",
+            current_live_btc_price=(
+                current_chainlink_tick.value if current_chainlink_tick is not None else None
+            ),
+            up_price=(
+                _coalesce_price(
+                    up_snapshot.midpoint if up_snapshot is not None else None,
+                    up_snapshot.best_ask if up_snapshot is not None else None,
+                )
+            ),
+            down_price=(
+                _coalesce_price(
+                    down_snapshot.midpoint if down_snapshot is not None else None,
+                    down_snapshot.best_ask if down_snapshot is not None else None,
+                )
+            ),
             selected_side=direction_status if direction_status in {"UP", "DOWN"} else None,
             current_chainlink_price=(
                 current_chainlink_tick.value if current_chainlink_tick else None
             ),
             current_binance_price=current_binance_tick.value if current_binance_tick else None,
             start_price_proxy_v1=start_proxy,
+            price_to_beat=start_proxy,
             direction_lock_status=direction_status,
             target_token_id=target_token_id,
             target_outcome=target_outcome,
@@ -4799,6 +5127,24 @@ def _btc15m_search_haystack(candidate: NormalizedMarket) -> str:
             candidate.event_slug or "",
         ]
     ).lower()
+
+
+def _window_label(window: Btc15mWindowIdentity) -> str | None:
+    start_dt = _parse_iso_optional(window.window_start_at)
+    end_dt = _parse_iso_optional(window.window_end_at)
+    if start_dt is None or end_dt is None:
+        return None
+    return f"{start_dt.strftime('%H:%M')} - {end_dt.strftime('%H:%M')} UTC"
+
+
+def _coalesce_price(*values: str | None) -> str | None:
+    for value in values:
+        if value is None:
+            continue
+        stripped = value.strip()
+        if stripped:
+            return stripped
+    return None
 
 
 def _decimal(value: str | Decimal) -> Decimal:

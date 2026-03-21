@@ -111,7 +111,12 @@ MODE_OPTION = typer.Option(
 CURRENT_OPTION = typer.Option(
     False,
     "--current",
-    help="Target the current BTC15m recurring window.",
+    help="Compatibility alias for --follow-current.",
+)
+FOLLOW_CURRENT_OPTION = typer.Option(
+    False,
+    "--follow-current",
+    help="Follow the current active BTC15m window and auto-roll across slugs.",
 )
 WAIT_NEXT_OPTION = typer.Option(
     False,
@@ -321,6 +326,7 @@ def dashboard_current(
 def terminal_current(
     ctx: typer.Context,
     current: bool = CURRENT_OPTION,
+    follow_current: bool = FOLLOW_CURRENT_OPTION,
     wait_next: bool = WAIT_NEXT_OPTION,
     observe_only: bool = OBSERVE_ONLY_OPTION,
     mode: str = MODE_OPTION,
@@ -330,11 +336,15 @@ def terminal_current(
     """Run one dense BTC15m operator terminal session for the current window."""
     if ctx.invoked_subcommand is not None:
         return
-    if current == wait_next:
+    current_requested = current or follow_current
+    if current_requested == wait_next:
         emit_command_error(
             ctx,
             code="invalid_argument",
-            message="BTC15m terminal requires exactly one of --current or --wait-next.",
+            message=(
+                "BTC15m terminal requires exactly one of "
+                "--follow-current/--current or --wait-next."
+            ),
             resource="btc15m",
             identifier="mode",
             local_json_output=json_output,
@@ -380,12 +390,14 @@ def terminal_current(
                     confirm=confirm,
                     observe_only=observe_only,
                     snapshot_only=True,
+                    session_window_limit=1,
                 )
-                if current
+                if current_requested
                 else service.terminal_wait_next(
                     mode=mode,
                     confirm=confirm,
                     snapshot_only=True,
+                    session_window_limit=1,
                 )
             )
         else:
@@ -407,13 +419,15 @@ def terminal_current(
                         mode=mode,
                         confirm=confirm,
                         observe_only=observe_only,
+                        session_window_limit=None,
                         on_snapshot=_on_snapshot,
                         confirm_action=_confirm_action if mode.strip().lower() == "live" else None,
                     )
-                    if current
+                    if current_requested
                     else service.terminal_wait_next(
                         mode=mode,
                         confirm=confirm,
+                        session_window_limit=1,
                         on_snapshot=_on_snapshot,
                         confirm_action=_confirm_action if mode.strip().lower() == "live" else None,
                     )
@@ -1031,11 +1045,24 @@ def _format_terminal_response(response: Btc15mTerminalResponse) -> str:
     )
 
 
+def _format_cents_label(value: str | None) -> str:
+    if value is None:
+        return "-"
+    normalized = value.strip()
+    if not normalized:
+        return "-"
+    if normalized.startswith("0."):
+        normalized = normalized[2:]
+    normalized = normalized.rstrip("0").rstrip(".")
+    return f"{normalized}c"
+
+
 def _render_terminal_snapshot(snapshot: Btc15mDashboardSnapshotRecord) -> RenderableType:
     header = summary_table(
-        title="Window",
+        title="Session",
         rows=[
             ("Market", snapshot.market_slug),
+            ("Window label", snapshot.current_window_label or "-"),
             ("Mode", str(snapshot.mode)),
             ("Attach", snapshot.attach_mode),
             ("State", snapshot.window_status),
@@ -1044,14 +1071,30 @@ def _render_terminal_snapshot(snapshot: Btc15mDashboardSnapshotRecord) -> Render
             ("Window", f"{snapshot.window_start_at or '-'} -> {snapshot.window_end_at or '-'}"),
         ],
     )
-    oracle = summary_table(
-        title="Boundary / Oracle",
+    market_focus = summary_table(
+        title="Market",
+        rows=[
+            ("Price to beat", snapshot.price_to_beat or "-"),
+            (
+                "Live BTC",
+                snapshot.current_live_btc_price or snapshot.current_chainlink_price or "-",
+            ),
+            ("Up price", snapshot.up_price or "-"),
+            ("Down price", snapshot.down_price or "-"),
+            ("Side", snapshot.selected_side or "-"),
+            (
+                "Midpoint / spread",
+                f"{snapshot.current_midpoint or '-'} / {snapshot.current_spread or '-'}",
+            ),
+            ("Parity source", snapshot.page_parity_source or "-"),
+        ],
+    )
+    boundary = summary_table(
+        title="Boundary / Lock",
         rows=[
             ("Boundary status", snapshot.boundary_status),
             ("Start proxy", snapshot.start_price_proxy_v1 or "-"),
-            ("Price to beat", snapshot.price_to_beat or "-"),
             ("Chainlink", snapshot.current_chainlink_price or "-"),
-            ("Binance", snapshot.current_binance_price or "-"),
             ("Direction", snapshot.direction_lock_status),
             ("Selected side", snapshot.selected_side or "-"),
         ],
@@ -1061,7 +1104,7 @@ def _render_terminal_snapshot(snapshot: Btc15mDashboardSnapshotRecord) -> Render
         columns=("Price", "State", "Qty", "Order", "Fill", "Visible"),
         rows=[
             (
-                rung.price,
+                _format_cents_label(rung.price),
                 rung.state,
                 rung.quantity or "-",
                 rung.order_id or "-",
@@ -1083,84 +1126,89 @@ def _render_terminal_snapshot(snapshot: Btc15mDashboardSnapshotRecord) -> Render
             ("Time to peak", str(snapshot.time_to_peak_seconds or 0)),
         ],
     )
-    up_side = summary_table(
-        title="Up Side",
+    both_sides = row_table(
+        title="Both Sides",
+        columns=("Side", "Bid", "Ask", "Mid", "Spread", "30c", "20c", "10c"),
         rows=[
-            ("Bid", snapshot.up_side.best_bid or "-" if snapshot.up_side is not None else "-"),
-            ("Ask", snapshot.up_side.best_ask or "-" if snapshot.up_side is not None else "-"),
             (
-                "Midpoint",
+                "Up",
+                snapshot.up_side.best_bid or "-" if snapshot.up_side is not None else "-",
+                snapshot.up_side.best_ask or "-" if snapshot.up_side is not None else "-",
                 snapshot.up_side.midpoint or "-" if snapshot.up_side is not None else "-",
-            ),
-            ("Spread", snapshot.up_side.spread or "-" if snapshot.up_side is not None else "-"),
-            (
-                "Visible 0.30/0.20/0.10",
-                (
-                    f"{snapshot.up_side.visible_liquidity_030 or '-'} / "
-                    f"{snapshot.up_side.visible_liquidity_020 or '-'} / "
-                    f"{snapshot.up_side.visible_liquidity_010 or '-'}"
-                )
+                snapshot.up_side.spread or "-" if snapshot.up_side is not None else "-",
+                snapshot.up_side.visible_liquidity_030 or "-"
+                if snapshot.up_side is not None
+                else "-",
+                snapshot.up_side.visible_liquidity_020 or "-"
+                if snapshot.up_side is not None
+                else "-",
+                snapshot.up_side.visible_liquidity_010 or "-"
                 if snapshot.up_side is not None
                 else "-",
             ),
-        ],
-    )
-    down_side = summary_table(
-        title="Down Side",
-        rows=[
-            ("Bid", snapshot.down_side.best_bid or "-" if snapshot.down_side is not None else "-"),
-            ("Ask", snapshot.down_side.best_ask or "-" if snapshot.down_side is not None else "-"),
             (
-                "Midpoint",
+                "Down",
+                snapshot.down_side.best_bid or "-" if snapshot.down_side is not None else "-",
+                snapshot.down_side.best_ask or "-" if snapshot.down_side is not None else "-",
                 snapshot.down_side.midpoint or "-" if snapshot.down_side is not None else "-",
-            ),
-            (
-                "Spread",
                 snapshot.down_side.spread or "-" if snapshot.down_side is not None else "-",
-            ),
-            (
-                "Visible 0.30/0.20/0.10",
-                (
-                    f"{snapshot.down_side.visible_liquidity_030 or '-'} / "
-                    f"{snapshot.down_side.visible_liquidity_020 or '-'} / "
-                    f"{snapshot.down_side.visible_liquidity_010 or '-'}"
-                )
+                snapshot.down_side.visible_liquidity_030 or "-"
+                if snapshot.down_side is not None
+                else "-",
+                snapshot.down_side.visible_liquidity_020 or "-"
+                if snapshot.down_side is not None
+                else "-",
+                snapshot.down_side.visible_liquidity_010 or "-"
                 if snapshot.down_side is not None
                 else "-",
             ),
         ],
     )
-    polymarket = summary_table(
-        title="Polymarket",
+    market_context = summary_table(
+        title="Market Context",
         rows=[
             ("Target", snapshot.target_outcome or "-"),
-            ("Midpoint", snapshot.current_midpoint or "-"),
-            ("Spread", snapshot.current_spread or "-"),
-            ("Visible @0.30", snapshot.visible_liquidity_030 or "-"),
-            ("Visible @0.20", snapshot.visible_liquidity_020 or "-"),
-            ("Visible @0.10", snapshot.visible_liquidity_010 or "-"),
+            ("Visible @30c", snapshot.visible_liquidity_030 or "-"),
+            ("Visible @20c", snapshot.visible_liquidity_020 or "-"),
+            ("Visible @10c", snapshot.visible_liquidity_010 or "-"),
             ("Open interest", snapshot.market_open_interest or "-"),
             ("Volume", snapshot.market_volume or "-"),
         ],
     )
     binance = summary_table(
-        title="Binance",
+        title="Binance Diagnostics",
         rows=[
-            ("Best bid", snapshot.binance_best_bid or "-"),
-            ("Best ask", snapshot.binance_best_ask or "-"),
-            ("Near-touch bid", snapshot.binance_near_touch_bid_depth or "-"),
-            ("Near-touch ask", snapshot.binance_near_touch_ask_depth or "-"),
+            ("Spot", snapshot.current_binance_price or "-"),
+            (
+                "Best bid / ask",
+                f"{snapshot.binance_best_bid or '-'} / {snapshot.binance_best_ask or '-'}",
+            ),
+            (
+                "Near-touch depth",
+                (
+                    f"{snapshot.binance_near_touch_bid_depth or '-'} / "
+                    f"{snapshot.binance_near_touch_ask_depth or '-'}"
+                ),
+            ),
             ("Imbalance", snapshot.binance_near_touch_imbalance or "-"),
-            ("Vol 1m bps", snapshot.binance_realized_vol_1m_bps or "-"),
-            ("Vol 3m bps", snapshot.binance_realized_vol_3m_bps or "-"),
-            ("Volume 1m", snapshot.binance_volume_1m or "-"),
-            ("Volume 3m", snapshot.binance_volume_3m or "-"),
+            (
+                "Vol 1m / 3m",
+                (
+                    f"{snapshot.binance_realized_vol_1m_bps or '-'} / "
+                    f"{snapshot.binance_realized_vol_3m_bps or '-'}"
+                ),
+            ),
+            (
+                "Volume 1m / 3m",
+                f"{snapshot.binance_volume_1m or '-'} / {snapshot.binance_volume_3m or '-'}",
+            ),
         ],
     )
     flags = summary_table(
         title="Flags",
         rows=[
             ("Flags", ", ".join(snapshot.manipulation_flags) or "-"),
+            ("Parity URL", snapshot.page_parity_url or "-"),
             ("Errors", str(len(snapshot.errors))),
         ],
     )
@@ -1181,7 +1229,8 @@ def _render_terminal_snapshot(snapshot: Btc15mDashboardSnapshotRecord) -> Render
     layout["body"].split_row(
         Layout(
             render_group(
-                Panel(oracle, title="Oracle"),
+                Panel(market_focus, title="Page Parity"),
+                Panel(boundary, title="Boundary"),
                 Panel(exposure, title="Exposure"),
             ),
             name="left",
@@ -1189,15 +1238,14 @@ def _render_terminal_snapshot(snapshot: Btc15mDashboardSnapshotRecord) -> Render
         Layout(
             render_group(
                 Panel(strategy, title="Strategy"),
-                Panel(up_side, title="Up"),
-                Panel(down_side, title="Down"),
+                Panel(both_sides, title="Both Sides"),
                 Panel(flags, title="Flags"),
             ),
             name="center",
         ),
         Layout(
             render_group(
-                Panel(polymarket, title="Polymarket"),
+                Panel(market_context, title="Polymarket"),
                 Panel(binance, title="Binance"),
             ),
             name="right",
@@ -1209,6 +1257,11 @@ def _render_terminal_snapshot(snapshot: Btc15mDashboardSnapshotRecord) -> Render
 def _render_terminal_response(response: Btc15mTerminalResponse) -> RenderableType:
     if response.latest_snapshot is None:
         return section_panel("BTC15m Terminal", empty_message("No terminal snapshot."))
+    latest_sheet = (
+        response.session.window_tear_sheets[-1]
+        if response.session is not None and response.session.window_tear_sheets
+        else None
+    )
     summary = summary_table(
         title="Terminal Summary",
         rows=[
@@ -1218,6 +1271,10 @@ def _render_terminal_response(response: Btc15mTerminalResponse) -> RenderableTyp
             ("Stop reason", response.stop_reason),
             ("Snapshots", str(response.total_snapshots)),
             ("Market", response.window.market_slug if response.window is not None else "-"),
+            (
+                "Rollovers",
+                str(response.session.rollover_count if response.session is not None else 0),
+            ),
         ],
     )
     final_summary = (
@@ -1228,6 +1285,7 @@ def _render_terminal_response(response: Btc15mTerminalResponse) -> RenderableTyp
                 ("Observe only", "yes" if response.session.observe_only else "no"),
                 ("Side", response.session.selected_side or "-"),
                 ("Boundary", response.session.boundary_status),
+                ("Window label", response.session.current_window_label or "-"),
                 (
                     "Filled / posted / cancelled",
                     (
@@ -1252,9 +1310,34 @@ def _render_terminal_response(response: Btc15mTerminalResponse) -> RenderableTyp
         if response.session is not None
         else empty_message("No final session summary.")
     )
+    tear_sheet = (
+        summary_table(
+            title="Latest Tear Sheet",
+            rows=[
+                ("Market", latest_sheet.window.market_slug),
+                ("Final state", latest_sheet.final_state),
+                ("Price to beat", latest_sheet.price_to_beat or "-"),
+                ("Live BTC", latest_sheet.current_live_btc_price or "-"),
+                ("Up / Down", f"{latest_sheet.up_price or '-'} / {latest_sheet.down_price or '-'}"),
+                (
+                    "Realized PnL",
+                    latest_sheet.latest_evaluation.realized_pnl_usdc
+                    if latest_sheet.latest_evaluation is not None
+                    else "-",
+                ),
+            ],
+        )
+        if latest_sheet is not None
+        else empty_message("No completed terminal window yet.")
+    )
     return section_panel(
         "BTC15m Terminal",
-        render_group(summary, final_summary, _render_terminal_snapshot(response.latest_snapshot)),
+        render_group(
+            summary,
+            final_summary,
+            tear_sheet,
+            _render_terminal_snapshot(response.latest_snapshot),
+        ),
     )
 
 
@@ -1285,6 +1368,11 @@ def _render_terminal_report_response(
     response: Btc15mTerminalReportResponse,
 ) -> RenderableType:
     if response.session is not None:
+        latest_sheet = (
+            response.session.window_tear_sheets[-1]
+            if response.session.window_tear_sheets
+            else None
+        )
         summary = summary_table(
             title="Terminal Tear Sheet",
             rows=[
@@ -1295,6 +1383,7 @@ def _render_terminal_report_response(
                 ("Stop reason", response.session.stop_reason),
                 ("Side", response.session.selected_side or "-"),
                 ("Snapshots", str(response.session.total_snapshots)),
+                ("Rollovers", str(response.session.rollover_count)),
                 (
                     "Realized PnL",
                     response.session.latest_evaluation.realized_pnl_usdc
@@ -1303,12 +1392,41 @@ def _render_terminal_report_response(
                 ),
             ],
         )
+        windows = (
+            row_table(
+                title="Session Windows",
+                columns=("Market", "State", "Price To Beat", "Up", "Down", "PnL"),
+                rows=[
+                    (
+                        item.window.market_slug,
+                        item.final_state,
+                        item.price_to_beat or "-",
+                        item.up_price or "-",
+                        item.down_price or "-",
+                        item.latest_evaluation.realized_pnl_usdc
+                        if item.latest_evaluation is not None
+                        else "-",
+                    )
+                    for item in response.session.window_tear_sheets
+                ],
+            )
+            if response.session.window_tear_sheets
+            else empty_message("No completed session windows yet.")
+        )
+        details_snapshot = (
+            latest_sheet.latest_snapshot
+            if latest_sheet is not None and latest_sheet.latest_snapshot is not None
+            else response.session.latest_snapshot
+        )
         details = (
-            _render_terminal_snapshot(response.session.latest_snapshot)
-            if response.session.latest_snapshot is not None
+            _render_terminal_snapshot(details_snapshot)
+            if details_snapshot is not None
             else empty_message("No terminal snapshot for this session.")
         )
-        return section_panel("BTC15m Terminal Tear Sheet", render_group(summary, details))
+        return section_panel(
+            "BTC15m Terminal Tear Sheet",
+            render_group(summary, windows, details),
+        )
     summary = summary_table(
         title="Terminal Summary",
         rows=[
