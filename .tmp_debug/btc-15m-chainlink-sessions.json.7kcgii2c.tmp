@@ -1,0 +1,50 @@
+{
+  "items": [
+    {
+      "created_at": "2026-03-20T10:29:55Z",
+      "ended_at": null,
+      "errors": [],
+      "final_report": null,
+      "live_confirmed": false,
+      "mode": "paper",
+      "paper_budget_usdc": "50",
+      "rung_notionals_usdc": [
+        "20",
+        "15",
+        "15"
+      ],
+      "selection_source": "session_next_exact",
+      "session_id": "btc15m_session_268c8fe7ca444910966c5423f380f641",
+      "started_at": null,
+      "state": "armed",
+      "stop_reason": null,
+      "stop_requested_at": null,
+      "target_slug": "btc-updown-15m-1774002600",
+      "updated_at": "2026-03-20T10:29:55Z",
+      "window": {
+        "condition_id": "0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "market_open_time": "2026-03-20T10:30:00Z",
+        "market_slug": "btc-updown-15m-1774002600",
+        "outcomes": [
+          "Up",
+          "Down"
+        ],
+        "slug_start_unix": 1774002600,
+        "strategy_name": "btc_15m_chainlink_directional_ladder_v1",
+        "timing_notes": [
+          "Slug-derived BTC15m start time overrode materially different Gamma timing.",
+          "Slug-derived BTC15m end time overrode materially different Gamma timing."
+        ],
+        "timing_source": "slug_timestamp",
+        "token_ids": [
+          "100",
+          "101"
+        ],
+        "window_end_at": "2026-03-20T10:45:00Z",
+        "window_id": "btc15m:0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "window_start_at": "2026-03-20T10:30:00Z"
+      }
+    }
+  ],
+  "version": 1
+}

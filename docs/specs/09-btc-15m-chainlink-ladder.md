@@ -60,6 +60,11 @@ Current research commands:
 - `pm strategy btc15m terminal --wait-next [--mode paper|live] [--confirm]`
 - `pm strategy btc15m terminal replay --session-id <id>`
 - `pm strategy btc15m terminal report [--session-id <id>]`
+- `pm strategy btc15m session arm --next --mode paper|live --budget-usdc <n> --rungs <a,b,c> [--confirm]`
+- `pm strategy btc15m session status`
+- `pm strategy btc15m session run --session-id <id>`
+- `pm strategy btc15m session stop --session-id <id>`
+- `pm strategy btc15m session report --session-id <id>`
 - `pm strategy btc15m report`
 
 Current workflow notes:
@@ -119,6 +124,18 @@ Current workflow notes:
 - `terminal --mode live --confirm` is the only BTC15m live execution surface on
   the current branch and still requires inline per-rung and cancellation
   confirms inside the attached terminal
+- the current branch now also includes a bounded one-window session controller:
+  `session arm --next`, `session run`, `session stop`, `session status`, and
+  `session report`
+- `session arm --next` is pre-start only, persists the controller state under
+  `.pm/state/`, and keeps current-window late attach non-tradeable
+- `session run --session-id` is a bounded foreground workflow that reuses
+  `market_truth`, Chainlink boundaries, direction lock, ladder entries,
+  hold-to-expiry, and final tear-sheet logic without any dependence on
+  `page_mirror`
+- `session arm --next --mode live --confirm` is the only controller entry into
+  live mode; `paper` remains the default and there is still no daemon or
+  unattended auto-trading loop
 - `terminal replay --session-id` replays persisted terminal snapshots only and
   does not call live market, oracle, or execution endpoints
 - `terminal report --session-id` returns one persisted tear sheet while bare

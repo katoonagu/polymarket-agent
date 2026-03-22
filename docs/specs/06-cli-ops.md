@@ -594,6 +594,11 @@ One strategy-specific exception now exists on the current branch:
 - `pm strategy btc15m terminal --wait-next`
 - `pm strategy btc15m terminal replay --session-id <id>`
 - `pm strategy btc15m terminal report [--session-id <id>]`
+- `pm strategy btc15m session arm --next --mode paper|live --budget-usdc <n> --rungs <a,b,c> [--confirm]`
+- `pm strategy btc15m session status`
+- `pm strategy btc15m session run --session-id <id>`
+- `pm strategy btc15m session stop --session-id <id>`
+- `pm strategy btc15m session report --session-id <id>`
 
 This BTC15m surface is a current-window-first attached operator screen with
 page-parity-first live metrics, automatic rollover across BTC15m slugs while
@@ -652,6 +657,16 @@ Richer human-readable tables are now implemented for selected operator commands 
   session degrades into observe-only and page mirroring remains operator-only
 - countdown is slug-derived and authoritative even when page mirror fields are
   missing or stale
+- the BTC15m one-window session controller is separate from the attached
+  terminal and sits directly on top of `market_truth`
+- `session arm --next` persists one pre-start armed session under `.pm/state/`
+  and `session run --session-id` executes exactly one window end-to-end, then
+  exits
+- `session stop --session-id` records `stop_requested` and exits on the next
+  safe checkpoint; `session report --session-id` returns the persisted final
+  report
+- `page_mirror` stays terminal-only operator context and must not affect any
+  controller or strategy decision path
 - terminal paper sizing is explicit via `--budget-usdc` and `--rungs`; when
   only budget is provided the default `20:15:15` ladder scales proportionally
 - Binance remains a compact secondary diagnostics panel and may collapse when

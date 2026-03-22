@@ -28,6 +28,11 @@ from pm.strategy import (
     Btc15mReplayResponse,
     Btc15mReportResponse,
     Btc15mResolveCurrentResponse,
+    Btc15mSessionArmResponse,
+    Btc15mSessionReportResponse,
+    Btc15mSessionRunResponse,
+    Btc15mSessionStatusResponse,
+    Btc15mSessionStopResponse,
     Btc15mStateError,
     Btc15mStrategyService,
     Btc15mTerminalDisplayTruth,
@@ -65,6 +70,11 @@ terminal_app = typer.Typer(
     help="Dense BTC15m operator terminal commands.",
     invoke_without_command=True,
     no_args_is_help=False,
+)
+session_app = typer.Typer(
+    add_completion=False,
+    help="Bounded BTC15m one-window session-controller commands.",
+    no_args_is_help=True,
 )
 
 SECONDS_OPTION = typer.Option(
@@ -134,6 +144,11 @@ WAIT_NEXT_OPTION = typer.Option(
     "--wait-next",
     help="Observe the current window and arm the next BTC15m window when capture opens.",
 )
+NEXT_OPTION = typer.Option(
+    False,
+    "--next",
+    help="Arm the next eligible BTC15m window. Required for session arm in this step.",
+)
 OBSERVE_ONLY_OPTION = typer.Option(
     False,
     "--observe-only",
@@ -158,6 +173,11 @@ SESSION_ID_OPTION = typer.Option(
     ...,
     "--session-id",
     help="Persisted BTC15m terminal session identifier.",
+)
+CONTROLLER_SESSION_ID_OPTION = typer.Option(
+    ...,
+    "--session-id",
+    help="Persisted BTC15m controller session identifier.",
 )
 OPTIONAL_SESSION_ID_OPTION = typer.Option(
     None,
@@ -549,6 +569,125 @@ def terminal_report(
         result.model_dump(mode="json"),
         text=_format_terminal_report_response(result),
         renderable=_render_terminal_report_response(result),
+        local_json_output=json_output,
+    )
+
+
+@session_app.command("arm")
+def session_arm(
+    ctx: typer.Context,
+    next_window: bool = NEXT_OPTION,
+    mode: str = MODE_OPTION,
+    budget_usdc: str | None = TERMINAL_BUDGET_OPTION,
+    rungs: str | None = TERMINAL_RUNGS_OPTION,
+    confirm: bool = CONFIRM_OPTION,
+    json_output: bool = JSON_OPTION,
+) -> None:
+    """Arm one bounded BTC15m controller session for the next window."""
+    try:
+        result = Btc15mStrategyService().session_arm(
+            next_window=next_window,
+            mode=mode,
+            budget_usdc=budget_usdc,
+            rungs=rungs,
+            confirm=confirm,
+        )
+    except (Btc15mValidationError, Btc15mStateError) as exc:
+        _emit_btc15m_error(ctx, exc=exc, json_output=json_output)
+        raise typer.Exit(1) from exc
+
+    emit_command_output(
+        ctx,
+        result.model_dump(mode="json"),
+        text=_format_session_arm_response(result),
+        renderable=_render_session_arm_response(result),
+        local_json_output=json_output,
+    )
+
+
+@session_app.command("status")
+def session_status(
+    ctx: typer.Context,
+    json_output: bool = JSON_OPTION,
+) -> None:
+    """Show the compact BTC15m controller queue and active-session snapshot."""
+    try:
+        result = Btc15mStrategyService().session_status()
+    except (Btc15mValidationError, Btc15mStateError) as exc:
+        _emit_btc15m_error(ctx, exc=exc, json_output=json_output)
+        raise typer.Exit(1) from exc
+
+    emit_command_output(
+        ctx,
+        result.model_dump(mode="json"),
+        text=_format_session_status_response(result),
+        renderable=_render_session_status_response(result),
+        local_json_output=json_output,
+    )
+
+
+@session_app.command("run")
+def session_run(
+    ctx: typer.Context,
+    session_id: str = CONTROLLER_SESSION_ID_OPTION,
+    json_output: bool = JSON_OPTION,
+) -> None:
+    """Run one armed BTC15m controller session end-to-end."""
+    try:
+        result = Btc15mStrategyService().session_run(session_id=session_id)
+    except (Btc15mValidationError, Btc15mStateError) as exc:
+        _emit_btc15m_error(ctx, exc=exc, identifier=session_id, json_output=json_output)
+        raise typer.Exit(1) from exc
+
+    emit_command_output(
+        ctx,
+        result.model_dump(mode="json"),
+        text=_format_session_run_response(result),
+        renderable=_render_session_run_response(result),
+        local_json_output=json_output,
+    )
+
+
+@session_app.command("stop")
+def session_stop(
+    ctx: typer.Context,
+    session_id: str = CONTROLLER_SESSION_ID_OPTION,
+    json_output: bool = JSON_OPTION,
+) -> None:
+    """Request a safe stop for one bounded BTC15m controller session."""
+    try:
+        result = Btc15mStrategyService().session_stop(session_id=session_id)
+    except (Btc15mValidationError, Btc15mStateError) as exc:
+        _emit_btc15m_error(ctx, exc=exc, identifier=session_id, json_output=json_output)
+        raise typer.Exit(1) from exc
+
+    emit_command_output(
+        ctx,
+        result.model_dump(mode="json"),
+        text=_format_session_stop_response(result),
+        renderable=_render_session_stop_response(result),
+        local_json_output=json_output,
+    )
+
+
+@session_app.command("report")
+def session_report(
+    ctx: typer.Context,
+    session_id: str = CONTROLLER_SESSION_ID_OPTION,
+    json_output: bool = JSON_OPTION,
+) -> None:
+    """Show one persisted BTC15m controller-session report."""
+    try:
+        result = Btc15mStrategyService().session_report(session_id=session_id)
+    except (Btc15mValidationError, Btc15mStateError) as exc:
+        _emit_btc15m_error(ctx, exc=exc, identifier=session_id, json_output=json_output)
+        raise typer.Exit(1) from exc
+
+    emit_command_output(
+        ctx,
+        result.model_dump(mode="json"),
+        text=_format_session_report_response(result),
+        renderable=_render_session_report_response(result),
         local_json_output=json_output,
     )
 
@@ -1977,6 +2116,251 @@ def _render_terminal_replay_response(response: Btc15mTerminalReplayResponse) -> 
     return section_panel("BTC15m Terminal Replay", render_group(summary, details))
 
 
+def _format_session_arm_response(response: Btc15mSessionArmResponse) -> str:
+    session = response.session
+    return "\n".join(
+        [
+            f"Session: {session.session_id}",
+            f"State: {session.state}",
+            f"Mode: {session.mode}",
+            f"Market: {session.window.market_slug if session.window is not None else '-'}",
+            f"Budget: {session.paper_budget_usdc or '-'}",
+            f"Rungs: {', '.join(session.rung_notionals_usdc) or '-'}",
+            f"Reused: {'yes' if response.reused_existing else 'no'}",
+        ]
+    )
+
+
+def _render_session_arm_response(response: Btc15mSessionArmResponse) -> RenderableType:
+    session = response.session
+    return section_panel(
+        "BTC15m Session",
+        summary_table(
+            title="Armed Session",
+            rows=[
+                ("Session", session.session_id),
+                ("State", session.state),
+                ("Mode", session.mode),
+                ("Market", session.window.market_slug if session.window is not None else "-"),
+                ("Budget", session.paper_budget_usdc or "-"),
+                ("Rungs", ", ".join(session.rung_notionals_usdc) or "-"),
+                ("Reused", "yes" if response.reused_existing else "no"),
+            ],
+        ),
+    )
+
+
+def _format_session_status_response(response: Btc15mSessionStatusResponse) -> str:
+    active = response.active_session.session_id if response.active_session is not None else "-"
+    latest = (
+        response.latest_completed_report.session_id
+        if response.latest_completed_report is not None
+        else "-"
+    )
+    return "\n".join(
+        [
+            f"Checked at: {response.checked_at}",
+            f"Armed sessions: {len(response.armed_sessions)}",
+            f"Active session: {active}",
+            f"Latest completed report: {latest}",
+        ]
+    )
+
+
+def _render_session_status_response(response: Btc15mSessionStatusResponse) -> RenderableType:
+    summary = summary_table(
+        title="Controller Status",
+        rows=[
+            ("Checked at", response.checked_at),
+            ("Armed sessions", str(len(response.armed_sessions))),
+            (
+                "Active session",
+                response.active_session.session_id if response.active_session is not None else "-",
+            ),
+            (
+                "Latest report",
+                response.latest_completed_report.session_id
+                if response.latest_completed_report is not None
+                else "-",
+            ),
+        ],
+    )
+    armed = (
+        row_table(
+            title="Armed Sessions",
+            columns=("Session", "Mode", "Market", "Budget", "State"),
+            rows=[
+                (
+                    item.session_id,
+                    item.mode,
+                    item.window.market_slug if item.window is not None else "-",
+                    item.paper_budget_usdc or "-",
+                    item.state,
+                )
+                for item in response.armed_sessions
+            ],
+        )
+        if response.armed_sessions
+        else empty_message("No armed BTC15m sessions.")
+    )
+    active = (
+        summary_table(
+            title="Active Session",
+            rows=[
+                ("Session", response.active_session.session_id),
+                ("Mode", response.active_session.mode),
+                ("State", response.active_session.state),
+                (
+                    "Market",
+                    response.active_session.window.market_slug
+                    if response.active_session.window is not None
+                    else "-",
+                ),
+                ("Budget", response.active_session.paper_budget_usdc or "-"),
+            ],
+        )
+        if response.active_session is not None
+        else empty_message("No active BTC15m session.")
+    )
+    return section_panel("BTC15m Session", render_group(summary, active, armed))
+
+
+def _format_session_run_response(response: Btc15mSessionRunResponse) -> str:
+    report = response.report
+    market_slug = (
+        response.session.window.market_slug if response.session.window is not None else "-"
+    )
+    return "\n".join(
+        [
+            f"Session: {response.session.session_id}",
+            f"State: {response.session.state}",
+            f"Market: {market_slug}",
+            f"Stop reason: {response.session.stop_reason or '-'}",
+            f"Final state: {report.final_state if report is not None else '-'}",
+            f"Realized PnL: {report.realized_pnl_usdc if report is not None else '-'}",
+        ]
+    )
+
+
+def _render_session_run_response(response: Btc15mSessionRunResponse) -> RenderableType:
+    report = response.report
+    summary = summary_table(
+        title="Run Result",
+        rows=[
+            ("Session", response.session.session_id),
+            ("State", response.session.state),
+            ("Mode", response.session.mode),
+            (
+                "Market",
+                response.session.window.market_slug if response.session.window is not None else "-",
+            ),
+            ("Stop reason", response.session.stop_reason or "-"),
+            ("Budget", response.session.paper_budget_usdc or "-"),
+            ("Rungs", ", ".join(response.session.rung_notionals_usdc) or "-"),
+        ],
+    )
+    final_report = (
+        summary_table(
+            title="Final Report",
+            rows=[
+                ("Controller state", report.state),
+                ("Final state", report.final_state or "-"),
+                ("Traded", "yes" if report.traded else "no"),
+                ("Observe only", "yes" if report.observe_only else "no"),
+                ("Side", report.selected_side or "-"),
+                ("Boundary", report.boundary_status),
+                ("PnL", report.realized_pnl_usdc or "-"),
+                ("MFE / MAE", f"{report.mfe_usdc or '-'} / {report.mae_usdc or '-'}"),
+            ],
+        )
+        if report is not None
+        else empty_message("No final report.")
+    )
+    return section_panel("BTC15m Session", render_group(summary, final_report))
+
+
+def _format_session_stop_response(response: Btc15mSessionStopResponse) -> str:
+    session = response.session
+    return "\n".join(
+        [
+            f"Session: {session.session_id}",
+            f"State: {session.state}",
+            f"Stop reason: {session.stop_reason or '-'}",
+        ]
+    )
+
+
+def _render_session_stop_response(response: Btc15mSessionStopResponse) -> RenderableType:
+    session = response.session
+    return section_panel(
+        "BTC15m Session",
+        summary_table(
+            title="Stop Request",
+            rows=[
+                ("Session", session.session_id),
+                ("State", session.state),
+                ("Stop requested at", session.stop_requested_at or "-"),
+                ("Stop reason", session.stop_reason or "-"),
+            ],
+        ),
+    )
+
+
+def _format_session_report_response(response: Btc15mSessionReportResponse) -> str:
+    report = response.report
+    return "\n".join(
+        [
+            f"Session: {report.session_id}",
+            f"State: {report.state}",
+            f"Final state: {report.final_state or '-'}",
+            f"Market: {report.window.market_slug if report.window is not None else '-'}",
+            f"PnL: {report.realized_pnl_usdc or '-'}",
+        ]
+    )
+
+
+def _render_session_report_response(response: Btc15mSessionReportResponse) -> RenderableType:
+    report = response.report
+    return section_panel(
+        "BTC15m Session Report",
+        render_group(
+            summary_table(
+                title="Report",
+                rows=[
+                    ("Session", report.session_id),
+                    ("State", report.state),
+                    ("Final state", report.final_state or "-"),
+                    ("Mode", report.mode),
+                    ("Market", report.window.market_slug if report.window is not None else "-"),
+                    ("Stop reason", report.stop_reason or "-"),
+                    ("Traded", "yes" if report.traded else "no"),
+                    ("Observe only", "yes" if report.observe_only else "no"),
+                    ("Side", report.selected_side or "-"),
+                    ("Budget", report.paper_budget_usdc or "-"),
+                    ("Rungs", ", ".join(report.rung_notionals_usdc) or "-"),
+                    ("Realized PnL", report.realized_pnl_usdc or "-"),
+                ],
+            ),
+            row_table(
+                title="Rung Outcomes",
+                columns=("Price", "State", "Notional", "Qty", "Fill"),
+                rows=[
+                    (
+                        item.price,
+                        item.state,
+                        item.notional_usdc or "-",
+                        item.quantity or "-",
+                        item.fill_price or "-",
+                    )
+                    for item in report.rung_outcomes
+                ],
+            )
+            if report.rung_outcomes
+            else empty_message("No rung outcomes recorded."),
+        ),
+    )
+
+
 def _format_campaign_next_window_response(response: Btc15mCampaignNextWindowResponse) -> str:
     if response.window is None:
         return "No campaign window became available before the wait limit."
@@ -2254,3 +2638,4 @@ app.add_typer(record_app, name="record")
 app.add_typer(campaign_app, name="campaign")
 app.add_typer(liquidity_app, name="liquidity")
 app.add_typer(terminal_app, name="terminal")
+app.add_typer(session_app, name="session")

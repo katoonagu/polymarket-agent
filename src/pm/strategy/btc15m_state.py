@@ -24,6 +24,8 @@ from pm.strategy.btc15m_models import (
     Btc15mPaperRunsFile,
     Btc15mReplayRecord,
     Btc15mReplaysFile,
+    Btc15mSessionRecord,
+    Btc15mSessionsFile,
     Btc15mTerminalSessionRecord,
     Btc15mTerminalSessionsFile,
     Btc15mWindowRecord,
@@ -40,6 +42,7 @@ CAMPAIGN_RUNS_FILENAME = "btc-15m-chainlink-campaign-runs.json"
 DASHBOARD_SNAPSHOTS_FILENAME = "btc-15m-chainlink-dashboard-snapshots.jsonl"
 AUTO_ROLL_RUNS_FILENAME = "btc-15m-chainlink-auto-roll-runs.json"
 TERMINAL_SESSIONS_FILENAME = "btc-15m-chainlink-terminal-sessions.json"
+SESSIONS_FILENAME = "btc-15m-chainlink-sessions.json"
 
 DocumentT = TypeVar(
     "DocumentT",
@@ -48,6 +51,7 @@ DocumentT = TypeVar(
     Btc15mAutoRollRunsFile,
     Btc15mReplaysFile,
     Btc15mPaperRunsFile,
+    Btc15mSessionsFile,
     Btc15mTerminalSessionsFile,
 )
 
@@ -72,6 +76,7 @@ class Btc15mStateService:
         dashboard_snapshots_path: Path | None = None,
         auto_roll_runs_path: Path | None = None,
         terminal_sessions_path: Path | None = None,
+        sessions_path: Path | None = None,
     ) -> None:
         state_dir = get_strategy_state_dir()
         self._boundary_observations_path = boundary_observations_path or (
@@ -96,6 +101,7 @@ class Btc15mStateService:
         self._terminal_sessions_path = terminal_sessions_path or (
             state_dir / TERMINAL_SESSIONS_FILENAME
         )
+        self._sessions_path = sessions_path or (state_dir / SESSIONS_FILENAME)
 
     def list_boundary_observations(self) -> list[Btc15mBoundaryObservationRecord]:
         """Return raw boundary observations in append order."""
@@ -206,6 +212,22 @@ class Btc15mStateService:
         document = self._load_document(self._terminal_sessions_path, Btc15mTerminalSessionsFile)
         document.items.append(record)
         self._write_document(self._terminal_sessions_path, document)
+
+    def list_sessions(self) -> list[Btc15mSessionRecord]:
+        """Return persisted BTC15m controller sessions in append order."""
+        document = self._load_document(self._sessions_path, Btc15mSessionsFile)
+        return document.items
+
+    def upsert_session(self, record: Btc15mSessionRecord) -> None:
+        """Insert or replace one BTC15m controller session record by session id."""
+        document = self._load_document(self._sessions_path, Btc15mSessionsFile)
+        for index, item in enumerate(document.items):
+            if item.session_id == record.session_id:
+                document.items[index] = record
+                break
+        else:
+            document.items.append(record)
+        self._write_document(self._sessions_path, document)
 
     @property
     def windows_path(self) -> Path:

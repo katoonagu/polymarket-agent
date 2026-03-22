@@ -143,6 +143,12 @@ Strategy evaluation is still read-only and persists candidate intents plus revie
 .venv\Scripts\pm strategy btc15m terminal replay --session-id <session-id> --json
 .venv\Scripts\pm strategy btc15m terminal report --json
 .venv\Scripts\pm strategy btc15m terminal report --session-id <session-id> --json
+.venv\Scripts\pm strategy btc15m session arm --next --mode paper --budget-usdc 50 --rungs 20,15,15 --json
+.venv\Scripts\pm strategy btc15m session arm --next --mode live --confirm --budget-usdc 50 --rungs 20,15,15 --json
+.venv\Scripts\pm strategy btc15m session status --json
+.venv\Scripts\pm strategy btc15m session run --session-id <session-id> --json
+.venv\Scripts\pm strategy btc15m session stop --session-id <session-id> --json
+.venv\Scripts\pm strategy btc15m session report --session-id <session-id> --json
 .venv\Scripts\pm strategy btc15m report --json
 ```
 
@@ -174,9 +180,14 @@ Rules:
 - `terminal --mode live --confirm` is the only BTC15m live execution surface on this branch and still requires inline per-action confirmation before posting or cancelling any rung
 - `terminal replay --session-id` replays persisted terminal snapshots only and does not call live market or oracle endpoints
 - `terminal report --session-id` returns one persisted tear sheet, while bare `terminal report` remains the aggregate history view
+- `session arm --next` is the bounded tradeable BTC15m path outside the attached terminal; it resolves one pre-start next window, persists a controller session, and keeps current-window late attach non-tradeable
+- `session run --session-id` is a bounded foreground one-window controller workflow that reuses BTC15m `market_truth`, boundary capture, direction lock, ladder, and final tear-sheet logic without depending on `page_mirror`
+- `session stop --session-id` records `stop_requested` and exits on the next safe checkpoint; `session report --session-id` returns the persisted final session report
+- `session arm --next --mode live --confirm` is the only controller entry into live mode; `paper` remains the default and no daemonized session loop exists
 - ladder labels in human terminal output are shown as `30¢ / 20¢ / 10¢`; JSON stays numeric as `0.30 / 0.20 / 0.10`
 - recorder artifacts persist under `.pm/state/` as dedicated BTC15m boundary, window, replay, liquidity-sample, campaign-run, and paper-run state
 - terminal summaries now persist under `.pm/state/btc-15m-chainlink-terminal-sessions.json`, while per-refresh rolling terminal snapshots reuse the BTC15m dashboard snapshot log with `view_kind="terminal"`
+- controller sessions now persist under `.pm/state/btc-15m-chainlink-sessions.json`
 - start and end boundaries persist the last Chainlink tick before or at the boundary and the first Chainlink tick at or after the boundary
 - `start_price_proxy_v1` and `end_price_proxy_v1` now use the first Chainlink tick at or after the relevant boundary, with bounded grace windows and explainable partial skips when the post-boundary tick is missing
 - the minute-5 directional lock uses recorded Chainlink and Binance context against the hardened Chainlink start proxy

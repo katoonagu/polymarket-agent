@@ -47,6 +47,16 @@ class Btc15mTerminalState(StrEnum):
     SKIPPED = "SKIPPED"
 
 
+class Btc15mSessionState(StrEnum):
+    """Lifecycle states for one bounded BTC15m controller session."""
+
+    ARMED = "armed"
+    RUNNING = "running"
+    STOP_REQUESTED = "stop_requested"
+    STOPPED = "stopped"
+    COMPLETED = "completed"
+
+
 class Btc15mTimingControls(BaseModel):
     """Explicit per-window timing controls for BTC15m evaluation."""
 
@@ -671,6 +681,69 @@ class Btc15mTerminalSessionsFile(BaseModel):
     items: list[Btc15mTerminalSessionRecord] = Field(default_factory=list)
 
 
+class Btc15mSessionReportRecord(BaseModel):
+    """Final persisted report for one bounded BTC15m controller session."""
+
+    session_id: str
+    created_at: str
+    mode: Btc15mRunMode = Btc15mRunMode.PAPER
+    state: Btc15mSessionState = Btc15mSessionState.COMPLETED
+    final_state: str | None = None
+    window: Btc15mWindowIdentity | None = None
+    target_slug: str | None = None
+    selection_source: str = "next_exact"
+    traded: bool = False
+    observe_only: bool = False
+    boundary_status: str = "pending"
+    stop_reason: str | None = None
+    selected_side: str | None = None
+    target_token_id: str | None = None
+    target_outcome: str | None = None
+    paper_budget_usdc: str | None = None
+    rung_notionals_usdc: list[str] = Field(default_factory=list)
+    avg_entry_price: str | None = None
+    exposure_quantity: str | None = None
+    exposure_notional_usdc: str | None = None
+    realized_pnl_usdc: str | None = None
+    mfe_usdc: str | None = None
+    mae_usdc: str | None = None
+    skip_reasons: list[str] = Field(default_factory=list)
+    rung_outcomes: list[Btc15mDashboardRungState] = Field(default_factory=list)
+    latest_evaluation: Btc15mPaperEvaluation | None = None
+    execution_reconciliation_id: str | None = None
+    execution_reconciliation_summary: dict[str, int] = Field(default_factory=dict)
+    errors: list[Btc15mSectionError] = Field(default_factory=list)
+
+
+class Btc15mSessionRecord(BaseModel):
+    """Mutable controller-session record for one target BTC15m window."""
+
+    session_id: str
+    created_at: str
+    updated_at: str
+    started_at: str | None = None
+    ended_at: str | None = None
+    mode: Btc15mRunMode = Btc15mRunMode.PAPER
+    state: Btc15mSessionState = Btc15mSessionState.ARMED
+    live_confirmed: bool = False
+    window: Btc15mWindowIdentity | None = None
+    target_slug: str | None = None
+    selection_source: str = "next_exact"
+    paper_budget_usdc: str | None = None
+    rung_notionals_usdc: list[str] = Field(default_factory=list)
+    stop_requested_at: str | None = None
+    stop_reason: str | None = None
+    final_report: Btc15mSessionReportRecord | None = None
+    errors: list[Btc15mSectionError] = Field(default_factory=list)
+
+
+class Btc15mSessionsFile(BaseModel):
+    """Versioned state document for persisted BTC15m controller sessions."""
+
+    version: int = 1
+    items: list[Btc15mSessionRecord] = Field(default_factory=list)
+
+
 class Btc15mAutoRollRunRecord(BaseModel):
     """Append-only bounded BTC15m auto-roll session record."""
 
@@ -843,6 +916,46 @@ class Btc15mTerminalReplayResponse(BaseModel):
     session: Btc15mTerminalSessionRecord | None = None
     first_snapshot: Btc15mDashboardSnapshotRecord | None = None
     latest_snapshot: Btc15mDashboardSnapshotRecord | None = None
+    errors: list[Btc15mSectionError] = Field(default_factory=list)
+
+
+class Btc15mSessionArmResponse(BaseModel):
+    """Arm-next controller response."""
+
+    session: Btc15mSessionRecord
+    reused_existing: bool = False
+    errors: list[Btc15mSectionError] = Field(default_factory=list)
+
+
+class Btc15mSessionStatusResponse(BaseModel):
+    """Compact controller queue and active-session status response."""
+
+    checked_at: str
+    armed_sessions: list[Btc15mSessionRecord] = Field(default_factory=list)
+    active_session: Btc15mSessionRecord | None = None
+    latest_completed_report: Btc15mSessionReportRecord | None = None
+    errors: list[Btc15mSectionError] = Field(default_factory=list)
+
+
+class Btc15mSessionRunResponse(BaseModel):
+    """Bounded controller run response."""
+
+    session: Btc15mSessionRecord
+    report: Btc15mSessionReportRecord | None = None
+    errors: list[Btc15mSectionError] = Field(default_factory=list)
+
+
+class Btc15mSessionStopResponse(BaseModel):
+    """Stop-request controller response."""
+
+    session: Btc15mSessionRecord
+    errors: list[Btc15mSectionError] = Field(default_factory=list)
+
+
+class Btc15mSessionReportResponse(BaseModel):
+    """Persisted controller-session report response."""
+
+    report: Btc15mSessionReportRecord
     errors: list[Btc15mSectionError] = Field(default_factory=list)
 
 

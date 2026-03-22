@@ -241,6 +241,13 @@ Define and validate the first market-specific recurring strategy track for BTC
   - replayable terminal sessions and session-scoped tear-sheet reporting
   - guarded `Up/Down` execution normalization so the BTC15m live terminal can
     reuse the shared execution safety model
+  - bounded BTC15m one-window session controller with `session arm --next`,
+    `session run`, `session stop`, `session status`, and `session report`
+  - dedicated controller-session persistence under `.pm/state/` with armed,
+    running, stop-requested, stopped, and completed lifecycle state
+  - paper-first next-window execution workflow that reuses `market_truth`,
+    boundary capture, ladder, and final tear-sheet logic without any
+    `page_mirror` dependency
 - Still pending:
   - multi-day evidence collection over live recurring windows using the bounded
     campaign runner

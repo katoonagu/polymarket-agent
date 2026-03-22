@@ -14,7 +14,7 @@ from typing import Any, cast
 from uuid import uuid4
 
 from pm.binance import BinanceClientError, BinanceService
-from pm.execution import ExecutionValidationError, OrderLifecycleService
+from pm.execution import ExecutionValidationError, ExecutionWatchService, OrderLifecycleService
 from pm.market.clob import ClobClient
 from pm.market.exceptions import ClobClientError, ClobNotFoundError
 from pm.market.gamma import GammaClient, GammaSearchCandidate
@@ -59,6 +59,14 @@ from pm.strategy.btc15m_models import (
     Btc15mResolveCurrentResponse,
     Btc15mRunMode,
     Btc15mSectionError,
+    Btc15mSessionArmResponse,
+    Btc15mSessionRecord,
+    Btc15mSessionReportRecord,
+    Btc15mSessionReportResponse,
+    Btc15mSessionRunResponse,
+    Btc15mSessionState,
+    Btc15mSessionStatusResponse,
+    Btc15mSessionStopResponse,
     Btc15mTerminalDisplayTruth,
     Btc15mTerminalEventRecord,
     Btc15mTerminalMarketTruth,
@@ -268,6 +276,7 @@ class Btc15mStrategyService:
         binance_service: BinanceService | None = None,
         page_parity_service: Btc15mPageParityService | None = None,
         order_lifecycle: OrderLifecycleService | None = None,
+        execution_watch_service: ExecutionWatchService | None = None,
         gamma_client_cls: type[GammaClient] = GammaClient,
         clob_client_cls: type[ClobClient] = ClobClient,
         now: Any | None = None,
@@ -281,6 +290,9 @@ class Btc15mStrategyService:
         self._binance_service = binance_service or BinanceService()
         self._page_parity_service = page_parity_service or Btc15mPageParityService()
         self._order_lifecycle = order_lifecycle or OrderLifecycleService()
+        self._execution_watch_service = execution_watch_service or ExecutionWatchService(
+            lifecycle_service=self._order_lifecycle
+        )
         self._gamma_client_cls = gamma_client_cls
         self._clob_client_cls = clob_client_cls
         self._now = now or _utc_now
@@ -696,6 +708,252 @@ class Btc15mStrategyService:
             recent_sessions=list(reversed(sessions))[:10],
         )
 
+    def session_arm(
+        self,
+        *,
+        next_window: bool = False,
+        mode: str = "paper",
+        budget_usdc: str | None = None,
+        rungs: str | None = None,
+        confirm: bool = False,
+    ) -> Btc15mSessionArmResponse:
+        """Arm one bounded BTC15m controller session for the next eligible window."""
+        if not next_window:
+            raise Btc15mValidationError("BTC15m session arm currently requires --next.")
+        normalized_mode = _normalize_terminal_mode(mode)
+        if normalized_mode is Btc15mRunMode.LIVE and not confirm:
+            raise Btc15mValidationError(
+                "BTC15m live session arming requires --mode live --confirm."
+            )
+        active_session = self._active_controller_session()
+        if active_session is not None:
+            raise Btc15mValidationError(
+                f"BTC15m session '{active_session.session_id}' is already active."
+            )
+        paper_budget_usdc, rung_notionals_usdc = _resolve_terminal_paper_sizing(
+            budget_usdc=budget_usdc,
+            rungs=rungs,
+        )
+        resolved = self._resolve_next_session_window()
+        existing = self._armed_session_for_window(resolved.window.window_id)
+        if existing is not None:
+            if (
+                existing.mode is not normalized_mode
+                or existing.paper_budget_usdc != _decimal_text(paper_budget_usdc)
+                or existing.rung_notionals_usdc
+                != [_decimal_text(item) for item in rung_notionals_usdc]
+            ):
+                raise Btc15mValidationError(
+                    "An armed BTC15m session already exists for that target window with "
+                    "different mode or sizing."
+                )
+            return Btc15mSessionArmResponse(session=existing, reused_existing=True)
+        conflicting_armed = self._conflicting_armed_session(resolved.window.window_id)
+        if conflicting_armed is not None:
+            raise Btc15mValidationError(
+                f"BTC15m session '{conflicting_armed.session_id}' is already armed."
+            )
+        created_at = _isoformat(self._now())
+        session = Btc15mSessionRecord(
+            session_id=_make_id("btc15m_session"),
+            created_at=created_at,
+            updated_at=created_at,
+            mode=normalized_mode,
+            state=Btc15mSessionState.ARMED,
+            live_confirmed=normalized_mode is Btc15mRunMode.LIVE and confirm,
+            window=resolved.window,
+            target_slug=resolved.target_slug,
+            selection_source=resolved.selection_source,
+            paper_budget_usdc=_decimal_text(paper_budget_usdc),
+            rung_notionals_usdc=[_decimal_text(item) for item in rung_notionals_usdc],
+        )
+        self._state.upsert_session(session)
+        return Btc15mSessionArmResponse(session=session)
+
+    def session_status(self) -> Btc15mSessionStatusResponse:
+        """Return the current BTC15m controller queue and active-session snapshot."""
+        sessions = self._state.list_sessions()
+        latest_completed_report: Btc15mSessionReportRecord | None = None
+        for item in reversed(sessions):
+            if item.state in {Btc15mSessionState.COMPLETED, Btc15mSessionState.STOPPED}:
+                latest_completed_report = item.final_report
+                break
+        return Btc15mSessionStatusResponse(
+            checked_at=_isoformat(self._now()),
+            armed_sessions=[
+                item for item in sessions if item.state is Btc15mSessionState.ARMED
+            ],
+            active_session=self._active_controller_session(),
+            latest_completed_report=latest_completed_report,
+        )
+
+    def session_run(
+        self,
+        *,
+        session_id: str,
+    ) -> Btc15mSessionRunResponse:
+        """Run one armed BTC15m session through exactly one window and then stop."""
+        session = self._session_by_id(session_id)
+        if session is None:
+            raise Btc15mValidationError(f"BTC15m session '{session_id}' was not found.")
+        if session.state is not Btc15mSessionState.ARMED:
+            raise Btc15mValidationError(
+                f"BTC15m session '{session_id}' is not armable from state '{session.state.value}'."
+            )
+        if session.mode is Btc15mRunMode.LIVE and not session.live_confirmed:
+            raise Btc15mValidationError(
+                f"BTC15m live session '{session_id}' was not confirmed at arm time."
+            )
+        active_session = self._active_controller_session()
+        if active_session is not None and active_session.session_id != session.session_id:
+            raise Btc15mValidationError(
+                f"BTC15m session '{active_session.session_id}' is already active."
+            )
+        target_slug = session.target_slug or (
+            session.window.market_slug if session.window is not None else None
+        )
+        if target_slug is None or not target_slug.strip():
+            raise Btc15mValidationError(
+                f"BTC15m session '{session_id}' does not have a target market slug."
+            )
+        resolved = self._resolve_window_by_slug(target_slug)
+        started_at = _isoformat(self._now())
+        session = session.model_copy(
+            update={
+                "started_at": started_at,
+                "updated_at": started_at,
+                "state": Btc15mSessionState.RUNNING,
+            }
+        )
+        self._state.upsert_session(session)
+        runtime = self._create_terminal_runtime(
+            session_id=session.session_id,
+            resolved=resolved,
+            mode=session.mode,
+            started_at_dt=_parse_iso_timestamp(started_at),
+            attach_mode="session",
+            observe_only=False,
+            follow_current=False,
+            arm_next=False,
+            paper_budget_usdc=_decimal(session.paper_budget_usdc or "0"),
+            rung_notionals_usdc=cast(
+                tuple[Decimal, Decimal, Decimal],
+                tuple(_decimal(item) for item in session.rung_notionals_usdc),
+            ),
+        )
+        result = self._run_terminal_session(
+            runtime,
+            session_window_limit=1,
+            confirm_action=(
+                (lambda _message: True) if session.mode is Btc15mRunMode.LIVE else None
+            ),
+            should_stop=lambda: self._session_stop_requested(session.session_id),
+        )
+        reconcile_id: str | None = None
+        reconcile_summary: dict[str, int] = {}
+        report_errors = list(result.errors)
+        if session.mode is Btc15mRunMode.LIVE:
+            try:
+                reconciliation = self._execution_watch_service.reconcile()
+                reconcile_id = reconciliation.reconciliation_id
+                reconcile_summary = reconciliation.summary.model_dump(mode="json")
+            except Exception as exc:
+                report_errors.append(_section_error("session_reconcile", exc))
+        terminal_session = result.session
+        report = self._build_controller_session_report(
+            session=session,
+            terminal_session=terminal_session,
+            fallback_stop_reason=result.stop_reason,
+            reconcile_id=reconcile_id,
+            reconcile_summary=reconcile_summary,
+            extra_errors=report_errors,
+        )
+        ended_at = _isoformat(self._now())
+        final_state = report.state
+        final_session = session.model_copy(
+            update={
+                "updated_at": ended_at,
+                "ended_at": ended_at,
+                "state": final_state,
+                "stop_reason": report.stop_reason,
+                "final_report": report,
+                "errors": list(report.errors),
+            }
+        )
+        self._state.upsert_session(final_session)
+        return Btc15mSessionRunResponse(
+            session=final_session,
+            report=report,
+            errors=list(report.errors),
+        )
+
+    def session_stop(
+        self,
+        *,
+        session_id: str,
+    ) -> Btc15mSessionStopResponse:
+        """Request a safe stop for one armed or running BTC15m session."""
+        session = self._session_by_id(session_id)
+        if session is None:
+            raise Btc15mValidationError(f"BTC15m session '{session_id}' was not found.")
+        now = _isoformat(self._now())
+        if session.state is Btc15mSessionState.ARMED:
+            report = Btc15mSessionReportRecord(
+                session_id=session.session_id,
+                created_at=now,
+                mode=session.mode,
+                state=Btc15mSessionState.STOPPED,
+                final_state="STOPPED",
+                window=session.window,
+                target_slug=session.target_slug,
+                selection_source=session.selection_source,
+                traded=False,
+                observe_only=False,
+                boundary_status="pending",
+                stop_reason="operator_stop_before_run",
+                paper_budget_usdc=session.paper_budget_usdc,
+                rung_notionals_usdc=list(session.rung_notionals_usdc),
+            )
+            session = session.model_copy(
+                update={
+                    "updated_at": now,
+                    "ended_at": now,
+                    "state": Btc15mSessionState.STOPPED,
+                    "stop_requested_at": now,
+                    "stop_reason": report.stop_reason,
+                    "final_report": report,
+                }
+            )
+            self._state.upsert_session(session)
+            return Btc15mSessionStopResponse(session=session)
+        if session.state in {Btc15mSessionState.COMPLETED, Btc15mSessionState.STOPPED}:
+            return Btc15mSessionStopResponse(session=session)
+        session = session.model_copy(
+            update={
+                "updated_at": now,
+                "state": Btc15mSessionState.STOP_REQUESTED,
+                "stop_requested_at": now,
+                "stop_reason": "operator_stop_requested",
+            }
+        )
+        self._state.upsert_session(session)
+        return Btc15mSessionStopResponse(session=session)
+
+    def session_report(
+        self,
+        *,
+        session_id: str,
+    ) -> Btc15mSessionReportResponse:
+        """Return one persisted BTC15m controller-session report."""
+        session = self._session_by_id(session_id)
+        if session is None:
+            raise Btc15mValidationError(f"BTC15m session '{session_id}' was not found.")
+        if session.final_report is None:
+            raise Btc15mValidationError(
+                f"BTC15m session '{session_id}' has not produced a final report yet."
+            )
+        return Btc15mSessionReportResponse(report=session.final_report)
+
     def _build_terminal_report_summary(
         self,
         sessions: list[Btc15mTerminalSessionRecord],
@@ -745,6 +1003,7 @@ class Btc15mStrategyService:
         session_window_limit: int | None = 1,
         on_snapshot: Callable[[Btc15mDashboardSnapshotRecord], None] | None = None,
         confirm_action: Callable[[str], bool | None] | None = None,
+        should_stop: Callable[[], bool] | None = None,
     ) -> Btc15mTerminalResponse:
         """Run a bounded terminal session until the active phase completes."""
         snapshots: list[Btc15mDashboardSnapshotRecord] = []
@@ -773,6 +1032,16 @@ class Btc15mStrategyService:
                         continue
                     if runtime.stop_reason == "running":
                         runtime.stop_reason = "session_complete"
+                    break
+                if should_stop is not None and should_stop():
+                    if runtime.stop_reason == "running":
+                        runtime.stop_reason = "session_stop_requested"
+                    self._record_terminal_event(
+                        runtime,
+                        kind="session",
+                        status="info",
+                        message="BTC15m session stop requested at a safe checkpoint.",
+                    )
                     break
                 remaining = DEFAULT_DASHBOARD_REFRESH_SECONDS - max(
                     0.0,
@@ -818,6 +1087,213 @@ class Btc15mStrategyService:
             if item.session_id == session_id:
                 return item
         return None
+
+    def _session_by_id(self, session_id: str) -> Btc15mSessionRecord | None:
+        """Return one persisted controller session by identifier."""
+        normalized = session_id.strip()
+        for item in reversed(self._state.list_sessions()):
+            if item.session_id == normalized:
+                return item
+        return None
+
+    def _active_controller_session(self) -> Btc15mSessionRecord | None:
+        """Return the currently active controller session, if any."""
+        for item in reversed(self._state.list_sessions()):
+            if item.state in {Btc15mSessionState.RUNNING, Btc15mSessionState.STOP_REQUESTED}:
+                return item
+        return None
+
+    def _armed_session_for_window(self, window_id: str) -> Btc15mSessionRecord | None:
+        """Return an armed controller session for one target window, if any."""
+        for item in reversed(self._state.list_sessions()):
+            if item.state is not Btc15mSessionState.ARMED or item.window is None:
+                continue
+            if item.window.window_id == window_id:
+                return item
+        return None
+
+    def _conflicting_armed_session(self, window_id: str) -> Btc15mSessionRecord | None:
+        """Return an armed controller session for a different target window, if any."""
+        for item in reversed(self._state.list_sessions()):
+            if item.state is not Btc15mSessionState.ARMED or item.window is None:
+                continue
+            if item.window.window_id != window_id:
+                return item
+        return None
+
+    def _session_stop_requested(self, session_id: str) -> bool:
+        """Return whether one controller session has a persisted stop request."""
+        session = self._session_by_id(session_id)
+        if session is None:
+            return False
+        return session.state is Btc15mSessionState.STOP_REQUESTED
+
+    def _resolve_next_session_window(self) -> _ResolvedWindow:
+        """Resolve the exact next BTC15m bucket that can be armed pre-start."""
+        now = self._now()
+        next_bucket_start = _floor_btc15m_window_start(now) + WINDOW_DURATION
+        resolved = self._resolve_window_by_bucket_start(
+            next_bucket_start,
+            selection_source="session_next_exact",
+        )
+        if resolved is None:
+            raise Btc15mOperatorHintError(
+                "Could not resolve the next eligible BTC15m market for session arming.",
+                hint={
+                    "next_steps": [
+                        "pm market recurring list --query btc --interval 15m",
+                        "pm strategy btc15m session arm --next --mode paper",
+                    ]
+                },
+            )
+        if resolved.window_start_dt is None or resolved.window_start_dt <= now:
+            raise Btc15mValidationError("BTC15m session arming is pre-start only.")
+        return resolved
+
+    def _build_controller_session_report(
+        self,
+        *,
+        session: Btc15mSessionRecord,
+        terminal_session: Btc15mTerminalSessionRecord | None,
+        fallback_stop_reason: str,
+        reconcile_id: str | None,
+        reconcile_summary: dict[str, int],
+        extra_errors: list[Btc15mSectionError],
+    ) -> Btc15mSessionReportRecord:
+        """Project one completed runtime into the controller-session report shape."""
+        latest_window = (
+            terminal_session.window_tear_sheets[-1]
+            if terminal_session is not None and terminal_session.window_tear_sheets
+            else None
+        )
+        latest_evaluation = (
+            latest_window.latest_evaluation
+            if latest_window is not None
+            else terminal_session.latest_evaluation
+            if terminal_session is not None
+            else None
+        )
+        stop_requested = self._session_stop_requested(session.session_id)
+        final_state = (
+            Btc15mSessionState.STOPPED if stop_requested else Btc15mSessionState.COMPLETED
+        )
+        stop_reason = (
+            session.stop_reason
+            if stop_requested and session.stop_reason is not None
+            else fallback_stop_reason
+        )
+        traded = latest_evaluation is not None and latest_evaluation.decision in {"UP", "DOWN"}
+        return Btc15mSessionReportRecord(
+            session_id=session.session_id,
+            created_at=_isoformat(self._now()),
+            mode=session.mode,
+            state=final_state,
+            final_state=(
+                latest_window.final_state.value
+                if latest_window is not None
+                else terminal_session.final_state.value
+                if terminal_session is not None
+                else None
+            ),
+            window=session.window,
+            target_slug=session.target_slug,
+            selection_source=session.selection_source,
+            traded=traded,
+            observe_only=(
+                latest_window.observe_only
+                if latest_window is not None
+                else terminal_session.observe_only
+                if terminal_session is not None
+                else False
+            ),
+            boundary_status=(
+                latest_window.boundary_status
+                if latest_window is not None
+                else terminal_session.boundary_status
+                if terminal_session is not None
+                else "pending"
+            ),
+            stop_reason=stop_reason,
+            selected_side=(
+                latest_window.selected_side
+                if latest_window is not None
+                else terminal_session.selected_side
+                if terminal_session is not None
+                else None
+            ),
+            target_token_id=(
+                latest_window.target_token_id
+                if latest_window is not None
+                else terminal_session.target_token_id
+                if terminal_session is not None
+                else None
+            ),
+            target_outcome=(
+                latest_window.target_outcome
+                if latest_window is not None
+                else terminal_session.target_outcome
+                if terminal_session is not None
+                else None
+            ),
+            paper_budget_usdc=session.paper_budget_usdc,
+            rung_notionals_usdc=list(session.rung_notionals_usdc),
+            avg_entry_price=(
+                latest_window.avg_entry_price
+                if latest_window is not None
+                else terminal_session.avg_entry_price
+                if terminal_session is not None
+                else None
+            ),
+            exposure_quantity=(
+                latest_window.exposure_quantity
+                if latest_window is not None
+                else terminal_session.exposure_quantity
+                if terminal_session is not None
+                else None
+            ),
+            exposure_notional_usdc=(
+                latest_window.exposure_notional_usdc
+                if latest_window is not None
+                else terminal_session.exposure_notional_usdc
+                if terminal_session is not None
+                else None
+            ),
+            realized_pnl_usdc=(
+                latest_evaluation.realized_pnl_usdc if latest_evaluation is not None else None
+            ),
+            mfe_usdc=(
+                latest_window.mfe_usdc
+                if latest_window is not None
+                else terminal_session.latest_evaluation.mfe_usdc
+                if terminal_session is not None and terminal_session.latest_evaluation is not None
+                else None
+            ),
+            mae_usdc=(
+                latest_window.mae_usdc
+                if latest_window is not None
+                else terminal_session.latest_evaluation.mae_usdc
+                if terminal_session is not None and terminal_session.latest_evaluation is not None
+                else None
+            ),
+            skip_reasons=(
+                list(latest_window.skip_reasons)
+                if latest_window is not None
+                else list(
+                    terminal_session.manipulation_flags
+                    if terminal_session is not None
+                    else []
+                )
+            ),
+            rung_outcomes=(
+                list(latest_window.rungs)
+                if latest_window is not None
+                else list(terminal_session.rungs if terminal_session is not None else [])
+            ),
+            latest_evaluation=latest_evaluation,
+            execution_reconciliation_id=reconcile_id,
+            execution_reconciliation_summary=reconcile_summary,
+            errors=list(extra_errors),
+        )
 
     def _terminal_snapshots_for_session(
         self,

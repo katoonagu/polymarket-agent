@@ -33,6 +33,14 @@ from pm.strategy import (
     Btc15mReportSummary,
     Btc15mResolveCurrentResponse,
     Btc15mRunMode,
+    Btc15mSessionArmResponse,
+    Btc15mSessionRecord,
+    Btc15mSessionReportRecord,
+    Btc15mSessionReportResponse,
+    Btc15mSessionRunResponse,
+    Btc15mSessionState,
+    Btc15mSessionStatusResponse,
+    Btc15mSessionStopResponse,
     Btc15mTerminalDisplayTruth,
     Btc15mTerminalMarketTruth,
     Btc15mTerminalPageMirror,
@@ -577,6 +585,68 @@ class FakeBtc15mStrategyService:
             ],
             errors=[],
         )
+
+    def session_arm(
+        self,
+        *,
+        next_window: bool = False,
+        mode: str = "paper",
+        budget_usdc: str | None = None,
+        rungs: str | None = None,
+        confirm: bool = False,
+    ) -> Btc15mSessionArmResponse:
+        _ = confirm
+        if not next_window:
+            raise ValueError("next required")
+        rung_values = rungs.split(",") if rungs is not None else ["20", "15", "15"]
+        return Btc15mSessionArmResponse(
+            session=_session_record(
+                state=Btc15mSessionState.ARMED,
+                mode=mode,
+                budget_usdc=budget_usdc or "50",
+                rungs=rung_values,
+            ),
+            reused_existing=False,
+            errors=[],
+        )
+
+    def session_status(self) -> Btc15mSessionStatusResponse:
+        return Btc15mSessionStatusResponse(
+            checked_at="2026-03-20T10:36:00Z",
+            armed_sessions=[_session_record(state=Btc15mSessionState.ARMED)],
+            active_session=_session_record(
+                session_id="btc15m-session-active",
+                state=Btc15mSessionState.RUNNING,
+            ),
+            latest_completed_report=_session_report_record(),
+            errors=[],
+        )
+
+    def session_run(self, *, session_id: str) -> Btc15mSessionRunResponse:
+        report = _session_report_record(session_id=session_id)
+        return Btc15mSessionRunResponse(
+            session=_session_record(
+                session_id=session_id,
+                state=Btc15mSessionState.COMPLETED,
+                report=report,
+            ),
+            report=report,
+            errors=[],
+        )
+
+    def session_stop(self, *, session_id: str) -> Btc15mSessionStopResponse:
+        return Btc15mSessionStopResponse(
+            session=_session_record(
+                session_id=session_id,
+                state=Btc15mSessionState.STOP_REQUESTED,
+                stop_requested_at="2026-03-20T10:40:00Z",
+                stop_reason="operator_stop_requested",
+            ),
+            errors=[],
+        )
+
+    def session_report(self, *, session_id: str) -> Btc15mSessionReportResponse:
+        return Btc15mSessionReportResponse(report=_session_report_record(session_id=session_id))
 
     def paper_run(
         self,
@@ -1254,6 +1324,81 @@ def _presenter() -> Btc15mTerminalPresenter:
     )
 
 
+def _session_report_record(session_id: str = "btc15m-session-1") -> Btc15mSessionReportRecord:
+    return Btc15mSessionReportRecord(
+        session_id=session_id,
+        created_at="2026-03-20T10:45:00Z",
+        mode=Btc15mRunMode.PAPER,
+        state=Btc15mSessionState.COMPLETED,
+        final_state="RESOLVED",
+        window=_window_record().window,
+        target_slug=_window_record().window.market_slug,
+        selection_source="session_next_exact",
+        traded=True,
+        observe_only=False,
+        boundary_status="complete",
+        stop_reason="window_complete",
+        selected_side="UP",
+        target_token_id="100",
+        target_outcome="Up",
+        paper_budget_usdc="50",
+        rung_notionals_usdc=["20", "15", "15"],
+        avg_entry_price="0.17",
+        exposure_quantity="291.666666",
+        exposure_notional_usdc="49.9999998",
+        realized_pnl_usdc="241.6666662",
+        mfe_usdc="0",
+        mae_usdc="0",
+        skip_reasons=[],
+        rung_outcomes=[
+            Btc15mDashboardRungState(
+                price="0.30",
+                state="filled",
+                notional_usdc="20",
+                quantity="66.666666",
+                fill_price="0.30",
+            )
+        ],
+        latest_evaluation=_evaluation(),
+        execution_reconciliation_summary={},
+        errors=[],
+    )
+
+
+def _session_record(
+    *,
+    session_id: str = "btc15m-session-1",
+    state: Btc15mSessionState = Btc15mSessionState.ARMED,
+    mode: str = "paper",
+    budget_usdc: str = "50",
+    rungs: list[str] | None = None,
+    report: Btc15mSessionReportRecord | None = None,
+    stop_requested_at: str | None = None,
+    stop_reason: str | None = None,
+) -> Btc15mSessionRecord:
+    return Btc15mSessionRecord(
+        session_id=session_id,
+        created_at="2026-03-20T10:20:00Z",
+        updated_at="2026-03-20T10:20:00Z",
+        started_at="2026-03-20T10:30:00Z" if state is not Btc15mSessionState.ARMED else None,
+        ended_at="2026-03-20T10:45:00Z"
+        if state in {Btc15mSessionState.COMPLETED, Btc15mSessionState.STOPPED}
+        else None,
+        mode=Btc15mRunMode(mode),
+        state=state,
+        live_confirmed=mode == "live",
+        window=_window_record().window,
+        target_slug=_window_record().window.market_slug,
+        selection_source="session_next_exact",
+        paper_budget_usdc=budget_usdc,
+        rung_notionals_usdc=rungs or ["20", "15", "15"],
+        stop_requested_at=stop_requested_at,
+        stop_reason=stop_reason,
+        final_report=report,
+        errors=[],
+    )
+
+
 def _evaluation() -> Btc15mPaperEvaluation:
     return Btc15mPaperEvaluation(
         window_id="btc15m:window-1",
@@ -1309,6 +1454,130 @@ def test_btc15m_terminal_human_mode_runs(monkeypatch) -> None:
     assert "BTC15m Terminal" in result.stdout
     assert result.stdout.strip()
     assert "Paper start" not in result.stdout
+
+
+def test_btc15m_session_arm_json(monkeypatch) -> None:
+    monkeypatch.setattr("pm.cli.strategy_btc15m.Btc15mStrategyService", FakeBtc15mStrategyService)
+
+    result = runner.invoke(
+        app,
+        [
+            "strategy",
+            "btc15m",
+            "session",
+            "arm",
+            "--next",
+            "--mode",
+            "paper",
+            "--budget-usdc",
+            "60",
+            "--rungs",
+            "24,18,18",
+            "--json",
+        ],
+    )
+
+    assert result.exit_code == 0
+    payload = json.loads(result.stdout)
+    assert payload["session"]["state"] == "armed"
+    assert payload["session"]["paper_budget_usdc"] == "60"
+    assert payload["session"]["rung_notionals_usdc"] == ["24", "18", "18"]
+
+
+def test_btc15m_session_status_json(monkeypatch) -> None:
+    monkeypatch.setattr("pm.cli.strategy_btc15m.Btc15mStrategyService", FakeBtc15mStrategyService)
+
+    result = runner.invoke(app, ["strategy", "btc15m", "session", "status", "--json"])
+
+    assert result.exit_code == 0
+    payload = json.loads(result.stdout)
+    assert payload["active_session"]["state"] == "running"
+    assert payload["latest_completed_report"]["session_id"] == "btc15m-session-1"
+
+
+def test_btc15m_session_run_json(monkeypatch) -> None:
+    monkeypatch.setattr("pm.cli.strategy_btc15m.Btc15mStrategyService", FakeBtc15mStrategyService)
+
+    result = runner.invoke(
+        app,
+        [
+            "strategy",
+            "btc15m",
+            "session",
+            "run",
+            "--session-id",
+            "btc15m-session-9",
+            "--json",
+        ],
+    )
+
+    assert result.exit_code == 0
+    payload = json.loads(result.stdout)
+    assert payload["session"]["session_id"] == "btc15m-session-9"
+    assert payload["report"]["state"] == "completed"
+
+
+def test_btc15m_session_stop_json(monkeypatch) -> None:
+    monkeypatch.setattr("pm.cli.strategy_btc15m.Btc15mStrategyService", FakeBtc15mStrategyService)
+
+    result = runner.invoke(
+        app,
+        [
+            "strategy",
+            "btc15m",
+            "session",
+            "stop",
+            "--session-id",
+            "btc15m-session-9",
+            "--json",
+        ],
+    )
+
+    assert result.exit_code == 0
+    payload = json.loads(result.stdout)
+    assert payload["session"]["state"] == "stop_requested"
+    assert payload["session"]["stop_reason"] == "operator_stop_requested"
+
+
+def test_btc15m_session_report_json(monkeypatch) -> None:
+    monkeypatch.setattr("pm.cli.strategy_btc15m.Btc15mStrategyService", FakeBtc15mStrategyService)
+
+    result = runner.invoke(
+        app,
+        [
+            "strategy",
+            "btc15m",
+            "session",
+            "report",
+            "--session-id",
+            "btc15m-session-9",
+            "--json",
+        ],
+    )
+
+    assert result.exit_code == 0
+    payload = json.loads(result.stdout)
+    assert payload["report"]["session_id"] == "btc15m-session-9"
+    assert payload["report"]["realized_pnl_usdc"] == "241.6666662"
+
+
+def test_btc15m_session_live_arm_requires_confirm(monkeypatch) -> None:
+    class LiveSessionService(FakeBtc15mStrategyService):
+        def session_arm(self, **kwargs) -> Btc15mSessionArmResponse:
+            if kwargs.get("mode") == "live" and not kwargs.get("confirm"):
+                raise Btc15mOperatorHintError("requires confirm", identifier="confirm")
+            return super().session_arm(**kwargs)
+
+    monkeypatch.setattr("pm.cli.strategy_btc15m.Btc15mStrategyService", LiveSessionService)
+
+    result = runner.invoke(
+        app,
+        ["strategy", "btc15m", "session", "arm", "--next", "--mode", "live", "--json"],
+    )
+
+    assert result.exit_code == 1
+    payload = json.loads(result.stdout)
+    assert payload["error"]["identifier"] == "confirm"
 
 
 def _legacy_terminal_human_mode_runs_render(monkeypatch) -> None:

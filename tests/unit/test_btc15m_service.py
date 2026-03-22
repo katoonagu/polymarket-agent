@@ -32,6 +32,7 @@ from pm.strategy import (
     LIQUIDITY_SAMPLES_FILENAME,
     PAPER_RUNS_FILENAME,
     REPLAYS_FILENAME,
+    SESSIONS_FILENAME,
     TERMINAL_SESSIONS_FILENAME,
     WINDOWS_FILENAME,
     Btc15mBoundaryDecisionRecord,
@@ -39,11 +40,13 @@ from pm.strategy import (
     Btc15mPaperRunRecord,
     Btc15mPolymarketLiquidityLevel,
     Btc15mRunMode,
+    Btc15mSessionState,
     Btc15mStateError,
     Btc15mStateService,
     Btc15mStrategyService,
     Btc15mTerminalSessionRecord,
     Btc15mTerminalState,
+    Btc15mValidationError,
     Btc15mWindowRecord,
 )
 from pm.strategy.btc15m_page import Btc15mPageParityData
@@ -179,6 +182,48 @@ class FakeCryptoClient:
         _ = seconds
         _ = max_events
         events = self._chainlink_events if source == "chainlink" else self._binance_events
+        return CryptoStreamResponse(
+            session=_stream_session(f"{source}-session", "crypto", source),
+            summary=CryptoStreamSummary(
+                symbol="BTC",
+                source=source,
+                event_count=len(events),
+                latest_value=events[-1].crypto_event.value if events else None,
+            ),
+            events=events,
+            errors=[],
+        )
+
+
+class RollingCryptoClient(FakeCryptoClient):
+    def __init__(
+        self,
+        clock: _Clock,
+        *,
+        chainlink_events: list[CapturedStreamEvent],
+        binance_events: list[CapturedStreamEvent],
+    ) -> None:
+        super().__init__(chainlink_events=chainlink_events, binance_events=binance_events)
+        self._clock = clock
+
+    async def stream_symbol(
+        self,
+        symbol: str,
+        *,
+        source: str,
+        seconds: int,
+        max_events: int | None = None,
+    ) -> CryptoStreamResponse:
+        _ = symbol
+        _ = seconds
+        _ = max_events
+        all_events = self._chainlink_events if source == "chainlink" else self._binance_events
+        current_timestamp = int(self._clock.now().timestamp())
+        events = [
+            item
+            for item in all_events
+            if item.crypto_event is not None and item.crypto_event.timestamp <= current_timestamp
+        ]
         return CryptoStreamResponse(
             session=_stream_session(f"{source}-session", "crypto", source),
             summary=CryptoStreamSummary(
@@ -375,6 +420,33 @@ class FakeTerminalPageParityService(FakePageParityService):
         return self._data
 
 
+class FakeExecutionWatchService:
+    def __init__(self) -> None:
+        self.called = 0
+
+    def reconcile(self):
+        self.called += 1
+        summary = type(
+            "FakeReconcileSummary",
+            (),
+            {
+                "model_dump": lambda self, mode="json": {  # noqa: ARG005
+                    "window_event_count": 0,
+                    "total_orders": 0,
+                    "consistent_open": 0,
+                    "consistent_closed": 0,
+                    "inconclusive": 0,
+                    "mismatch": 0,
+                }
+            },
+        )()
+        return type(
+            "FakeReconcileResponse",
+            (),
+            {"reconciliation_id": "reconcile-1", "summary": summary},
+        )()
+
+
 async def _noop_async_sleep(seconds: float) -> None:
     _ = seconds
 
@@ -397,6 +469,7 @@ def _service(
     tmp_path,
     *,
     now: datetime | None = None,
+    clock: _Clock | None = None,
     candidate: RecurringMarketCandidate | None = None,
     search_candidate: GammaSearchCandidate | None = None,
     chainlink_events: list[CapturedStreamEvent] | None = None,
@@ -406,11 +479,13 @@ def _service(
     order_lifecycle: FakeOrderLifecycle | None = None,
     page_parity_data: Btc15mPageParityData | None = None,
     page_parity_service: FakePageParityService | None = None,
+    execution_watch_service: FakeExecutionWatchService | None = None,
+    crypto_client: FakeCryptoClient | None = None,
 ) -> Btc15mStrategyService:
     candidate = candidate or _candidate(COND_1, "btc-15m-up-down-1")
     FakeGammaClient.candidate = search_candidate or _search_candidate(candidate)
     FakeGammaClient.market = _normalized_market(candidate)
-    clock = _Clock(now) if now is not None else None
+    resolved_clock = clock or (_Clock(now) if now is not None else None)
     if market_intel_candidate is ...:
         resolved_market_intel_candidate = candidate
     else:
@@ -427,21 +502,24 @@ def _service(
             dashboard_snapshots_path=tmp_path / DASHBOARD_SNAPSHOTS_FILENAME,
             auto_roll_runs_path=tmp_path / AUTO_ROLL_RUNS_FILENAME,
             terminal_sessions_path=tmp_path / TERMINAL_SESSIONS_FILENAME,
+            sessions_path=tmp_path / SESSIONS_FILENAME,
         ),
         market_intel_service=FakeMarketIntelService(resolved_market_intel_candidate),
         market_client=FakeMarketClient(market_events or _market_events()),
-        crypto_client=FakeCryptoClient(
+        crypto_client=crypto_client
+        or FakeCryptoClient(
             chainlink_events=chainlink_events or _chainlink_events(),
             binance_events=binance_events or _binance_events(),
         ),
         binance_service=FakeBinanceService(),
         page_parity_service=page_parity_service or FakePageParityService(page_parity_data),
         order_lifecycle=order_lifecycle or FakeOrderLifecycle(),
+        execution_watch_service=execution_watch_service or FakeExecutionWatchService(),
         gamma_client_cls=FakeGammaClient,
         clob_client_cls=FakeClobClient,
-        now=clock.now if clock is not None else None,
-        sleep=clock.sleep if clock is not None else None,
-        async_sleep=clock.async_sleep if clock is not None else _noop_async_sleep,
+        now=resolved_clock.now if resolved_clock is not None else None,
+        sleep=resolved_clock.sleep if resolved_clock is not None else None,
+        async_sleep=resolved_clock.async_sleep if resolved_clock is not None else _noop_async_sleep,
     )
 
 
@@ -1958,3 +2036,123 @@ def test_terminal_market_truth_uses_midpoint_for_tight_spread(tmp_path) -> None:
     assert result.latest_snapshot is not None
     assert result.latest_snapshot.market_truth is not None
     assert result.latest_snapshot.market_truth.derived_up_price_source == "midpoint"
+
+
+def test_session_arm_next_persists_armed_session(tmp_path) -> None:
+    candidate = _candidate(COND_1, "btc-updown-15m-1774002600")
+    service = _service(tmp_path, now=_dt("2026-03-20T10:20:00Z"), candidate=candidate)
+
+    result = service.session_arm(
+        next_window=True,
+        mode="paper",
+        budget_usdc="60",
+        rungs="24,18,18",
+    )
+
+    assert result.reused_existing is False
+    assert result.session.state is Btc15mSessionState.ARMED
+    assert result.session.paper_budget_usdc == "60"
+    assert result.session.rung_notionals_usdc == ["24", "18", "18"]
+    assert len(service._state.list_sessions()) == 1  # type: ignore[attr-defined]
+
+
+def test_session_arm_next_reuses_duplicate_target(tmp_path) -> None:
+    candidate = _candidate(COND_1, "btc-updown-15m-1774002600")
+    service = _service(tmp_path, now=_dt("2026-03-20T10:20:00Z"), candidate=candidate)
+
+    first = service.session_arm(next_window=True, mode="paper")
+    second = service.session_arm(next_window=True, mode="paper")
+
+    assert second.reused_existing is True
+    assert second.session.session_id == first.session.session_id
+    assert len(service._state.list_sessions()) == 1  # type: ignore[attr-defined]
+
+
+def test_session_arm_live_requires_confirm(tmp_path) -> None:
+    candidate = _candidate(COND_1, "btc-updown-15m-1774002600")
+    service = _service(tmp_path, now=_dt("2026-03-20T10:20:00Z"), candidate=candidate)
+
+    with pytest.raises(Btc15mValidationError, match="--mode live --confirm"):
+        service.session_arm(next_window=True, mode="live")
+
+
+def test_session_run_paper_executes_one_window(tmp_path) -> None:
+    candidate = _candidate(COND_1, "btc-updown-15m-1774002600")
+    clock = _Clock(_dt("2026-03-20T10:29:55Z"))
+    service = _service(
+        tmp_path,
+        clock=clock,
+        candidate=candidate,
+        crypto_client=RollingCryptoClient(
+            clock,
+            chainlink_events=[
+                _crypto_event("chainlink", "2026-03-20T10:29:59Z", 100),
+                _crypto_event("chainlink", "2026-03-20T10:30:01Z", 100),
+                _crypto_event("chainlink", "2026-03-20T10:35:00Z", 101),
+                _crypto_event("chainlink", "2026-03-20T10:44:59Z", 102),
+                _crypto_event("chainlink", "2026-03-20T10:45:01Z", 102),
+            ],
+            binance_events=[
+                _crypto_event("binance", "2026-03-20T10:34:59Z", 101),
+                _crypto_event("binance", "2026-03-20T10:35:00Z", 101),
+            ],
+        ),
+    )
+    armed = service.session_arm(next_window=True, mode="paper")
+    original_sleep = service._sleep  # type: ignore[attr-defined]
+    service._sleep = lambda seconds: original_sleep(max(seconds, 60))  # type: ignore[attr-defined]
+
+    result = service.session_run(session_id=armed.session.session_id)
+
+    assert result.session.state is Btc15mSessionState.COMPLETED
+    assert result.report is not None
+    assert result.report.final_state == "RESOLVED"
+    assert result.report.traded is True
+    persisted = service._state.list_sessions()[-1]  # type: ignore[attr-defined]
+    assert persisted.final_report is not None
+    assert persisted.final_report.realized_pnl_usdc is not None
+
+
+def test_session_run_after_missed_start_boundary_is_skipped(tmp_path) -> None:
+    candidate = _candidate(COND_1, "btc-updown-15m-1774002600")
+    service = _service(tmp_path, now=_dt("2026-03-20T10:20:00Z"), candidate=candidate)
+    armed = service.session_arm(next_window=True, mode="paper")
+    service._sleep(700)  # type: ignore[attr-defined]
+    original_sleep = service._sleep  # type: ignore[attr-defined]
+    service._sleep = lambda seconds: original_sleep(max(seconds, 300))  # type: ignore[attr-defined]
+
+    result = service.session_run(session_id=armed.session.session_id)
+
+    assert result.report is not None
+    assert result.report.final_state == "SKIPPED"
+    assert result.report.traded is False
+
+
+def test_session_stop_and_report_round_trip(tmp_path) -> None:
+    candidate = _candidate(COND_1, "btc-updown-15m-1774002600")
+    service = _service(tmp_path, now=_dt("2026-03-20T10:20:00Z"), candidate=candidate)
+    armed = service.session_arm(next_window=True, mode="paper")
+
+    stop_result = service.session_stop(session_id=armed.session.session_id)
+    report_result = service.session_report(session_id=armed.session.session_id)
+
+    assert stop_result.session.state is Btc15mSessionState.STOPPED
+    assert report_result.report.state is Btc15mSessionState.STOPPED
+    assert report_result.report.stop_reason == "operator_stop_before_run"
+
+
+def test_session_status_returns_queue_and_latest_completed(tmp_path) -> None:
+    candidate = _candidate(COND_1, "btc-updown-15m-1774002600")
+    service = _service(tmp_path, now=_dt("2026-03-20T10:20:00Z"), candidate=candidate)
+    first = service.session_arm(next_window=True, mode="paper")
+    service.session_stop(session_id=first.session.session_id)
+    service._sleep(5)  # type: ignore[attr-defined]
+    second = service.session_arm(next_window=True, mode="paper", budget_usdc="55")
+
+    status = service.session_status()
+
+    assert len(status.armed_sessions) == 1
+    assert status.armed_sessions[0].session_id == second.session.session_id
+    assert status.active_session is None
+    assert status.latest_completed_report is not None
+    assert status.latest_completed_report.session_id == first.session.session_id
