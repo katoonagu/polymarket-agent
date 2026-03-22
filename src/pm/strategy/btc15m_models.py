@@ -425,6 +425,63 @@ class Btc15mTerminalDisplayTruth(BaseModel):
     display_notes: list[str] = Field(default_factory=list)
 
 
+class Btc15mTerminalPageMirror(Btc15mTerminalDisplayTruth):
+    """Optional operator-only page overlay for terminal parity."""
+
+
+class Btc15mTerminalMarketTruth(BaseModel):
+    """Canonical strategy and market state for the BTC15m terminal."""
+
+    market_slug: str
+    window_start_at: str | None = None
+    window_end_at: str | None = None
+    countdown_seconds: int | None = None
+    countdown: str | None = None
+    boundary_status: str = "pending"
+    direction_lock_status: str = "pending"
+    selected_side: str | None = None
+    target_token_id: str | None = None
+    target_outcome: str | None = None
+    current_chainlink_price: str | None = None
+    start_price_proxy_v1: str | None = None
+    end_price_proxy_v1: str | None = None
+    paper_budget_usdc: str | None = None
+    rung_notionals_usdc: list[str] = Field(default_factory=list)
+    avg_entry_price: str | None = None
+    exposure_quantity: str | None = None
+    exposure_notional_usdc: str | None = None
+    current_midpoint: str | None = None
+    current_spread: str | None = None
+    market_open_interest: str | None = None
+    market_volume: str | None = None
+    visible_liquidity_030: str | None = None
+    visible_liquidity_020: str | None = None
+    visible_liquidity_010: str | None = None
+    derived_up_price: str | None = None
+    derived_up_price_source: str | None = None
+    derived_down_price: str | None = None
+    derived_down_price_source: str | None = None
+    up_side: Btc15mDashboardSideState | None = None
+    down_side: Btc15mDashboardSideState | None = None
+    rungs: list[Btc15mDashboardRungState] = Field(default_factory=list)
+    manipulation_flags: list[str] = Field(default_factory=list)
+
+
+class Btc15mTerminalPresenter(BaseModel):
+    """Pure presentation decisions derived from market truth and page mirror."""
+
+    primary_block_source: str = "page_mirror"
+    primary_block_state: str = "unavailable"
+    market_context_source: str = "market_truth"
+    strategy_source: str = "market_truth"
+    show_binance_diagnostics: bool = False
+    ladder_labels: list[str] = Field(default_factory=lambda: ["30¢", "20¢", "10¢"])
+    page_block_title: str = "Page Mirror"
+    strategy_block_title: str = "Strategy"
+    market_block_title: str = "Market Context"
+    event_tape_title: str = "Event Tape"
+
+
 class Btc15mDashboardSnapshotRecord(BaseModel):
     """One persisted BTC15m dashboard snapshot."""
 
@@ -443,6 +500,9 @@ class Btc15mDashboardSnapshotRecord(BaseModel):
     window_end_at: str | None = None
     countdown_seconds: int | None = None
     display: Btc15mTerminalDisplayTruth | None = None
+    page_mirror: Btc15mTerminalPageMirror | None = None
+    market_truth: Btc15mTerminalMarketTruth | None = None
+    terminal_presenter: Btc15mTerminalPresenter | None = None
     current_window_label: str | None = None
     page_parity_source: str | None = None
     page_parity_url: str | None = None
@@ -507,6 +567,9 @@ class Btc15mTerminalWindowTearSheet(BaseModel):
     final_state: Btc15mTerminalState
     boundary_status: str = "pending"
     display: Btc15mTerminalDisplayTruth | None = None
+    page_mirror: Btc15mTerminalPageMirror | None = None
+    market_truth: Btc15mTerminalMarketTruth | None = None
+    terminal_presenter: Btc15mTerminalPresenter | None = None
     current_window_label: str | None = None
     page_parity_source: str | None = None
     page_parity_url: str | None = None
@@ -561,6 +624,9 @@ class Btc15mTerminalSessionRecord(BaseModel):
     window: Btc15mWindowIdentity | None = None
     boundary_status: str = "pending"
     display: Btc15mTerminalDisplayTruth | None = None
+    page_mirror: Btc15mTerminalPageMirror | None = None
+    market_truth: Btc15mTerminalMarketTruth | None = None
+    terminal_presenter: Btc15mTerminalPresenter | None = None
     current_window_label: str | None = None
     page_parity_source: str | None = None
     page_parity_url: str | None = None

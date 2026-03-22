@@ -773,7 +773,7 @@ def test_terminal_snapshot_late_attach_defaults_to_observe_only(tmp_path) -> Non
     assert "missing_start_proxy" in result.latest_snapshot.manipulation_flags
 
 
-def test_terminal_snapshot_late_attach_uses_paper_page_fallback_start_anchor(tmp_path) -> None:
+def _legacy_terminal_snapshot_late_attach_page_fallback_start_anchor(tmp_path) -> None:
     candidate = _candidate(COND_1, "btc-updown-15m-1774002600")
     service = _service(
         tmp_path,
@@ -811,7 +811,7 @@ def test_terminal_snapshot_late_attach_uses_paper_page_fallback_start_anchor(tmp
     assert result.latest_snapshot.window_status == Btc15mTerminalState.DIRECTION_LOCK_PENDING
 
 
-def test_terminal_snapshot_uses_page_parity_fallback_when_needed(tmp_path) -> None:
+def _legacy_terminal_snapshot_page_parity_fallback_when_needed(tmp_path) -> None:
     candidate = _candidate(COND_1, "btc-updown-15m-1774002600")
     service = _service(
         tmp_path,
@@ -1741,3 +1741,220 @@ def _wide_liquidity_sample(window_id: str, market_slug: str) -> Btc15mLiquidityS
 
 def _dt(value: str) -> datetime:
     return datetime.fromisoformat(value.replace("Z", "+00:00")).astimezone(UTC)
+
+
+def test_terminal_snapshot_late_attach_uses_paper_page_fallback_start_anchor(tmp_path) -> None:
+    candidate = _candidate(COND_1, "btc-updown-15m-1774002600")
+    service = _service(
+        tmp_path,
+        now=_dt("2026-03-20T10:31:05Z"),
+        candidate=candidate,
+        chainlink_events=[_crypto_event("chainlink", "2026-03-20T10:31:05Z", 101)],
+        binance_events=[_crypto_event("binance", "2026-03-20T10:31:05Z", 101)],
+        page_parity_data=Btc15mPageParityData(
+            event_url="https://polymarket.com/event/btc-15m-event",
+            current_window_label="BTC 15m active",
+            price_to_beat="101234.5",
+            current_live_btc_price="101240.1",
+            up_price="0.33",
+            down_price="0.67",
+            volume="120K",
+            field_sources={
+                "price_to_beat": "page_exact",
+                "current_live_btc_price": "page_exact",
+                "up_price": "page_exact",
+                "down_price": "page_exact",
+                "volume": "page_exact",
+            },
+            matched_market_slug="btc-updown-15m-1774002600",
+            observed_at="2026-03-20T10:31:05Z",
+        ),
+    )
+
+    result = service.terminal_current(snapshot_only=True)
+
+    assert result.latest_snapshot is not None
+    assert result.latest_snapshot.observe_only is True
+    assert result.latest_snapshot.window_status == Btc15mTerminalState.OBSERVE_ONLY
+    assert result.latest_snapshot.start_price_proxy_v1 is None
+    assert result.latest_snapshot.paper_start_proxy_v1 is None
+    assert result.latest_snapshot.paper_start_proxy_source is None
+    assert result.latest_snapshot.display is not None
+    assert result.latest_snapshot.display.display_source == "page_exact"
+    assert result.latest_snapshot.display.display_price_to_beat == "101234.5"
+
+
+def test_terminal_snapshot_uses_page_parity_fallback_when_needed(tmp_path) -> None:
+    candidate = _candidate(COND_1, "btc-updown-15m-1774002600")
+    service = _service(
+        tmp_path,
+        now=_dt("2026-03-20T10:39:00Z"),
+        candidate=candidate,
+        chainlink_events=[],
+        binance_events=[],
+        page_parity_data=Btc15mPageParityData(
+            event_url="https://polymarket.com/event/btc-15m-event",
+            current_window_label="BTC 15m active",
+            price_to_beat="101234.5",
+            current_live_btc_price="101240.1",
+            up_price="0.33",
+            down_price="0.67",
+            volume="120K",
+            field_sources={
+                "price_to_beat": "page_exact",
+                "current_live_btc_price": "page_exact",
+                "up_price": "page_exact",
+                "down_price": "page_exact",
+                "volume": "page_exact",
+            },
+            matched_market_slug="btc-updown-15m-1774002600",
+        ),
+    )
+
+    result = service.terminal_current(snapshot_only=True)
+
+    assert result.latest_snapshot is not None
+    assert result.latest_snapshot.display is not None
+    assert result.latest_snapshot.page_mirror is not None
+    assert result.latest_snapshot.market_truth is not None
+    assert result.latest_snapshot.terminal_presenter is not None
+    assert result.latest_snapshot.page_parity_source == "page_exact"
+    assert result.latest_snapshot.current_window_label == "BTC 15m active"
+    assert result.latest_snapshot.current_live_btc_price == "101240.1"
+    assert result.latest_snapshot.up_price == "0.33"
+    assert result.latest_snapshot.down_price == "0.67"
+    assert result.latest_snapshot.price_to_beat == "101234.5"
+    assert result.latest_snapshot.paper_start_proxy_v1 is None
+    assert result.latest_snapshot.paper_start_proxy_source is None
+    assert result.latest_snapshot.start_price_proxy_v1 is None
+    assert result.latest_snapshot.display.display_price_to_beat == "101234.5"
+    assert result.latest_snapshot.display.display_volume == "120K"
+    assert result.latest_snapshot.display.display_source == "page_exact"
+    assert result.latest_snapshot.display.display_stale is False
+    assert (
+        result.latest_snapshot.market_truth.countdown
+        == result.latest_snapshot.display.display_countdown
+    )
+
+
+def test_terminal_snapshot_exposes_nested_layers(tmp_path) -> None:
+    candidate = _candidate(COND_1, "btc-updown-15m-1774002600")
+    service = _service(
+        tmp_path,
+        now=_dt("2026-03-20T10:39:00Z"),
+        candidate=candidate,
+        chainlink_events=[_crypto_event("chainlink", "2026-03-20T10:39:00Z", 101)],
+        binance_events=[_crypto_event("binance", "2026-03-20T10:39:00Z", 101)],
+        page_parity_data=Btc15mPageParityData(
+            event_url="https://polymarket.com/event/btc-15m-event",
+            current_window_label="BTC 15m active",
+            price_to_beat="101234.5",
+            current_live_btc_price="101240.1",
+            up_price="0.33",
+            down_price="0.67",
+            volume="120K",
+            field_sources={
+                "price_to_beat": "page_exact",
+                "current_live_btc_price": "page_exact",
+                "up_price": "page_exact",
+                "down_price": "page_exact",
+                "volume": "page_exact",
+            },
+            matched_market_slug="btc-updown-15m-1774002600",
+        ),
+    )
+    service._state.append_boundary_decision(  # type: ignore[attr-defined]
+        Btc15mBoundaryDecisionRecord(
+            window_id="btc15m:" + COND_1,
+            condition_id=COND_1,
+            market_slug=candidate.market_slug,
+            created_at="2026-03-20T10:30:01Z",
+            status="partial",
+            post_start=_price_tick("chainlink", "2026-03-20T10:30:00Z", "100"),
+            timing_source="slug_timestamp",
+            start_price_proxy_v1="100",
+        )
+    )
+
+    result = service.terminal_current(snapshot_only=True)
+
+    assert result.latest_snapshot is not None
+    assert result.latest_snapshot.page_mirror is not None
+    assert result.latest_snapshot.market_truth is not None
+    assert result.latest_snapshot.terminal_presenter is not None
+    assert result.latest_snapshot.page_mirror.display_source == "page_exact"
+    assert result.latest_snapshot.market_truth.start_price_proxy_v1 == "100"
+    assert result.latest_snapshot.terminal_presenter.primary_block_source == "page_mirror"
+
+
+def test_terminal_countdown_is_slug_derived_and_stable(tmp_path) -> None:
+    candidate = _candidate(COND_1, "btc-updown-15m-1774002600")
+    service = _service(
+        tmp_path,
+        now=_dt("2026-03-20T10:39:00Z"),
+        candidate=candidate,
+        page_parity_data=Btc15mPageParityData(
+            current_window_label="BTC 15m active",
+            price_to_beat="101234.5",
+            current_live_btc_price="101240.1",
+            up_price="0.33",
+            down_price="0.67",
+            volume="120K",
+            field_sources={
+                "price_to_beat": "page_exact",
+                "current_live_btc_price": "page_exact",
+                "up_price": "page_exact",
+                "down_price": "page_exact",
+                "volume": "page_exact",
+            },
+            matched_market_slug="btc-updown-15m-1774002600",
+        ),
+    )
+    current = service._resolve_current_window()  # type: ignore[attr-defined]
+    runtime = service._create_terminal_runtime(  # type: ignore[attr-defined]
+        session_id="terminal-countdown-test",
+        resolved=current.resolved,
+        mode=Btc15mRunMode.PAPER,
+        started_at_dt=_dt("2026-03-20T10:39:00Z"),
+        attach_mode="current",
+    )
+
+    first_snapshot = service._advance_terminal_runtime(runtime)  # type: ignore[attr-defined]
+    service._sleep(5)  # type: ignore[attr-defined]
+    second_snapshot = service._advance_terminal_runtime(runtime)  # type: ignore[attr-defined]
+
+    assert first_snapshot.market_truth is not None
+    assert first_snapshot.display is not None
+    assert second_snapshot.market_truth is not None
+    assert second_snapshot.display is not None
+    assert first_snapshot.market_truth.countdown == first_snapshot.display.display_countdown
+    assert second_snapshot.market_truth.countdown == second_snapshot.display.display_countdown
+    assert first_snapshot.market_truth.countdown_seconds == 360
+    assert second_snapshot.market_truth.countdown_seconds == 355
+
+
+def test_terminal_market_truth_uses_midpoint_for_tight_spread(tmp_path) -> None:
+    candidate = _candidate(COND_1, "btc-updown-15m-1774002600")
+    service = _service(
+        tmp_path,
+        now=_dt("2026-03-20T10:39:00Z"),
+        candidate=candidate,
+    )
+    service._state.append_boundary_decision(  # type: ignore[attr-defined]
+        Btc15mBoundaryDecisionRecord(
+            window_id="btc15m:" + COND_1,
+            condition_id=COND_1,
+            market_slug=candidate.market_slug,
+            created_at="2026-03-20T10:30:01Z",
+            status="partial",
+            post_start=_price_tick("chainlink", "2026-03-20T10:30:00Z", "100"),
+            timing_source="slug_timestamp",
+            start_price_proxy_v1="100",
+        )
+    )
+
+    result = service.terminal_current(snapshot_only=True)
+
+    assert result.latest_snapshot is not None
+    assert result.latest_snapshot.market_truth is not None
+    assert result.latest_snapshot.market_truth.derived_up_price_source == "midpoint"

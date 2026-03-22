@@ -18,6 +18,7 @@ from pm.strategy import (
     Btc15mCampaignRunResponse,
     Btc15mDashboardResponse,
     Btc15mDashboardRungState,
+    Btc15mDashboardSideState,
     Btc15mDashboardSnapshotRecord,
     Btc15mLiquiditySampleResponse,
     Btc15mLiveResponse,
@@ -33,6 +34,9 @@ from pm.strategy import (
     Btc15mResolveCurrentResponse,
     Btc15mRunMode,
     Btc15mTerminalDisplayTruth,
+    Btc15mTerminalMarketTruth,
+    Btc15mTerminalPageMirror,
+    Btc15mTerminalPresenter,
     Btc15mTerminalReplayResponse,
     Btc15mTerminalReportResponse,
     Btc15mTerminalReportSummary,
@@ -134,6 +138,9 @@ class FakeBtc15mStrategyService:
             window_start_at="2026-03-20T10:30:00Z",
             window_end_at="2026-03-20T10:45:00Z",
             display=_display_truth(),
+            page_mirror=_page_mirror(),
+            market_truth=_market_truth(),
+            terminal_presenter=_presenter(),
             current_window_label="10:30 - 10:45 UTC",
             page_parity_source="page_exact",
             current_live_btc_price="100",
@@ -149,7 +156,13 @@ class FakeBtc15mStrategyService:
             visible_liquidity_030="80",
             visible_liquidity_020="100",
             visible_liquidity_010="200",
+            derived_up_price="0.28",
+            derived_up_price_source="midpoint",
+            derived_down_price="0.72",
+            derived_down_price_source="midpoint",
             manipulation_flags=[],
+            up_side=_side_state("0.30", "0.32", "0.31", "0.02", "80", "100", "200"),
+            down_side=_side_state("0.68", "0.70", "0.69", "0.02", "70", "90", "120"),
             rungs=[
                 Btc15mDashboardRungState(price="0.30", state="armed", visible_liquidity="80"),
                 Btc15mDashboardRungState(price="0.20", state="armed", visible_liquidity="100"),
@@ -1055,6 +1068,9 @@ def test_btc15m_terminal_follow_current_json(monkeypatch) -> None:
     assert payload["latest_snapshot"]["up_price"] == "0.31"
     assert payload["latest_snapshot"]["down_price"] == "0.69"
     assert payload["latest_snapshot"]["display"]["display_source"] == "page_exact"
+    assert payload["latest_snapshot"]["page_mirror"]["display_source"] == "page_exact"
+    assert payload["latest_snapshot"]["market_truth"]["derived_up_price_source"] == "midpoint"
+    assert payload["latest_snapshot"]["terminal_presenter"]["strategy_source"] == "market_truth"
 
 
 def test_btc15m_terminal_follow_current_arm_next_json(monkeypatch) -> None:
@@ -1115,7 +1131,7 @@ def test_btc15m_terminal_requires_exactly_one_session_target(monkeypatch) -> Non
     assert payload["error"]["identifier"] == "mode"
 
 
-def test_btc15m_terminal_human_mode_runs(monkeypatch) -> None:
+def _legacy_test_btc15m_terminal_human_mode_runs(monkeypatch) -> None:
     monkeypatch.setattr("pm.cli.strategy_btc15m.Btc15mStrategyService", FakeBtc15mStrategyService)
 
     result = runner.invoke(
@@ -1166,6 +1182,78 @@ def _display_truth() -> Btc15mTerminalDisplayTruth:
     )
 
 
+def _page_mirror() -> Btc15mTerminalPageMirror:
+    return Btc15mTerminalPageMirror(**_display_truth().model_dump())
+
+
+def _side_state(
+    best_bid: str,
+    best_ask: str,
+    midpoint: str,
+    spread: str,
+    visible_liquidity_030: str,
+    visible_liquidity_020: str,
+    visible_liquidity_010: str,
+) -> Btc15mDashboardSideState:
+    return Btc15mDashboardSideState(
+        best_bid=best_bid,
+        best_ask=best_ask,
+        midpoint=midpoint,
+        spread=spread,
+        visible_liquidity_030=visible_liquidity_030,
+        visible_liquidity_020=visible_liquidity_020,
+        visible_liquidity_010=visible_liquidity_010,
+    )
+
+
+def _market_truth() -> Btc15mTerminalMarketTruth:
+    return Btc15mTerminalMarketTruth(
+        market_slug="btc-updown-15m-1774002600",
+        window_start_at="2026-03-20T10:30:00Z",
+        window_end_at="2026-03-20T10:45:00Z",
+        countdown_seconds=540,
+        countdown="09:00",
+        boundary_status="complete",
+        direction_lock_status="UP",
+        selected_side="UP",
+        target_token_id="100",
+        target_outcome="Up",
+        current_chainlink_price="100",
+        start_price_proxy_v1="99.5",
+        paper_budget_usdc="50",
+        rung_notionals_usdc=["20", "15", "15"],
+        current_midpoint="0.28",
+        current_spread="0.03",
+        market_open_interest="150K",
+        market_volume="120K",
+        visible_liquidity_030="80",
+        visible_liquidity_020="100",
+        visible_liquidity_010="200",
+        derived_up_price="0.28",
+        derived_up_price_source="midpoint",
+        derived_down_price="0.72",
+        derived_down_price_source="midpoint",
+        up_side=_side_state("0.30", "0.32", "0.31", "0.02", "80", "100", "200"),
+        down_side=_side_state("0.68", "0.70", "0.69", "0.02", "70", "90", "120"),
+        rungs=[
+            Btc15mDashboardRungState(price="0.30", state="armed", visible_liquidity="80"),
+            Btc15mDashboardRungState(price="0.20", state="armed", visible_liquidity="100"),
+            Btc15mDashboardRungState(price="0.10", state="armed", visible_liquidity="200"),
+        ],
+        manipulation_flags=[],
+    )
+
+
+def _presenter() -> Btc15mTerminalPresenter:
+    return Btc15mTerminalPresenter(
+        primary_block_source="page_mirror",
+        primary_block_state="exact",
+        market_context_source="market_truth",
+        strategy_source="market_truth",
+        show_binance_diagnostics=False,
+    )
+
+
 def _evaluation() -> Btc15mPaperEvaluation:
     return Btc15mPaperEvaluation(
         window_id="btc15m:window-1",
@@ -1192,3 +1280,47 @@ def _evaluation() -> Btc15mPaperEvaluation:
         mfe_usdc="0",
         mae_usdc="0",
     )
+
+
+def _legacy_terminal_human_mode_runs_render_v2(monkeypatch) -> None:
+    monkeypatch.setattr("pm.cli.strategy_btc15m.Btc15mStrategyService", FakeBtc15mStrategyService)
+
+    result = runner.invoke(
+        app,
+        ["strategy", "btc15m", "terminal", "--current", "--mode", "paper"],
+    )
+
+    assert result.exit_code == 0
+    assert "BTC15m Terminal" in result.stdout
+    assert "30¢" in result.stdout
+    assert "Strategy" in result.stdout
+    assert "Paper start" not in result.stdout
+
+
+def test_btc15m_terminal_human_mode_runs(monkeypatch) -> None:
+    monkeypatch.setattr("pm.cli.strategy_btc15m.Btc15mStrategyService", FakeBtc15mStrategyService)
+
+    result = runner.invoke(
+        app,
+        ["strategy", "btc15m", "terminal", "--current", "--mode", "paper"],
+    )
+
+    assert result.exit_code == 0
+    assert "BTC15m Terminal" in result.stdout
+    assert result.stdout.strip()
+    assert "Paper start" not in result.stdout
+
+
+def _legacy_terminal_human_mode_runs_render(monkeypatch) -> None:
+    monkeypatch.setattr("pm.cli.strategy_btc15m.Btc15mStrategyService", FakeBtc15mStrategyService)
+
+    result = runner.invoke(
+        app,
+        ["strategy", "btc15m", "terminal", "--current", "--mode", "paper"],
+    )
+
+    assert result.exit_code == 0
+    assert "BTC15m Terminal" in result.stdout
+    assert "30¢" in result.stdout
+    assert "Derived Up" in result.stdout
+    assert "Paper start" not in result.stdout

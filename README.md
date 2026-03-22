@@ -157,14 +157,15 @@ Rules:
 - `campaign next-window --slug <market-slug>` and `campaign run --slug <market-slug>` target that exact market instead of relying on recurring discovery
 - `terminal --follow-current --mode paper` is the practical default BTC15m operator session; `--current` remains a compatibility alias with the same current-window-first behavior
 - the terminal now prioritizes the live active BTC15m market immediately, keeps slug-first timing authoritative, and auto-rolls to the next slug while the operator stays attached
-- the terminal now keeps display truth separate from strategy truth: page-style `display_price_to_beat`, displayed BTC, displayed Up/Down prices, displayed volume, countdown, and source metadata are persisted independently from Chainlink boundary state, start proxies, and ladder state
+- the terminal now uses three explicit internal layers: `market_truth` for canonical strategy and market state, `page_mirror` for optional operator-only page parity, and `terminal_presenter` for render plus JSON shaping
+- strategy logic no longer depends on page mirroring; page values cannot create or replace `start_price_proxy_v1`, direction lock, fills, or skip logic
 - the primary terminal screen is browser-page-truth-first: Price to Beat, Current Price, Up, Down, Countdown, and displayed volume come from the current rendered public page when available and stay visually ahead of strategy diagnostics
 - attached current-window page truth is browser-first on the optional `terminal-browser` extra: Playwright-rendered slug-matched public page values are the first-class source, and `page_exact` is emitted only when those exact current values are truly extracted
 - if the browser page mirror degrades temporarily, the terminal keeps the last valid exact page snapshot, marks it stale with `page_unavailable`, and shows source notes instead of swapping in fake replacement numbers from CLOB, Chainlink, or Binance
 - displayed BTC and displayed volume stay page-truth-only on the terminal surface; when exact public page truth is unavailable the operator sees explicit stale or unavailable markers instead of substitutions
 - Binance is now a secondary diagnostics strip and may collapse when page-truth display is healthy
-- late attach on `terminal --follow-current` still degrades into `OBSERVE_ONLY` when the real Chainlink start boundary is unrecoverable, but in `paper` mode the current window may now anchor on exact page Price to Beat via `paper_start_proxy_v1` with source `late_attach_page_fallback`
-- `start_price_proxy_v1` remains Chainlink-only strategy truth; the paper late-attach fallback never applies in `live`
+- late attach on `terminal --follow-current` now degrades into `OBSERVE_ONLY` when the real Chainlink start boundary is unrecoverable; page truth stays visible, but it does not arm the current window
+- `--follow-current --arm-next` and `--wait-next` remain the explicit bounded paper paths for arming the next eligible window after a missed current start boundary
 - `terminal --follow-current --observe-only` keeps the session attached for the rest of the active window without arming the ladder
 - `terminal --wait-next` watches the current tape, arms exactly one next BTC15m window when pre-start capture opens, writes a tear sheet, and exits
 - `terminal --follow-current --arm-next` keeps the current market on screen, then arms and runs the next eligible paper window without requiring reattach

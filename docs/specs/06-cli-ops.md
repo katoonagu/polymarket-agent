@@ -636,6 +636,10 @@ Richer human-readable tables are now implemented for selected operator commands 
   requiring a second attach
 - the BTC15m terminal now prioritizes the active Polymarket market display and
   keeps operator display truth separate from internal strategy state
+- the terminal now has three explicit internal layers:
+  `market_truth`, `page_mirror`, and `terminal_presenter`
+- only `market_truth` may influence direction lock, boundary status, ladder
+  state, fills, or skip logic
 - attached current-window page truth is browser-first and provenance-aware:
   when the optional `terminal-browser` extra is installed, rendered
   slug-matched public page values are the first-class source and
@@ -644,10 +648,10 @@ Richer human-readable tables are now implemented for selected operator commands 
 - if the browser page mirror degrades, the terminal keeps the last valid
   exact page snapshot, marks it stale and `page_unavailable`, and avoids
   swapping in fake replacement numbers from CLOB, Chainlink, or Binance
-- in paper mode only, late attach may create `paper_start_proxy_v1` with
-  source `late_attach_page_fallback` from exact page Price to Beat; true
-  `start_price_proxy_v1` remains Chainlink-only and live mode never uses the
-  fallback
+- late attach no longer arms the current window from page data; the current
+  session degrades into observe-only and page mirroring remains operator-only
+- countdown is slug-derived and authoritative even when page mirror fields are
+  missing or stale
 - terminal paper sizing is explicit via `--budget-usdc` and `--rungs`; when
   only budget is provided the default `20:15:15` ladder scales proportionally
 - Binance remains a compact secondary diagnostics panel and may collapse when

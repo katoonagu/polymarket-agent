@@ -79,10 +79,11 @@ Current workflow notes:
   `--current` remains a compatibility alias
 - the terminal now auto-rolls across BTC15m slugs while the operator stays
   attached and writes one tear sheet per completed window plus one session log
-- the terminal now persists a display-truth layer separate from strategy truth;
-  displayed price-to-beat, displayed BTC, displayed Up/Down prices, displayed
-  volume, countdown, and source metadata are distinct from Chainlink
-  boundaries, start proxies, direction lock, and ladder state
+- the terminal now uses three explicit internal layers:
+  `market_truth`, `page_mirror`, and `terminal_presenter`
+- strategy logic depends only on `market_truth`; `page_mirror` is optional
+  operator overlay state and cannot affect start proxies, direction lock,
+  fills, PnL, or skip logic
 - the primary operator view is page-parity-first: price to beat, current live
   BTC price, Up price, Down price, countdown, midpoint/spread, and visible
   liquidity are shown before Binance diagnostics
@@ -99,11 +100,9 @@ Current workflow notes:
 - late attach on `terminal --follow-current` now falls back into `OBSERVE_ONLY`
   instead of hard-stopping when the start boundary cannot be recovered, then
   continues forward into the next slug
-- in `paper` mode only, a late attach with exact page Price to Beat may create
-  `paper_start_proxy_v1` with source `late_attach_page_fallback` so the
-  current window can still be paper-tested immediately; true
-  `start_price_proxy_v1` remains Chainlink-only and `live` never uses this
-  fallback
+- missed current-window start boundaries no longer arm from page truth; page
+  values stay visible for the operator, while `--arm-next` and `--wait-next`
+  remain the explicit bounded paper paths for trading the next window
 - `terminal --follow-current --observe-only` keeps the current session attached
   without arming the ladder
 - `terminal --follow-current --arm-next` keeps the current market on screen and

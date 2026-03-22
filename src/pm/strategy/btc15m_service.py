@@ -61,6 +61,9 @@ from pm.strategy.btc15m_models import (
     Btc15mSectionError,
     Btc15mTerminalDisplayTruth,
     Btc15mTerminalEventRecord,
+    Btc15mTerminalMarketTruth,
+    Btc15mTerminalPageMirror,
+    Btc15mTerminalPresenter,
     Btc15mTerminalReplayResponse,
     Btc15mTerminalReportResponse,
     Btc15mTerminalReportSummary,
@@ -223,8 +226,6 @@ class _TerminalRuntime:
     boundary_status: str = "pending"
     start_price_proxy_v1: str | None = None
     end_price_proxy_v1: str | None = None
-    paper_start_proxy_v1: str | None = None
-    paper_start_proxy_source: str | None = None
     selected_side: str | None = None
     decision_at: str | None = None
     target_token_id: str | None = None
@@ -2097,12 +2098,6 @@ class Btc15mStrategyService:
             if latest_window is not None
             else None
         )
-        runtime.paper_start_proxy_v1 = (
-            latest_window.paper_start_proxy_v1 if latest_window is not None else None
-        )
-        runtime.paper_start_proxy_source = (
-            latest_window.paper_start_proxy_source if latest_window is not None else None
-        )
         runtime.selected_side = (
             latest_window.decision
             if latest_window is not None and latest_window.decision in {"UP", "DOWN"}
@@ -2189,9 +2184,6 @@ class Btc15mStrategyService:
             runtime.decision_at = latest_evaluation.decision_at
             runtime.target_token_id = latest_evaluation.target_token_id
             runtime.target_outcome = latest_evaluation.target_outcome
-            if latest_evaluation.paper_start_proxy_v1 is not None:
-                runtime.paper_start_proxy_v1 = latest_evaluation.paper_start_proxy_v1
-                runtime.paper_start_proxy_source = latest_evaluation.paper_start_proxy_source
             runtime.favorable_marks.extend(latest_evaluation.max_favorable_path)
             runtime.mfe = _decimal(latest_evaluation.mfe_usdc)
             runtime.mae = _decimal(latest_evaluation.mae_usdc)
@@ -2505,29 +2497,6 @@ class Btc15mStrategyService:
             seconds=timing_controls.post_end_grace_window_seconds
         )
         if runtime.start_price_proxy_v1 is None and now > post_start_deadline:
-            if runtime.paper_start_proxy_v1 is not None:
-                runtime.boundary_status = (
-                    "partial" if runtime.boundary_pre_start is not None else "pending"
-                )
-                return
-            if _should_use_terminal_paper_page_fallback(runtime):
-                fallback_price = _terminal_exact_page_price_to_beat(runtime.page_parity_fallback)
-                if fallback_price is not None:
-                    runtime.paper_start_proxy_v1 = fallback_price
-                    runtime.paper_start_proxy_source = "late_attach_page_fallback"
-                    runtime.boundary_status = (
-                        "partial" if runtime.boundary_pre_start is not None else "pending"
-                    )
-                    self._record_terminal_event(
-                        runtime,
-                        kind="paper_fallback",
-                        status="info",
-                        message=(
-                            "Using exact page Price to Beat as a paper-only late-attach "
-                            "start anchor."
-                        ),
-                    )
-                    return
             if runtime.attach_mode in {"current", "current_observe_only", "wait_next"}:
                 if "missing_start_proxy" not in runtime.skip_reasons:
                     runtime.skip_reasons.append("missing_start_proxy")
@@ -2560,7 +2529,7 @@ class Btc15mStrategyService:
             return
         if runtime.start_price_proxy_v1 is not None and runtime.end_price_proxy_v1 is not None:
             runtime.boundary_status = "complete"
-        elif _effective_terminal_start_proxy(runtime) is not None:
+        elif runtime.start_price_proxy_v1 is not None:
             runtime.boundary_status = "partial"
         else:
             runtime.boundary_status = "pending"
@@ -2582,7 +2551,7 @@ class Btc15mStrategyService:
         minute_five = start_dt + timedelta(seconds=timing_controls.direction_lock_offset_seconds)
         minute_ten = start_dt + timedelta(seconds=timing_controls.entry_window_end_offset_seconds)
         end_grace = end_dt + timedelta(seconds=timing_controls.post_end_grace_window_seconds)
-        effective_start_proxy = _effective_terminal_start_proxy(runtime)
+        effective_start_proxy = runtime.start_price_proxy_v1
         if runtime.wait_next_target_start_dt is not None:
             runtime.state = Btc15mTerminalState.WAITING_FOR_NEXT_WINDOW
             return
@@ -2676,7 +2645,7 @@ class Btc15mStrategyService:
         if runtime.selected_side in {"UP", "DOWN"}:
             return
         resolved = runtime.resolved
-        if resolved.window_start_dt is None or _effective_terminal_start_proxy(runtime) is None:
+        if resolved.window_start_dt is None or runtime.start_price_proxy_v1 is None:
             return
         decision_time = resolved.window_start_dt + MINUTE_FIVE_OFFSET
         if now < decision_time:
@@ -3073,12 +3042,20 @@ class Btc15mStrategyService:
         current_binance_price = (
             runtime.binance_ticks[-1].value if runtime.binance_ticks else None
         )
-        display = self._build_terminal_display_truth(
+        page_mirror = self._build_terminal_display_truth(
+            runtime,
+            countdown_seconds=countdown,
+        )
+        market_truth = self._build_terminal_market_truth(
             runtime,
             countdown_seconds=countdown,
             current_chainlink_price=current_chainlink_price,
             up_level=up_level,
             down_level=down_level,
+        )
+        presenter = self._build_terminal_presenter(
+            market_truth=market_truth,
+            page_mirror=page_mirror,
         )
         return Btc15mDashboardSnapshotRecord(
             snapshot_id=_make_id("btc15m_terminal_snapshot"),
@@ -3095,37 +3072,34 @@ class Btc15mStrategyService:
             window_start_at=runtime.resolved.window.window_start_at,
             window_end_at=runtime.resolved.window.window_end_at,
             countdown_seconds=countdown,
-            display=display,
-            current_window_label=display.display_window_label,
-            page_parity_source=display.display_source,
-            page_parity_url=display.display_url,
-            current_live_btc_price=display.display_current_btc,
-            up_price=display.display_up_price,
-            down_price=display.display_down_price,
-            display_volume=display.display_volume,
-            selected_side=runtime.selected_side,
-            current_chainlink_price=current_chainlink_price,
+            display=page_mirror,
+            page_mirror=page_mirror,
+            market_truth=market_truth,
+            terminal_presenter=presenter,
+            current_window_label=page_mirror.display_window_label,
+            page_parity_source=page_mirror.display_source,
+            page_parity_url=page_mirror.display_url,
+            current_live_btc_price=page_mirror.display_current_btc,
+            up_price=page_mirror.display_up_price,
+            down_price=page_mirror.display_down_price,
+            display_volume=page_mirror.display_volume,
+            selected_side=market_truth.selected_side,
+            current_chainlink_price=market_truth.current_chainlink_price,
             current_binance_price=current_binance_price,
-            start_price_proxy_v1=runtime.start_price_proxy_v1,
-            paper_start_proxy_v1=runtime.paper_start_proxy_v1,
-            paper_start_proxy_source=runtime.paper_start_proxy_source,
-            price_to_beat=display.display_price_to_beat,
-            direction_lock_status=(
-                runtime.selected_side if runtime.selected_side is not None else runtime.state.value
-            ),
-            target_token_id=runtime.target_token_id,
-            target_outcome=runtime.target_outcome,
-            paper_budget_usdc=_decimal_text(runtime.paper_budget_usdc),
-            rung_notionals_usdc=[
-                _decimal_text(notional) for notional in runtime.rung_notionals_usdc
-            ],
-            avg_entry_price=avg_entry,
-            exposure_quantity=_decimal_text(total_quantity) if total_quantity > 0 else None,
-            exposure_notional_usdc=_decimal_text(total_cost) if total_cost > 0 else None,
-            current_midpoint=selected_level.midpoint if selected_level is not None else None,
-            current_spread=selected_level.spread if selected_level is not None else None,
-            market_open_interest=runtime.market_open_interest,
-            market_volume=runtime.market_volume,
+            start_price_proxy_v1=market_truth.start_price_proxy_v1,
+            price_to_beat=page_mirror.display_price_to_beat,
+            direction_lock_status=market_truth.direction_lock_status,
+            target_token_id=market_truth.target_token_id,
+            target_outcome=market_truth.target_outcome,
+            paper_budget_usdc=market_truth.paper_budget_usdc,
+            rung_notionals_usdc=list(market_truth.rung_notionals_usdc),
+            avg_entry_price=market_truth.avg_entry_price,
+            exposure_quantity=market_truth.exposure_quantity,
+            exposure_notional_usdc=market_truth.exposure_notional_usdc,
+            current_midpoint=market_truth.current_midpoint,
+            current_spread=market_truth.current_spread,
+            market_open_interest=market_truth.market_open_interest,
+            market_volume=market_truth.market_volume,
             binance_best_bid=binance.book_ticker.bid_price if binance is not None else None,
             binance_best_ask=binance.book_ticker.ask_price if binance is not None else None,
             binance_near_touch_bid_depth=(
@@ -3143,49 +3117,14 @@ class Btc15mStrategyService:
             binance_volume_1m=_binance_volume_proxy(latest_liquidity, minutes=1),
             binance_volume_3m=_binance_volume_proxy(latest_liquidity, minutes=3),
             binance_near_touch_imbalance=_binance_near_touch_imbalance(binance),
-            visible_liquidity_030=(
-                selected_level.visible_liquidity_030 if selected_level is not None else None
-            ),
-            visible_liquidity_020=(
-                selected_level.visible_liquidity_020 if selected_level is not None else None
-            ),
-            visible_liquidity_010=(
-                selected_level.visible_liquidity_010 if selected_level is not None else None
-            ),
-            manipulation_flags=sorted(set(runtime.manipulation_flags + runtime.skip_reasons)),
+            visible_liquidity_030=market_truth.visible_liquidity_030,
+            visible_liquidity_020=market_truth.visible_liquidity_020,
+            visible_liquidity_010=market_truth.visible_liquidity_010,
+            manipulation_flags=list(market_truth.manipulation_flags),
             polymarket_levels=(latest_liquidity.polymarket if latest_liquidity is not None else []),
-            up_side=_dashboard_side_state(
-                up_level,
-                last_trade_price=_latest_market_sample_last_trade_price(
-                    runtime.market_samples,
-                    up_level.token_id if up_level is not None else None,
-                ),
-            ),
-            down_side=_dashboard_side_state(
-                down_level,
-                last_trade_price=_latest_market_sample_last_trade_price(
-                    runtime.market_samples,
-                    down_level.token_id if down_level is not None else None,
-                ),
-            ),
-            rungs=[
-                Btc15mDashboardRungState(
-                    price=_decimal_text(item.price),
-                    state=item.state,
-                    notional_usdc=_decimal_text(item.notional_usdc),
-                    quantity=_decimal_text(item.quantity),
-                    visible_liquidity=(
-                        _terminal_rung_visible_liquidity(selected_level, item.price)
-                        if selected_level is not None
-                        else None
-                    ),
-                    order_id=item.order_id,
-                    fill_at=item.fill_at,
-                    fill_price=item.fill_price,
-                    cancellation_at=item.cancellation_at,
-                )
-                for item in runtime.rungs
-            ],
+            up_side=market_truth.up_side,
+            down_side=market_truth.down_side,
+            rungs=list(market_truth.rungs),
             latest_events=list(runtime.events),
             mfe_usdc=_decimal_text(runtime.mfe) if runtime.favorable_marks else None,
             mae_usdc=_decimal_text(runtime.mae) if runtime.favorable_marks else None,
@@ -3200,10 +3139,7 @@ class Btc15mStrategyService:
         runtime: _TerminalRuntime,
         *,
         countdown_seconds: int | None,
-        current_chainlink_price: str | None,
-        up_level: Btc15mPolymarketLiquidityLevel | None,
-        down_level: Btc15mPolymarketLiquidityLevel | None,
-    ) -> Btc15mTerminalDisplayTruth:
+    ) -> Btc15mTerminalPageMirror:
         fallback = runtime.page_parity_fallback or Btc15mPageParityData()
         notes = list(fallback.notes)
         market = runtime.current_market
@@ -3244,7 +3180,7 @@ class Btc15mStrategyService:
             if not fallback.stale and _terminal_display_has_full_exact_fields(field_sources)
             else "page_unavailable"
         )
-        return Btc15mTerminalDisplayTruth(
+        return Btc15mTerminalPageMirror(
             display_price_to_beat=display_price_to_beat,
             display_current_btc=display_current_btc,
             display_up_price=display_up_price,
@@ -3259,6 +3195,127 @@ class Btc15mStrategyService:
             display_notes=notes,
         )
 
+    def _build_terminal_market_truth(
+        self,
+        runtime: _TerminalRuntime,
+        *,
+        countdown_seconds: int | None,
+        current_chainlink_price: str | None,
+        up_level: Btc15mPolymarketLiquidityLevel | None,
+        down_level: Btc15mPolymarketLiquidityLevel | None,
+    ) -> Btc15mTerminalMarketTruth:
+        selected_level = None
+        if runtime.target_token_id is not None:
+            for sample in reversed(runtime.liquidity_samples):
+                selected_level = _polymarket_level(sample, runtime.target_token_id)
+                if selected_level is not None:
+                    break
+        total_quantity, total_cost, avg_entry = _terminal_position_summary(runtime.rungs)
+        derived_up_price, derived_up_price_source = _derive_market_context_price(
+            up_level,
+            market_samples=runtime.market_samples,
+        )
+        derived_down_price, derived_down_price_source = _derive_market_context_price(
+            down_level,
+            market_samples=runtime.market_samples,
+        )
+        return Btc15mTerminalMarketTruth(
+            market_slug=runtime.resolved.window.market_slug,
+            window_start_at=runtime.resolved.window.window_start_at,
+            window_end_at=runtime.resolved.window.window_end_at,
+            countdown_seconds=countdown_seconds,
+            countdown=_format_terminal_countdown(countdown_seconds),
+            boundary_status=runtime.boundary_status,
+            direction_lock_status=(
+                runtime.selected_side if runtime.selected_side is not None else runtime.state.value
+            ),
+            selected_side=runtime.selected_side,
+            target_token_id=runtime.target_token_id,
+            target_outcome=runtime.target_outcome,
+            current_chainlink_price=current_chainlink_price,
+            start_price_proxy_v1=runtime.start_price_proxy_v1,
+            end_price_proxy_v1=runtime.end_price_proxy_v1,
+            paper_budget_usdc=_decimal_text(runtime.paper_budget_usdc),
+            rung_notionals_usdc=[
+                _decimal_text(notional) for notional in runtime.rung_notionals_usdc
+            ],
+            avg_entry_price=avg_entry,
+            exposure_quantity=_decimal_text(total_quantity) if total_quantity > 0 else None,
+            exposure_notional_usdc=_decimal_text(total_cost) if total_cost > 0 else None,
+            current_midpoint=selected_level.midpoint if selected_level is not None else None,
+            current_spread=selected_level.spread if selected_level is not None else None,
+            market_open_interest=runtime.market_open_interest,
+            market_volume=runtime.market_volume,
+            visible_liquidity_030=(
+                selected_level.visible_liquidity_030 if selected_level is not None else None
+            ),
+            visible_liquidity_020=(
+                selected_level.visible_liquidity_020 if selected_level is not None else None
+            ),
+            visible_liquidity_010=(
+                selected_level.visible_liquidity_010 if selected_level is not None else None
+            ),
+            derived_up_price=derived_up_price,
+            derived_up_price_source=derived_up_price_source,
+            derived_down_price=derived_down_price,
+            derived_down_price_source=derived_down_price_source,
+            up_side=_dashboard_side_state(
+                up_level,
+                last_trade_price=_latest_market_sample_last_trade_price(
+                    runtime.market_samples,
+                    up_level.token_id if up_level is not None else None,
+                ),
+            ),
+            down_side=_dashboard_side_state(
+                down_level,
+                last_trade_price=_latest_market_sample_last_trade_price(
+                    runtime.market_samples,
+                    down_level.token_id if down_level is not None else None,
+                ),
+            ),
+            rungs=[
+                Btc15mDashboardRungState(
+                    price=_decimal_text(item.price),
+                    state=item.state,
+                    notional_usdc=_decimal_text(item.notional_usdc),
+                    quantity=_decimal_text(item.quantity),
+                    visible_liquidity=(
+                        _terminal_rung_visible_liquidity(selected_level, item.price)
+                        if selected_level is not None
+                        else None
+                    ),
+                    order_id=item.order_id,
+                    fill_at=item.fill_at,
+                    fill_price=item.fill_price,
+                    cancellation_at=item.cancellation_at,
+                )
+                for item in runtime.rungs
+            ],
+            manipulation_flags=sorted(set(runtime.manipulation_flags + runtime.skip_reasons)),
+        )
+
+    def _build_terminal_presenter(
+        self,
+        *,
+        market_truth: Btc15mTerminalMarketTruth,
+        page_mirror: Btc15mTerminalPageMirror,
+    ) -> Btc15mTerminalPresenter:
+        page_state = "unavailable"
+        if page_mirror.display_stale and page_mirror.display_source == "page_unavailable":
+            page_state = "stale"
+        elif page_mirror.display_source == "page_exact":
+            page_state = "exact"
+        show_binance = page_state != "exact" or any(
+            "binance" in flag or "divergence" in flag for flag in market_truth.manipulation_flags
+        )
+        return Btc15mTerminalPresenter(
+            primary_block_source="page_mirror",
+            primary_block_state=page_state,
+            market_context_source="market_truth",
+            strategy_source="market_truth",
+            show_binance_diagnostics=show_binance,
+        )
+
     def _build_terminal_boundary_decision(
         self,
         runtime: _TerminalRuntime,
@@ -3268,10 +3325,6 @@ class Btc15mStrategyService:
             notes.append("Missing post-start Chainlink boundary tick.")
         if runtime.end_price_proxy_v1 is None:
             notes.append("Missing post-end Chainlink boundary tick.")
-        if runtime.paper_start_proxy_v1 is not None:
-            notes.append(
-                "Using paper-only late-attach start anchor from exact page truth."
-            )
         return Btc15mBoundaryDecisionRecord(
             window_id=runtime.resolved.window.window_id,
             condition_id=runtime.resolved.window.condition_id,
@@ -3286,8 +3339,6 @@ class Btc15mStrategyService:
             timing_controls=_default_timing_controls(),
             start_price_proxy_v1=runtime.start_price_proxy_v1,
             end_price_proxy_v1=runtime.end_price_proxy_v1,
-            paper_start_proxy_v1=runtime.paper_start_proxy_v1,
-            paper_start_proxy_source=runtime.paper_start_proxy_source,
             notes=notes,
         )
 
@@ -3298,10 +3349,7 @@ class Btc15mStrategyService:
         recorded_at: datetime,
     ) -> Btc15mWindowRecord:
         resolution_result = "PENDING"
-        if (
-            _effective_terminal_start_proxy(runtime) is not None
-            and runtime.end_price_proxy_v1 is not None
-        ):
+        if runtime.start_price_proxy_v1 is not None and runtime.end_price_proxy_v1 is not None:
             resolution_result = self._resolve_market_outcome(
                 self._build_terminal_boundary_decision(runtime)
             )
@@ -3331,8 +3379,6 @@ class Btc15mStrategyService:
             timing_controls=_default_timing_controls(),
             start_price_proxy_v1=runtime.start_price_proxy_v1,
             end_price_proxy_v1=runtime.end_price_proxy_v1,
-            paper_start_proxy_v1=runtime.paper_start_proxy_v1,
-            paper_start_proxy_source=runtime.paper_start_proxy_source,
             paper_budget_usdc=_decimal_text(runtime.paper_budget_usdc),
             rung_notionals_usdc=[
                 _decimal_text(notional) for notional in runtime.rung_notionals_usdc
@@ -3383,6 +3429,9 @@ class Btc15mStrategyService:
         total_quantity, total_cost, avg_entry = _terminal_position_summary(runtime.rungs)
         latest_snapshot = runtime.latest_snapshot
         latest_display = _snapshot_display_truth(latest_snapshot)
+        latest_page_mirror = _snapshot_page_mirror(latest_snapshot)
+        latest_market_truth = _snapshot_market_truth(latest_snapshot)
+        latest_presenter = _snapshot_terminal_presenter(latest_snapshot)
         tear_sheet = Btc15mTerminalWindowTearSheet(
             window=runtime.resolved.window,
             started_at=_isoformat(runtime.window_started_at_dt or runtime.started_at_dt),
@@ -3394,6 +3443,9 @@ class Btc15mStrategyService:
             final_state=runtime.state,
             boundary_status=runtime.boundary_status,
             display=latest_display,
+            page_mirror=latest_page_mirror,
+            market_truth=latest_market_truth,
+            terminal_presenter=latest_presenter,
             current_window_label=(
                 latest_display.display_window_label if latest_display is not None else None
             ),
@@ -3415,8 +3467,6 @@ class Btc15mStrategyService:
             selected_side=runtime.selected_side,
             target_token_id=runtime.target_token_id,
             target_outcome=runtime.target_outcome,
-            paper_start_proxy_v1=runtime.paper_start_proxy_v1,
-            paper_start_proxy_source=runtime.paper_start_proxy_source,
             paper_budget_usdc=_decimal_text(runtime.paper_budget_usdc),
             rung_notionals_usdc=[
                 _decimal_text(notional) for notional in runtime.rung_notionals_usdc
@@ -3479,6 +3529,11 @@ class Btc15mStrategyService:
                 else runtime.boundary_status
             ),
             display=latest_window.display if latest_window is not None else None,
+            page_mirror=latest_window.page_mirror if latest_window is not None else None,
+            market_truth=latest_window.market_truth if latest_window is not None else None,
+            terminal_presenter=(
+                latest_window.terminal_presenter if latest_window is not None else None
+            ),
             current_window_label=(
                 latest_window.current_window_label if latest_window is not None else None
             ),
@@ -3500,8 +3555,6 @@ class Btc15mStrategyService:
             target_outcome=latest_window.target_outcome if latest_window is not None else None,
             start_price_proxy_v1=runtime.start_price_proxy_v1,
             end_price_proxy_v1=runtime.end_price_proxy_v1,
-            paper_start_proxy_v1=runtime.paper_start_proxy_v1,
-            paper_start_proxy_source=runtime.paper_start_proxy_source,
             paper_budget_usdc=_decimal_text(runtime.paper_budget_usdc),
             rung_notionals_usdc=[
                 _decimal_text(notional) for notional in runtime.rung_notionals_usdc
@@ -5172,6 +5225,8 @@ def _snapshot_display_truth(
 ) -> Btc15mTerminalDisplayTruth | None:
     if snapshot is None:
         return None
+    if snapshot.page_mirror is not None:
+        return snapshot.page_mirror
     if snapshot.display is not None:
         return snapshot.display
     return Btc15mTerminalDisplayTruth(
@@ -5187,6 +5242,86 @@ def _snapshot_display_truth(
         display_observed_at=None,
         display_stale=False,
         display_notes=[],
+    )
+
+
+def _snapshot_page_mirror(
+    snapshot: Btc15mDashboardSnapshotRecord | None,
+) -> Btc15mTerminalPageMirror | None:
+    display = _snapshot_display_truth(snapshot)
+    if display is None:
+        return None
+    if isinstance(display, Btc15mTerminalPageMirror):
+        return display
+    return Btc15mTerminalPageMirror(**display.model_dump(mode="json"))
+
+
+def _snapshot_market_truth(
+    snapshot: Btc15mDashboardSnapshotRecord | None,
+) -> Btc15mTerminalMarketTruth | None:
+    if snapshot is None:
+        return None
+    if snapshot.market_truth is not None:
+        return snapshot.market_truth
+    return Btc15mTerminalMarketTruth(
+        market_slug=snapshot.market_slug,
+        window_start_at=snapshot.window_start_at,
+        window_end_at=snapshot.window_end_at,
+        countdown_seconds=snapshot.countdown_seconds,
+        countdown=_format_terminal_countdown(snapshot.countdown_seconds),
+        boundary_status=snapshot.boundary_status,
+        direction_lock_status=snapshot.direction_lock_status,
+        selected_side=snapshot.selected_side,
+        target_token_id=snapshot.target_token_id,
+        target_outcome=snapshot.target_outcome,
+        current_chainlink_price=snapshot.current_chainlink_price,
+        start_price_proxy_v1=snapshot.start_price_proxy_v1,
+        end_price_proxy_v1=getattr(snapshot, "end_price_proxy_v1", None),
+        paper_budget_usdc=snapshot.paper_budget_usdc,
+        rung_notionals_usdc=list(snapshot.rung_notionals_usdc),
+        avg_entry_price=snapshot.avg_entry_price,
+        exposure_quantity=snapshot.exposure_quantity,
+        exposure_notional_usdc=snapshot.exposure_notional_usdc,
+        current_midpoint=snapshot.current_midpoint,
+        current_spread=snapshot.current_spread,
+        market_open_interest=snapshot.market_open_interest,
+        market_volume=snapshot.market_volume,
+        visible_liquidity_030=snapshot.visible_liquidity_030,
+        visible_liquidity_020=snapshot.visible_liquidity_020,
+        visible_liquidity_010=snapshot.visible_liquidity_010,
+        derived_up_price=getattr(snapshot, "derived_up_price", None),
+        derived_up_price_source=getattr(snapshot, "derived_up_price_source", None),
+        derived_down_price=getattr(snapshot, "derived_down_price", None),
+        derived_down_price_source=getattr(snapshot, "derived_down_price_source", None),
+        up_side=snapshot.up_side,
+        down_side=snapshot.down_side,
+        rungs=list(snapshot.rungs),
+        manipulation_flags=list(snapshot.manipulation_flags),
+    )
+
+
+def _snapshot_terminal_presenter(
+    snapshot: Btc15mDashboardSnapshotRecord | None,
+) -> Btc15mTerminalPresenter | None:
+    if snapshot is None:
+        return None
+    if snapshot.terminal_presenter is not None:
+        return snapshot.terminal_presenter
+    page_mirror = _snapshot_page_mirror(snapshot)
+    market_truth = _snapshot_market_truth(snapshot)
+    if page_mirror is None or market_truth is None:
+        return None
+    page_state = "unavailable"
+    if page_mirror.display_stale and page_mirror.display_source == "page_unavailable":
+        page_state = "stale"
+    elif page_mirror.display_source == "page_exact":
+        page_state = "exact"
+    show_binance = page_state != "exact" or any(
+        "binance" in flag or "divergence" in flag for flag in market_truth.manipulation_flags
+    )
+    return Btc15mTerminalPresenter(
+        primary_block_state=page_state,
+        show_binance_diagnostics=show_binance,
     )
 
 
@@ -5216,31 +5351,18 @@ def _terminal_display_has_full_exact_fields(field_sources: dict[str, str]) -> bo
     return all(field_sources.get(field_name) == "page_exact" for field_name in required)
 
 
-def _terminal_exact_page_price_to_beat(
-    page_data: Btc15mPageParityData | None,
-) -> str | None:
-    return _page_exact_field_value(page_data, "price_to_beat")
-
-
-def _should_use_terminal_paper_page_fallback(runtime: _TerminalRuntime) -> bool:
-    return runtime.mode is Btc15mRunMode.PAPER and runtime.attach_mode in {
-        "current",
-        "current_observe_only",
-    }
-
-
 def _effective_terminal_start_proxy(runtime: _TerminalRuntime) -> str | None:
-    return runtime.start_price_proxy_v1 or runtime.paper_start_proxy_v1
+    return runtime.start_price_proxy_v1
 
 
 def _boundary_effective_start_proxy(
     boundary_decision: Btc15mBoundaryDecisionRecord,
 ) -> str | None:
-    return boundary_decision.start_price_proxy_v1 or boundary_decision.paper_start_proxy_v1
+    return boundary_decision.start_price_proxy_v1
 
 
 def _record_effective_start_proxy(record: Btc15mWindowRecord) -> str | None:
-    return record.start_price_proxy_v1 or record.paper_start_proxy_v1
+    return record.start_price_proxy_v1
 
 
 def _format_terminal_countdown(countdown_seconds: int | None) -> str | None:
@@ -5310,6 +5432,30 @@ def _display_price_emulation_source(
     if bid is None or ask is None:
         return None
     return ask - bid
+
+
+def _derive_market_context_price(
+    level: Btc15mPolymarketLiquidityLevel | None,
+    *,
+    market_samples: list[Btc15mMarketSample],
+) -> tuple[str | None, str | None]:
+    if level is None:
+        return None, None
+    spread = _display_price_emulation_source(level)
+    if spread is not None and spread <= Decimal("0.10"):
+        midpoint = _coalesce_price(
+            level.midpoint,
+            _midpoint_optional_text(level.best_bid, level.best_ask),
+        )
+        if midpoint is not None:
+            return midpoint, "midpoint"
+        return None, None
+    if spread is not None and spread > Decimal("0.10"):
+        last_trade_price = _latest_market_sample_last_trade_price(market_samples, level.token_id)
+        if last_trade_price is not None:
+            return last_trade_price, "last_trade"
+        return None, None
+    return None, None
 
 
 def _emulate_terminal_display_price(

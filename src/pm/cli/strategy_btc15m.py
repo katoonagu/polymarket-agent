@@ -31,6 +31,9 @@ from pm.strategy import (
     Btc15mStateError,
     Btc15mStrategyService,
     Btc15mTerminalDisplayTruth,
+    Btc15mTerminalMarketTruth,
+    Btc15mTerminalPageMirror,
+    Btc15mTerminalPresenter,
     Btc15mTerminalReplayResponse,
     Btc15mTerminalReportResponse,
     Btc15mTerminalResponse,
@@ -1107,9 +1110,11 @@ def _terminal_rung_counts(snapshot: Btc15mDashboardSnapshotRecord) -> str:
 
 
 def _snapshot_display_truth(snapshot: Btc15mDashboardSnapshotRecord) -> Btc15mTerminalDisplayTruth:
+    if snapshot.page_mirror is not None:
+        return snapshot.page_mirror
     if snapshot.display is not None:
         return snapshot.display
-    return Btc15mTerminalDisplayTruth(
+    return Btc15mTerminalPageMirror(
         display_price_to_beat=snapshot.price_to_beat,
         display_current_btc=snapshot.current_live_btc_price,
         display_up_price=snapshot.up_price,
@@ -1127,12 +1132,75 @@ def _snapshot_display_truth(snapshot: Btc15mDashboardSnapshotRecord) -> Btc15mTe
     )
 
 
+def _snapshot_market_truth(snapshot: Btc15mDashboardSnapshotRecord) -> Btc15mTerminalMarketTruth:
+    if snapshot.market_truth is not None:
+        return snapshot.market_truth
+    return Btc15mTerminalMarketTruth(
+        market_slug=snapshot.market_slug,
+        window_start_at=snapshot.window_start_at,
+        window_end_at=snapshot.window_end_at,
+        countdown_seconds=snapshot.countdown_seconds,
+        countdown=_format_countdown(snapshot.countdown_seconds),
+        boundary_status=snapshot.boundary_status,
+        direction_lock_status=snapshot.direction_lock_status,
+        selected_side=snapshot.selected_side,
+        target_token_id=snapshot.target_token_id,
+        target_outcome=snapshot.target_outcome,
+        current_chainlink_price=snapshot.current_chainlink_price,
+        start_price_proxy_v1=snapshot.start_price_proxy_v1,
+        paper_budget_usdc=snapshot.paper_budget_usdc,
+        rung_notionals_usdc=list(snapshot.rung_notionals_usdc),
+        avg_entry_price=snapshot.avg_entry_price,
+        exposure_quantity=snapshot.exposure_quantity,
+        exposure_notional_usdc=snapshot.exposure_notional_usdc,
+        current_midpoint=snapshot.current_midpoint,
+        current_spread=snapshot.current_spread,
+        market_open_interest=snapshot.market_open_interest,
+        market_volume=snapshot.market_volume,
+        visible_liquidity_030=snapshot.visible_liquidity_030,
+        visible_liquidity_020=snapshot.visible_liquidity_020,
+        visible_liquidity_010=snapshot.visible_liquidity_010,
+        derived_up_price=getattr(snapshot, "derived_up_price", None),
+        derived_up_price_source=getattr(snapshot, "derived_up_price_source", None),
+        derived_down_price=getattr(snapshot, "derived_down_price", None),
+        derived_down_price_source=getattr(snapshot, "derived_down_price_source", None),
+        up_side=snapshot.up_side,
+        down_side=snapshot.down_side,
+        rungs=list(snapshot.rungs),
+        manipulation_flags=list(snapshot.manipulation_flags),
+    )
+
+
+def _snapshot_terminal_presenter(
+    snapshot: Btc15mDashboardSnapshotRecord,
+) -> Btc15mTerminalPresenter:
+    if snapshot.terminal_presenter is not None:
+        return snapshot.terminal_presenter
+    display = _snapshot_display_truth(snapshot)
+    market_truth = _snapshot_market_truth(snapshot)
+    page_state = "unavailable"
+    if display.display_stale and display.display_source == "page_unavailable":
+        page_state = "stale"
+    elif display.display_source == "page_exact":
+        page_state = "exact"
+    show_binance = page_state != "exact" or any(
+        "binance" in flag or "divergence" in flag for flag in market_truth.manipulation_flags
+    )
+    return Btc15mTerminalPresenter(
+        primary_block_state=page_state,
+        show_binance_diagnostics=show_binance,
+    )
+
+
 def _record_display_truth(record: object) -> Btc15mTerminalDisplayTruth:
+    page_mirror = getattr(record, "page_mirror", None)
+    if isinstance(page_mirror, Btc15mTerminalDisplayTruth):
+        return page_mirror
     display = getattr(record, "display", None)
     if isinstance(display, Btc15mTerminalDisplayTruth):
         return display
     countdown_seconds = getattr(record, "countdown_seconds", None)
-    return Btc15mTerminalDisplayTruth(
+    return Btc15mTerminalPageMirror(
         display_price_to_beat=getattr(record, "price_to_beat", None),
         display_current_btc=getattr(record, "current_live_btc_price", None),
         display_up_price=getattr(record, "up_price", None),
@@ -1148,6 +1216,68 @@ def _record_display_truth(record: object) -> Btc15mTerminalDisplayTruth:
     )
 
 
+def _record_market_truth(record: object) -> Btc15mTerminalMarketTruth:
+    market_truth = getattr(record, "market_truth", None)
+    if isinstance(market_truth, Btc15mTerminalMarketTruth):
+        return market_truth
+    countdown_seconds = getattr(record, "countdown_seconds", None)
+    return Btc15mTerminalMarketTruth(
+        market_slug=getattr(record, "market_slug", "-"),
+        window_start_at=getattr(record, "window_start_at", None),
+        window_end_at=getattr(record, "window_end_at", None),
+        countdown_seconds=countdown_seconds,
+        countdown=_format_countdown(countdown_seconds),
+        boundary_status=getattr(record, "boundary_status", "pending"),
+        direction_lock_status=getattr(record, "direction_lock_status", "pending"),
+        selected_side=getattr(record, "selected_side", None),
+        target_token_id=getattr(record, "target_token_id", None),
+        target_outcome=getattr(record, "target_outcome", None),
+        current_chainlink_price=getattr(record, "current_chainlink_price", None),
+        start_price_proxy_v1=getattr(record, "start_price_proxy_v1", None),
+        end_price_proxy_v1=getattr(record, "end_price_proxy_v1", None),
+        paper_budget_usdc=getattr(record, "paper_budget_usdc", None),
+        rung_notionals_usdc=list(getattr(record, "rung_notionals_usdc", [])),
+        avg_entry_price=getattr(record, "avg_entry_price", None),
+        exposure_quantity=getattr(record, "exposure_quantity", None),
+        exposure_notional_usdc=getattr(record, "exposure_notional_usdc", None),
+        current_midpoint=getattr(record, "current_midpoint", None),
+        current_spread=getattr(record, "current_spread", None),
+        market_open_interest=getattr(record, "market_open_interest", None),
+        market_volume=getattr(record, "market_volume", None),
+        visible_liquidity_030=getattr(record, "visible_liquidity_030", None),
+        visible_liquidity_020=getattr(record, "visible_liquidity_020", None),
+        visible_liquidity_010=getattr(record, "visible_liquidity_010", None),
+        derived_up_price=getattr(record, "derived_up_price", None),
+        derived_up_price_source=getattr(record, "derived_up_price_source", None),
+        derived_down_price=getattr(record, "derived_down_price", None),
+        derived_down_price_source=getattr(record, "derived_down_price_source", None),
+        up_side=getattr(record, "up_side", None),
+        down_side=getattr(record, "down_side", None),
+        rungs=list(getattr(record, "rungs", [])),
+        manipulation_flags=list(getattr(record, "manipulation_flags", [])),
+    )
+
+
+def _record_terminal_presenter(record: object) -> Btc15mTerminalPresenter:
+    presenter = getattr(record, "terminal_presenter", None)
+    if isinstance(presenter, Btc15mTerminalPresenter):
+        return presenter
+    display = _record_display_truth(record)
+    market_truth = _record_market_truth(record)
+    page_state = "unavailable"
+    if display.display_stale and display.display_source == "page_unavailable":
+        page_state = "stale"
+    elif display.display_source == "page_exact":
+        page_state = "exact"
+    show_binance = page_state != "exact" or any(
+        "binance" in flag or "divergence" in flag for flag in market_truth.manipulation_flags
+    )
+    return Btc15mTerminalPresenter(
+        primary_block_state=page_state,
+        show_binance_diagnostics=show_binance,
+    )
+
+
 def _format_countdown(countdown_seconds: int | None) -> str | None:
     if countdown_seconds is None:
         return None
@@ -1160,15 +1290,19 @@ def _format_countdown(countdown_seconds: int | None) -> str | None:
     return f"{minutes:02d}:{seconds:02d}"
 
 
-def _render_terminal_snapshot(snapshot: Btc15mDashboardSnapshotRecord) -> RenderableType:
+def _format_market_truth_price(value: str | None, source: str | None) -> str:
+    if value is None:
+        return "-"
+    if source is None:
+        return value
+    return f"{value} ({source})"
+
+
+def _render_terminal_snapshot_legacy(snapshot: Btc15mDashboardSnapshotRecord) -> RenderableType:
     display = _snapshot_display_truth(snapshot)
-    parity_healthy = (
-        (display.display_source or "page_unavailable") == "page_exact"
-        and not display.display_stale
-    )
-    show_binance = not parity_healthy or any(
-        "binance" in flag or "divergence" in flag for flag in snapshot.manipulation_flags
-    )
+    market_truth = _snapshot_market_truth(snapshot)
+    presenter = _snapshot_terminal_presenter(snapshot)
+    show_binance = presenter.show_binance_diagnostics
     header = summary_table(
         title="Session",
         rows=[
@@ -1176,13 +1310,13 @@ def _render_terminal_snapshot(snapshot: Btc15mDashboardSnapshotRecord) -> Render
             ("Window label", display.display_window_label or "-"),
             ("Mode", str(snapshot.mode)),
             ("State", snapshot.window_status),
-            ("Countdown", display.display_countdown or str(snapshot.countdown_seconds or 0)),
+            ("Countdown", display.display_countdown or market_truth.countdown or "-"),
             ("Attach", snapshot.attach_mode),
             ("Observe only", "yes" if snapshot.observe_only else "no"),
         ],
     )
     market_focus = summary_table(
-        title="Page Mirror",
+        title=presenter.page_block_title,
         rows=[
             ("Price to beat", display.display_price_to_beat or "-"),
             ("Current price", display.display_current_btc or "-"),
@@ -1196,16 +1330,15 @@ def _render_terminal_snapshot(snapshot: Btc15mDashboardSnapshotRecord) -> Render
         ],
     )
     strategy = summary_table(
-        title="Strategy",
+        title=presenter.strategy_block_title,
         rows=[
-            ("Selected side", snapshot.selected_side or "-"),
-            ("Status", snapshot.direction_lock_status),
-            ("Boundary", snapshot.boundary_status),
-            ("Chainlink start", snapshot.start_price_proxy_v1 or "-"),
-            ("Paper start", snapshot.paper_start_proxy_v1 or "-"),
-            ("Budget", snapshot.paper_budget_usdc or "-"),
-            ("Avg entry", snapshot.avg_entry_price or "-"),
-            ("Exposure", snapshot.exposure_notional_usdc or "-"),
+            ("Selected side", market_truth.selected_side or "-"),
+            ("Status", market_truth.direction_lock_status),
+            ("Boundary", market_truth.boundary_status),
+            ("Chainlink start", market_truth.start_price_proxy_v1 or "-"),
+            ("Budget", market_truth.paper_budget_usdc or "-"),
+            ("Avg entry", market_truth.avg_entry_price or "-"),
+            ("Exposure", market_truth.exposure_notional_usdc or "-"),
             ("Filled / posted / cancelled", _terminal_rung_counts(snapshot)),
         ],
     )
@@ -1323,6 +1456,206 @@ def _render_terminal_snapshot(snapshot: Btc15mDashboardSnapshotRecord) -> Render
             render_group(
                 Panel(market_context, title="Polymarket"),
                 Panel(context_summary, title="Market"),
+                Panel(binance, title="Binance") if show_binance else empty_message(""),
+            ),
+            name="right",
+            ratio=2,
+        ),
+    )
+    return layout
+
+
+def _render_terminal_snapshot(snapshot: Btc15mDashboardSnapshotRecord) -> RenderableType:
+    display = _snapshot_display_truth(snapshot)
+    market_truth = _snapshot_market_truth(snapshot)
+    presenter = _snapshot_terminal_presenter(snapshot)
+    show_binance = presenter.show_binance_diagnostics
+    header = summary_table(
+        title="Session",
+        rows=[
+            ("Market", snapshot.market_slug),
+            ("Window label", display.display_window_label or "-"),
+            ("Mode", str(snapshot.mode)),
+            ("State", snapshot.window_status),
+            ("Countdown", display.display_countdown or market_truth.countdown or "-"),
+            ("Attach", snapshot.attach_mode),
+            ("Observe only", "yes" if snapshot.observe_only else "no"),
+        ],
+    )
+    market_focus = summary_table(
+        title=presenter.page_block_title,
+        rows=[
+            ("Price to beat", display.display_price_to_beat or "-"),
+            ("Current price", display.display_current_btc or "-"),
+            ("Up", display.display_up_price or "-"),
+            ("Down", display.display_down_price or "-"),
+            ("Countdown", display.display_countdown or market_truth.countdown or "-"),
+            ("Window", display.display_window_label or snapshot.market_slug),
+            ("Display source", display.display_source or "-"),
+            ("Observed", display.display_observed_at or "-"),
+            ("Stale", "yes" if display.display_stale else "no"),
+        ],
+    )
+    strategy = summary_table(
+        title=presenter.strategy_block_title,
+        rows=[
+            ("Selected side", market_truth.selected_side or "-"),
+            ("Status", market_truth.direction_lock_status),
+            ("Boundary", market_truth.boundary_status),
+            ("Chainlink start", market_truth.start_price_proxy_v1 or "-"),
+            ("Budget", market_truth.paper_budget_usdc or "-"),
+            ("Avg entry", market_truth.avg_entry_price or "-"),
+            ("Exposure", market_truth.exposure_notional_usdc or "-"),
+            ("Filled / posted / cancelled", _terminal_rung_counts(snapshot)),
+        ],
+    )
+    ladder = row_table(
+        title="Ladder",
+        columns=("Level", "State", "Notional", "Qty", "Fill"),
+        rows=[
+            (
+                _format_cents_label(rung.price),
+                rung.state,
+                rung.notional_usdc or "-",
+                rung.quantity or "-",
+                rung.fill_at or rung.cancellation_at or "-",
+            )
+            for rung in snapshot.rungs
+        ],
+    )
+    market_context = row_table(
+        title=presenter.market_block_title,
+        columns=("Side", "Bid", "Ask", "Mid", "Spread", "30¢", "20¢", "10¢"),
+        rows=[
+            (
+                "Up",
+                market_truth.up_side.best_bid or "-"
+                if market_truth.up_side is not None
+                else "-",
+                market_truth.up_side.best_ask or "-"
+                if market_truth.up_side is not None
+                else "-",
+                market_truth.up_side.midpoint or "-"
+                if market_truth.up_side is not None
+                else "-",
+                market_truth.up_side.spread or "-"
+                if market_truth.up_side is not None
+                else "-",
+                market_truth.up_side.visible_liquidity_030 or "-"
+                if market_truth.up_side is not None
+                else "-",
+                market_truth.up_side.visible_liquidity_020 or "-"
+                if market_truth.up_side is not None
+                else "-",
+                market_truth.up_side.visible_liquidity_010 or "-"
+                if market_truth.up_side is not None
+                else "-",
+            ),
+            (
+                "Down",
+                market_truth.down_side.best_bid or "-"
+                if market_truth.down_side is not None
+                else "-",
+                market_truth.down_side.best_ask or "-"
+                if market_truth.down_side is not None
+                else "-",
+                market_truth.down_side.midpoint or "-"
+                if market_truth.down_side is not None
+                else "-",
+                market_truth.down_side.spread or "-"
+                if market_truth.down_side is not None
+                else "-",
+                market_truth.down_side.visible_liquidity_030 or "-"
+                if market_truth.down_side is not None
+                else "-",
+                market_truth.down_side.visible_liquidity_020 or "-"
+                if market_truth.down_side is not None
+                else "-",
+                market_truth.down_side.visible_liquidity_010 or "-"
+                if market_truth.down_side is not None
+                else "-",
+            ),
+        ],
+    )
+    context_summary = summary_table(
+        title=presenter.market_block_title,
+        rows=[
+            ("Spread", market_truth.current_spread or "-"),
+            ("Midpoint", market_truth.current_midpoint or "-"),
+            (
+                "Derived Up",
+                _format_market_truth_price(
+                    market_truth.derived_up_price,
+                    market_truth.derived_up_price_source,
+                ),
+            ),
+            (
+                "Derived Down",
+                _format_market_truth_price(
+                    market_truth.derived_down_price,
+                    market_truth.derived_down_price_source,
+                ),
+            ),
+            ("Visible @30¢", market_truth.visible_liquidity_030 or "-"),
+            ("Visible @20¢", market_truth.visible_liquidity_020 or "-"),
+            ("Visible @10¢", market_truth.visible_liquidity_010 or "-"),
+            ("Open interest", market_truth.market_open_interest or "-"),
+            ("Market volume", market_truth.market_volume or "-"),
+            ("Volume", display.display_volume or "-"),
+            ("Flags", ", ".join(market_truth.manipulation_flags) or "-"),
+            ("Notes", ", ".join(display.display_notes) or "-"),
+        ],
+    )
+    binance = summary_table(
+        title="Binance Diagnostics",
+        rows=[
+            ("Spot", snapshot.current_binance_price or "-"),
+            (
+                "Best bid / ask",
+                f"{snapshot.binance_best_bid or '-'} / {snapshot.binance_best_ask or '-'}",
+            ),
+            (
+                "Near-touch depth",
+                (
+                    f"{snapshot.binance_near_touch_bid_depth or '-'} / "
+                    f"{snapshot.binance_near_touch_ask_depth or '-'}"
+                ),
+            ),
+            ("Imbalance", snapshot.binance_near_touch_imbalance or "-"),
+        ],
+    )
+    events = (
+        row_table(
+            title=presenter.event_tape_title,
+            columns=("At", "Kind", "Status", "Message"),
+            rows=[
+                (event.event_at, event.kind, event.status, event.message)
+                for event in snapshot.latest_events
+            ],
+        )
+        if snapshot.latest_events
+        else empty_message("No terminal events yet.")
+    )
+    layout = Layout()
+    layout.split_column(
+        Layout(Panel(header, title="BTC15m Terminal"), size=8),
+        Layout(name="body"),
+        Layout(Panel(events, title=presenter.event_tape_title), size=9),
+    )
+    layout["body"].split_row(
+        Layout(
+            render_group(
+                Panel(market_focus, title=presenter.page_block_title),
+                Panel(strategy, title=presenter.strategy_block_title),
+                Panel(ladder, title="Ladder"),
+            ),
+            name="left",
+            ratio=2,
+        ),
+        Layout(
+            render_group(
+                Panel(market_context, title="Depth"),
+                Panel(context_summary, title=presenter.market_block_title),
                 Panel(binance, title="Binance") if show_binance else empty_message(""),
             ),
             name="right",

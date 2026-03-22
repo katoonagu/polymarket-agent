@@ -217,6 +217,8 @@ Define and validate the first market-specific recurring strategy track for BTC
   - current-window-first terminal behavior with automatic rollover across BTC15m
     slugs while the operator stays attached
   - explicit terminal display-truth layer separate from oracle and ladder state
+  - explicit terminal layer split into `market_truth`, `page_mirror`, and
+    `terminal_presenter`, with strategy logic depending only on `market_truth`
   - browser-first page-parity operator view with rendered slug-matched public
     page values on the optional `terminal-browser` extra, stale last-valid
     snapshot retention when the mirror degrades, and explicit unavailable
@@ -227,9 +229,9 @@ Define and validate the first market-specific recurring strategy track for BTC
     sheets and session-level rolling logs
   - late-attach fallback into observe-only instead of immediate terminal death,
     while keeping the session alive into the next slug
-  - paper-only late-attach fallback that can anchor the current window from
-    exact page Price to Beat as `paper_start_proxy_v1`, while true
-    `start_price_proxy_v1` stays Chainlink-only and live mode remains stricter
+  - removal of page-driven late-attach arming; missed start boundaries now stay
+    observe-only for the current window and require explicit `--arm-next` or
+    `--wait-next` to trade the next paper window
   - bounded `terminal --wait-next` flow that watches the current tape, arms one
     next BTC15m window, and exits with a tear sheet
   - `terminal --follow-current --arm-next` flow that stays current-window-first
