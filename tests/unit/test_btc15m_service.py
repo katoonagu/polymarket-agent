@@ -7,6 +7,12 @@ from decimal import Decimal
 
 import pytest
 
+from pm.auth import AuthValidationError
+from pm.auth.models import (
+    AuthContext,
+    BalanceAllowanceView,
+    GeoblockStatus,
+)
 from pm.binance import (
     BinanceBookTicker,
     BinanceDepthLevel,
@@ -14,7 +20,16 @@ from pm.binance import (
     BinanceKline,
     BinanceLiquiditySnapshot,
 )
-from pm.execution.models import ExecutionReasonBlock
+from pm.execution.models import (
+    CapturedExecutionEvent,
+    ExecutionOrderPlanRecord,
+    ExecutionOrderResultRecord,
+    ExecutionReasonBlock,
+    ExecutionReconciliationItem,
+    ExecutionReconciliationRecord,
+    ExecutionReconciliationSummary,
+)
+from pm.execution.state import ExecutionStateService
 from pm.market.gamma import GammaSearchCandidate
 from pm.market.models import (
     NormalizedBook,
@@ -24,6 +39,12 @@ from pm.market.models import (
     NormalizedSpreadQuote,
     RecurringMarketCandidate,
 )
+from pm.portfolio.models import (
+    PortfolioReconciliationRecord,
+    PortfolioReconciliationSummary,
+)
+from pm.portfolio.state import PortfolioStateService
+from pm.risk.models import RiskPolicy
 from pm.strategy import (
     AUTO_ROLL_RUNS_FILENAME,
     BOUNDARY_DECISIONS_FILENAME,
@@ -37,10 +58,15 @@ from pm.strategy import (
     TERMINAL_SESSIONS_FILENAME,
     WINDOWS_FILENAME,
     Btc15mBoundaryDecisionRecord,
+    Btc15mCanaryLiveProfile,
+    Btc15mDashboardRungState,
     Btc15mLiquiditySampleRecord,
+    Btc15mLiveCheckResponse,
     Btc15mPaperRunRecord,
     Btc15mPolymarketLiquidityLevel,
     Btc15mRunMode,
+    Btc15mSessionBundleResponse,
+    Btc15mSessionLatestResponse,
     Btc15mSessionState,
     Btc15mStateError,
     Btc15mStateService,
@@ -495,6 +521,94 @@ class FakeDryRunService:
         )()
 
 
+class FakeAuthService:
+    def __init__(
+        self,
+        *,
+        signer_address: str = "0x" + ("1" * 40),
+        funder_address: str | None = "0x" + ("2" * 40),
+        fail_balances: bool = False,
+        fail_allowances: bool = False,
+        geoblock: GeoblockStatus | None = None,
+    ) -> None:
+        self._auth = AuthContext(
+            signer_address=signer_address,
+            funder_address=funder_address,
+            signature_type=1,
+            signature_type_name="POLY_PROXY",
+            clob_host="https://clob.polymarket.com",
+            chain_id=137,
+            private_key_present=True,
+            api_key_derivation_possible=True,
+        )
+        self._fail_balances = fail_balances
+        self._fail_allowances = fail_allowances
+        self._geoblock = geoblock or GeoblockStatus(
+            checked=True,
+            blocked=False,
+            country="US",
+            region="N/A",
+            message="Allowed for test.",
+        )
+
+    def show(self):
+        return type("FakeAuthShowResponse", (), {"auth": self._auth, "errors": []})()
+
+    def balances(self):
+        if self._fail_balances:
+            raise AuthValidationError("balance lookup failed")
+        return type(
+            "FakeBalancesResponse",
+            (),
+            {
+                "balance_view": BalanceAllowanceView(
+                    asset_type="collateral",
+                    signature_type=1,
+                    balance="25",
+                    allowance="25",
+                )
+            },
+        )()
+
+    def allowances(self):
+        if self._fail_allowances:
+            raise AuthValidationError("allowance lookup failed")
+        return type(
+            "FakeAllowancesResponse",
+            (),
+            {
+                "allowance_view": BalanceAllowanceView(
+                    asset_type="collateral",
+                    signature_type=1,
+                    balance="25",
+                    allowance="25",
+                )
+            },
+        )()
+
+    def check_geoblock(self) -> GeoblockStatus:
+        return self._geoblock
+
+
+class FakeRiskPolicyService:
+    def __init__(self, *, strategy_name: str = "btc_15m_chainlink_directional_ladder_v1") -> None:
+        self._policy = RiskPolicy(
+            strategy_name=strategy_name,
+            dispatch_enabled=False,
+            max_drift_pct="5",
+            max_spread_pct="5",
+            max_size_usdc_per_order="25",
+            max_exposure_usdc_per_market="100",
+            max_exposure_usdc_per_strategy="250",
+            require_market_open=True,
+            require_balance_ready=True,
+            require_allowance_ready=True,
+        )
+
+    def get_policy(self, strategy_name: str) -> RiskPolicy:
+        return self._policy.model_copy(update={"strategy_name": strategy_name})
+
+
 async def _noop_async_sleep(seconds: float) -> None:
     _ = seconds
 
@@ -529,6 +643,10 @@ def _service(
     page_parity_service: FakePageParityService | None = None,
     execution_watch_service: FakeExecutionWatchService | None = None,
     dry_run_service: FakeDryRunService | None = None,
+    auth_service: FakeAuthService | None = None,
+    risk_service: FakeRiskPolicyService | None = None,
+    execution_state_service: ExecutionStateService | None = None,
+    portfolio_state_service: PortfolioStateService | None = None,
     crypto_client: FakeCryptoClient | None = None,
 ) -> Btc15mStrategyService:
     candidate = candidate or _candidate(COND_1, "btc-15m-up-down-1")
@@ -565,6 +683,22 @@ def _service(
         order_lifecycle=order_lifecycle or FakeOrderLifecycle(),
         execution_watch_service=execution_watch_service or FakeExecutionWatchService(),
         dry_run_service=dry_run_service or FakeDryRunService(),
+        auth_service=auth_service or FakeAuthService(),
+        risk_service=risk_service or FakeRiskPolicyService(),
+        execution_state_service=execution_state_service
+        or ExecutionStateService(
+            approval_plans_path=tmp_path / "approval-plans.json",
+            approval_results_path=tmp_path / "approval-results.json",
+            order_plans_path=tmp_path / "execution-order-plans.json",
+            order_results_path=tmp_path / "execution-order-results.json",
+            events_path=tmp_path / "execution-events.jsonl",
+            reconciliations_path=tmp_path / "execution-reconciliations.json",
+        ),
+        portfolio_state_service=portfolio_state_service
+        or PortfolioStateService(
+            snapshots_path=tmp_path / "portfolio-snapshots.json",
+            reconciliations_path=tmp_path / "portfolio-reconciliations.json",
+        ),
         gamma_client_cls=FakeGammaClient,
         clob_client_cls=FakeClobClient,
         now=resolved_clock.now if resolved_clock is not None else None,
@@ -2138,7 +2272,13 @@ def test_session_arm_live_with_confirm_runs_execution_preflight(tmp_path) -> Non
         dry_run_service=dry_run_service,
     )
 
-    result = service.session_arm(next_window=True, mode="live", confirm=True)
+    result = service.session_arm(
+        next_window=True,
+        mode="live",
+        confirm=True,
+        budget_usdc="15",
+        rungs="5,5,5",
+    )
 
     assert result.session.mode is Btc15mRunMode.LIVE
     assert result.session.live_confirmed is True
@@ -2170,7 +2310,13 @@ def test_session_arm_live_rejects_failed_execution_preflight(tmp_path) -> None:
     )
 
     with pytest.raises(Btc15mValidationError, match="Blocked by official geoblock check"):
-        service.session_arm(next_window=True, mode="live", confirm=True)
+        service.session_arm(
+            next_window=True,
+            mode="live",
+            confirm=True,
+            budget_usdc="15",
+            rungs="5,5,5",
+        )
 
 
 def test_session_run_paper_executes_one_window(tmp_path) -> None:
@@ -2234,7 +2380,13 @@ def test_session_run_live_executes_one_window_and_persists_order_linkage(tmp_pat
             ],
         ),
     )
-    armed = service.session_arm(next_window=True, mode="live", confirm=True)
+    armed = service.session_arm(
+        next_window=True,
+        mode="live",
+        confirm=True,
+        budget_usdc="15",
+        rungs="5,5,5",
+    )
     original_sleep = service._sleep  # type: ignore[attr-defined]
     service._sleep = lambda seconds: original_sleep(max(seconds, 60))  # type: ignore[attr-defined]
 
@@ -2263,7 +2415,13 @@ def test_session_stop_live_running_exits_at_safe_checkpoint(tmp_path) -> None:
             binance_events=[_crypto_event("binance", "2026-03-20T10:29:59Z", 100)],
         ),
     )
-    armed = service.session_arm(next_window=True, mode="live", confirm=True)
+    armed = service.session_arm(
+        next_window=True,
+        mode="live",
+        confirm=True,
+        budget_usdc="15",
+        rungs="5,5,5",
+    )
     original_advance = service._advance_terminal_runtime  # type: ignore[attr-defined]
     stop_requested = False
 
@@ -2328,3 +2486,293 @@ def test_session_status_returns_queue_and_latest_completed(tmp_path) -> None:
     assert status.active_session is None
     assert status.latest_completed_report is not None
     assert status.latest_completed_report.session_id == first.session.session_id
+
+
+def test_session_latest_returns_newest_by_updated_at(tmp_path) -> None:
+    candidate = _candidate(COND_1, "btc-updown-15m-1774002600")
+    service = _service(tmp_path, now=_dt("2026-03-20T10:20:00Z"), candidate=candidate)
+    first = service.session_arm(next_window=True, mode="paper")
+    second = first.session.model_copy(
+        update={
+            "session_id": "btc15m_session_latest",
+            "updated_at": "2026-03-20T10:20:05Z",
+            "paper_budget_usdc": "55",
+            "rung_notionals_usdc": ["22", "16.5", "16.5"],
+        }
+    )
+    service._state.upsert_session(second)
+
+    result = service.session_latest()
+
+    assert isinstance(result, Btc15mSessionLatestResponse)
+    assert result.session.session_id == second.session_id
+    assert isinstance(result.canary_limits, Btc15mCanaryLiveProfile)
+    assert result.canary_limits.max_live_usdc == "15"
+
+
+def test_session_run_latest_uses_newest_armed_session(tmp_path) -> None:
+    candidate = _candidate(COND_1, "btc-updown-15m-1774002600")
+    clock = _Clock(_dt("2026-03-20T10:29:55Z"))
+    service = _service(
+        tmp_path,
+        clock=clock,
+        candidate=candidate,
+        crypto_client=RollingCryptoClient(
+            clock,
+            chainlink_events=[
+                _crypto_event("chainlink", "2026-03-20T10:29:59Z", 100),
+                _crypto_event("chainlink", "2026-03-20T10:30:01Z", 100),
+                _crypto_event("chainlink", "2026-03-20T10:35:00Z", 101),
+                _crypto_event("chainlink", "2026-03-20T10:44:59Z", 102),
+                _crypto_event("chainlink", "2026-03-20T10:45:01Z", 102),
+            ],
+            binance_events=[
+                _crypto_event("binance", "2026-03-20T10:34:59Z", 101),
+                _crypto_event("binance", "2026-03-20T10:35:00Z", 101),
+            ],
+        ),
+    )
+    first = service.session_arm(next_window=True, mode="paper")
+    service.session_stop(session_id=first.session.session_id)
+    second = first.session.model_copy(
+        update={
+            "session_id": "btc15m_session_latest_run",
+            "state": Btc15mSessionState.ARMED,
+            "stopped_at": None,
+            "stop_requested_at": None,
+            "final_report": None,
+            "updated_at": "2026-03-20T10:29:56Z",
+            "paper_budget_usdc": "55",
+            "rung_notionals_usdc": ["22", "16.5", "16.5"],
+        }
+    )
+    service._state.upsert_session(second)
+    original_sleep = service._sleep  # type: ignore[attr-defined]
+    service._sleep = lambda seconds: original_sleep(max(seconds, 60))  # type: ignore[attr-defined]
+
+    result = service.session_run(latest=True)
+
+    assert result.session.session_id == second.session_id
+    assert result.report is not None
+    assert result.report.state is Btc15mSessionState.COMPLETED
+
+
+def test_session_report_latest_uses_newest_final_report(tmp_path) -> None:
+    candidate = _candidate(COND_1, "btc-updown-15m-1774002600")
+    service = _service(tmp_path, now=_dt("2026-03-20T10:20:00Z"), candidate=candidate)
+    first = service.session_arm(next_window=True, mode="paper")
+    service.session_stop(session_id=first.session.session_id)
+    service._sleep(5)  # type: ignore[attr-defined]
+    second = service.session_arm(next_window=True, mode="paper")
+    service.session_stop(session_id=second.session.session_id)
+
+    result = service.session_report(latest=True)
+
+    assert result.report.session_id == second.session.session_id
+
+
+def test_session_arm_live_rejects_canary_budget_limit(tmp_path) -> None:
+    candidate = _candidate(COND_1, "btc-updown-15m-1774002600")
+    service = _service(tmp_path, now=_dt("2026-03-20T10:20:00Z"), candidate=candidate)
+
+    with pytest.raises(Btc15mValidationError, match="budget exceeds the canary cap"):
+        service.session_arm(next_window=True, mode="live", confirm=True, budget_usdc="16")
+
+
+def test_session_arm_live_rejects_canary_rung_limit(tmp_path) -> None:
+    candidate = _candidate(COND_1, "btc-updown-15m-1774002600")
+    service = _service(tmp_path, now=_dt("2026-03-20T10:20:00Z"), candidate=candidate)
+
+    with pytest.raises(Btc15mValidationError, match="rung notional exceeds the canary cap"):
+        service.session_arm(
+            next_window=True,
+            mode="live",
+            confirm=True,
+            budget_usdc="15",
+            rungs="5.1,4.9,5",
+        )
+
+
+def test_live_check_returns_ready_context(tmp_path) -> None:
+    candidate = _candidate(COND_1, "btc-updown-15m-1774002600")
+    service = _service(tmp_path, now=_dt("2026-03-20T10:20:00Z"), candidate=candidate)
+
+    result = service.live_check()
+
+    assert isinstance(result, Btc15mLiveCheckResponse)
+    assert result.ready is True
+    assert result.target_window is not None
+    assert result.canary_limits.max_rung_usdc == "5"
+    assert any(item.section == "canary_limits" and item.status == "warn" for item in result.checks)
+
+
+def test_live_check_blocks_on_active_session_and_auth_failure(tmp_path) -> None:
+    candidate = _candidate(COND_1, "btc-updown-15m-1774002600")
+    service = _service(
+        tmp_path,
+        now=_dt("2026-03-20T10:20:00Z"),
+        candidate=candidate,
+        auth_service=FakeAuthService(fail_balances=True),
+    )
+    armed = service.session_arm(next_window=True, mode="paper")
+    running = armed.session.model_copy(
+        update={
+            "state": Btc15mSessionState.RUNNING,
+            "updated_at": "2026-03-20T10:30:00Z",
+            "started_at": "2026-03-20T10:30:00Z",
+        }
+    )
+    service._state.upsert_session(running)  # type: ignore[attr-defined]
+
+    result = service.live_check()
+
+    assert result.ready is False
+    assert result.active_session is not None
+    assert any(item.section == "balances" and item.status == "fail" for item in result.checks)
+    assert any(
+        item.section == "session_conflict" and item.status == "fail"
+        for item in result.checks
+    )
+
+
+def test_bundle_returns_local_session_execution_and_portfolio_records(tmp_path) -> None:
+    candidate = _candidate(COND_1, "btc-updown-15m-1774002600")
+    execution_state = ExecutionStateService(
+        approval_plans_path=tmp_path / "approval-plans.json",
+        approval_results_path=tmp_path / "approval-results.json",
+        order_plans_path=tmp_path / "execution-order-plans.json",
+        order_results_path=tmp_path / "execution-order-results.json",
+        events_path=tmp_path / "execution-events.jsonl",
+        reconciliations_path=tmp_path / "execution-reconciliations.json",
+    )
+    portfolio_state = PortfolioStateService(
+        snapshots_path=tmp_path / "portfolio-snapshots.json",
+        reconciliations_path=tmp_path / "portfolio-reconciliations.json",
+    )
+    service = _service(
+        tmp_path,
+        now=_dt("2026-03-20T10:20:00Z"),
+        candidate=candidate,
+        execution_state_service=execution_state,
+        portfolio_state_service=portfolio_state,
+    )
+    session = service.session_arm(next_window=True, mode="paper").session
+    report = service.session_stop(session_id=session.session_id).session.final_report
+    assert report is not None
+    report = report.model_copy(
+        update={
+            "rung_outcomes": [
+                Btc15mDashboardRungState(
+                    price="0.30",
+                    state="filled",
+                    notional_usdc="5",
+                    quantity="16.666666",
+                    order_id="order-1",
+                    fill_price="0.30",
+                )
+            ],
+            "execution_reconciliation_id": "reconcile-1",
+        }
+    )
+    updated_session = service._state.list_sessions()[-1].model_copy(update={"final_report": report})  # type: ignore[attr-defined]
+    service._state.upsert_session(updated_session)  # type: ignore[attr-defined]
+    execution_state.append_order_plan(
+        ExecutionOrderPlanRecord(
+            plan_id="plan-1",
+            action="post",
+            mode="live",
+            decision="WOULD_POST",
+            created_at="2026-03-20T10:35:00Z",
+            order_id="order-1",
+            market=COND_1,
+            token_id=TOKEN_UP,
+            request={},
+            reasons=[],
+        )
+    )
+    execution_state.append_order_result(
+        ExecutionOrderResultRecord(
+            result_id="result-1",
+            plan_id="plan-1",
+            action="post",
+            mode="live",
+            decision="POSTED",
+            created_at="2026-03-20T10:35:01Z",
+            response={},
+        )
+    )
+    execution_state.append_execution_event(
+        CapturedExecutionEvent(
+            session_id="watch-1",
+            source="ws",
+            captured_at="2026-03-20T10:36:00Z",
+            condition_id=COND_1,
+            order_id="order-1",
+            asset_id=TOKEN_UP,
+            event_type="PLACEMENT",
+            status="LIVE",
+        )
+    )
+    execution_state.append_reconciliation(
+        ExecutionReconciliationRecord(
+            reconciliation_id="reconcile-1",
+            created_at="2026-03-20T10:45:00Z",
+            summary=ExecutionReconciliationSummary(total_orders=1),
+            items=[
+                ExecutionReconciliationItem(
+                    order_id="order-1",
+                    condition_id=COND_1,
+                    latest_event=CapturedExecutionEvent(
+                        session_id="watch-1",
+                        source="ws",
+                        captured_at="2026-03-20T10:36:00Z",
+                        condition_id=COND_1,
+                        order_id="order-1",
+                        asset_id=TOKEN_UP,
+                        event_type="PLACEMENT",
+                        status="LIVE",
+                    ),
+                    latest_event_type="PLACEMENT",
+                    classification="consistent_open",
+                    message="ok",
+                )
+            ],
+            errors=[],
+        )
+    )
+    portfolio_state.append_reconciliation(
+        PortfolioReconciliationRecord(
+            reconciliation_id="portfolio-rec-1",
+            snapshot_id="portfolio-snap-1",
+            execution_reconciliation_id="reconcile-1",
+            account_address="0x" + ("1" * 40),
+            created_at="2026-03-20T10:46:00Z",
+            summary=PortfolioReconciliationSummary(health="healthy"),
+            discrepancies=[],
+            errors=[],
+        )
+    )
+
+    bundle = service.bundle(session_id=session.session_id)
+
+    assert isinstance(bundle, Btc15mSessionBundleResponse)
+    assert len(bundle.order_plans) == 1
+    assert len(bundle.order_results) == 1
+    assert len(bundle.execution_events) == 1
+    assert bundle.execution_reconciliation is not None
+    assert bundle.portfolio_reconciliation is not None
+
+
+def test_bundle_notes_when_portfolio_reconciliation_missing(tmp_path) -> None:
+    candidate = _candidate(COND_1, "btc-updown-15m-1774002600")
+    service = _service(tmp_path, now=_dt("2026-03-20T10:20:00Z"), candidate=candidate)
+    session = service.session_arm(next_window=True, mode="paper").session
+    stopped = service.session_stop(session_id=session.session_id).session
+    assert stopped.final_report is not None
+    report = stopped.final_report.model_copy(update={"execution_reconciliation_id": "missing-rec"})
+    service._state.upsert_session(stopped.model_copy(update={"final_report": report}))  # type: ignore[attr-defined]
+
+    bundle = service.bundle(session_id=session.session_id)
+
+    assert bundle.portfolio_reconciliation is None
+    assert any("portfolio reconciliation" in item.lower() for item in bundle.notes)

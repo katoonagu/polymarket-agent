@@ -21,6 +21,7 @@ from pm.strategy import (
     Btc15mDashboardResponse,
     Btc15mDashboardSnapshotRecord,
     Btc15mLiquiditySampleResponse,
+    Btc15mLiveCheckResponse,
     Btc15mLiveResponse,
     Btc15mPaperRunResponse,
     Btc15mRecordStartResponse,
@@ -29,6 +30,8 @@ from pm.strategy import (
     Btc15mReportResponse,
     Btc15mResolveCurrentResponse,
     Btc15mSessionArmResponse,
+    Btc15mSessionBundleResponse,
+    Btc15mSessionLatestResponse,
     Btc15mSessionReportResponse,
     Btc15mSessionRunResponse,
     Btc15mSessionStatusResponse,
@@ -178,6 +181,16 @@ CONTROLLER_SESSION_ID_OPTION = typer.Option(
     ...,
     "--session-id",
     help="Persisted BTC15m controller session identifier.",
+)
+OPTIONAL_CONTROLLER_SESSION_ID_OPTION = typer.Option(
+    None,
+    "--session-id",
+    help="Optional persisted BTC15m controller session identifier.",
+)
+LATEST_OPTION = typer.Option(
+    False,
+    "--latest",
+    help="Resolve the newest actionable BTC15m controller session for this command.",
 )
 OPTIONAL_SESSION_ID_OPTION = typer.Option(
     None,
@@ -626,15 +639,39 @@ def session_status(
     )
 
 
+@session_app.command("latest")
+def session_latest(
+    ctx: typer.Context,
+    json_output: bool = JSON_OPTION,
+) -> None:
+    """Show the latest persisted BTC15m controller session."""
+    try:
+        result = Btc15mStrategyService().session_latest()
+    except (Btc15mValidationError, Btc15mStateError) as exc:
+        _emit_btc15m_error(ctx, exc=exc, json_output=json_output)
+        raise typer.Exit(1) from exc
+
+    emit_command_output(
+        ctx,
+        result.model_dump(mode="json"),
+        text=_format_session_latest_response(result),
+        renderable=_render_session_latest_response(result),
+        local_json_output=json_output,
+    )
+
+
 @session_app.command("run")
 def session_run(
     ctx: typer.Context,
-    session_id: str = CONTROLLER_SESSION_ID_OPTION,
+    session_id: str | None = OPTIONAL_CONTROLLER_SESSION_ID_OPTION,
+    latest: bool = LATEST_OPTION,
     json_output: bool = JSON_OPTION,
 ) -> None:
     """Run one armed BTC15m controller session end-to-end."""
     try:
-        result = Btc15mStrategyService().session_run(session_id=session_id)
+        if session_id is None and not latest:
+            raise Btc15mValidationError("BTC15m session run requires --session-id or --latest.")
+        result = Btc15mStrategyService().session_run(session_id=session_id, latest=latest)
     except (Btc15mValidationError, Btc15mStateError) as exc:
         _emit_btc15m_error(ctx, exc=exc, identifier=session_id, json_output=json_output)
         raise typer.Exit(1) from exc
@@ -673,12 +710,17 @@ def session_stop(
 @session_app.command("report")
 def session_report(
     ctx: typer.Context,
-    session_id: str = CONTROLLER_SESSION_ID_OPTION,
+    session_id: str | None = OPTIONAL_CONTROLLER_SESSION_ID_OPTION,
+    latest: bool = LATEST_OPTION,
     json_output: bool = JSON_OPTION,
 ) -> None:
     """Show one persisted BTC15m controller-session report."""
     try:
-        result = Btc15mStrategyService().session_report(session_id=session_id)
+        if session_id is None and not latest:
+            raise Btc15mValidationError(
+                "BTC15m session report requires --session-id or --latest."
+            )
+        result = Btc15mStrategyService().session_report(session_id=session_id, latest=latest)
     except (Btc15mValidationError, Btc15mStateError) as exc:
         _emit_btc15m_error(ctx, exc=exc, identifier=session_id, json_output=json_output)
         raise typer.Exit(1) from exc
@@ -688,6 +730,49 @@ def session_report(
         result.model_dump(mode="json"),
         text=_format_session_report_response(result),
         renderable=_render_session_report_response(result),
+        local_json_output=json_output,
+    )
+
+
+@app.command("live-check")
+def live_check(
+    ctx: typer.Context,
+    json_output: bool = JSON_OPTION,
+) -> None:
+    """Run a read-only BTC15m live-readiness checklist."""
+    try:
+        result = Btc15mStrategyService().live_check()
+    except (Btc15mValidationError, Btc15mStateError) as exc:
+        _emit_btc15m_error(ctx, exc=exc, json_output=json_output)
+        raise typer.Exit(1) from exc
+
+    emit_command_output(
+        ctx,
+        result.model_dump(mode="json"),
+        text=_format_live_check_response(result),
+        renderable=_render_live_check_response(result),
+        local_json_output=json_output,
+    )
+
+
+@app.command("bundle")
+def bundle(
+    ctx: typer.Context,
+    session_id: str = CONTROLLER_SESSION_ID_OPTION,
+    json_output: bool = JSON_OPTION,
+) -> None:
+    """Show one local persisted BTC15m post-session bundle."""
+    try:
+        result = Btc15mStrategyService().bundle(session_id=session_id)
+    except (Btc15mValidationError, Btc15mStateError) as exc:
+        _emit_btc15m_error(ctx, exc=exc, identifier=session_id, json_output=json_output)
+        raise typer.Exit(1) from exc
+
+    emit_command_output(
+        ctx,
+        result.model_dump(mode="json"),
+        text=_format_bundle_response(result),
+        renderable=_render_bundle_response(result),
         local_json_output=json_output,
     )
 
@@ -2167,6 +2252,52 @@ def _format_session_status_response(response: Btc15mSessionStatusResponse) -> st
     )
 
 
+def _format_session_latest_response(response: Btc15mSessionLatestResponse) -> str:
+    session = response.session
+    return "\n".join(
+        [
+            f"Checked at: {response.checked_at}",
+            f"Session: {session.session_id}",
+            f"State: {session.state}",
+            f"Mode: {session.mode}",
+            f"Market: {session.window.market_slug if session.window is not None else '-'}",
+            f"Report: {response.report.session_id if response.report is not None else '-'}",
+        ]
+    )
+
+
+def _render_session_latest_response(response: Btc15mSessionLatestResponse) -> RenderableType:
+    session = response.session
+    report = response.report
+    canary = response.canary_limits
+    return section_panel(
+        "BTC15m Session",
+        render_group(
+            summary_table(
+                title="Latest Session",
+                rows=[
+                    ("Checked at", response.checked_at),
+                    ("Session", session.session_id),
+                    ("State", session.state),
+                    ("Mode", session.mode),
+                    ("Market", session.window.market_slug if session.window is not None else "-"),
+                    ("Updated", session.updated_at),
+                    ("Report", report.session_id if report is not None else "-"),
+                ],
+            ),
+            summary_table(
+                title="Canary Live Caps",
+                rows=[
+                    ("Max live USDC", canary.max_live_usdc),
+                    ("Max rung USDC", canary.max_rung_usdc),
+                    ("One window only", "yes" if canary.one_window_only else "no"),
+                    ("Default sizing fits", "yes" if canary.default_sizing_fits else "no"),
+                ],
+            ),
+        ),
+    )
+
+
 def _render_session_status_response(response: Btc15mSessionStatusResponse) -> RenderableType:
     summary = summary_table(
         title="Controller Status",
@@ -2326,6 +2457,55 @@ def _format_session_report_response(response: Btc15mSessionReportResponse) -> st
     )
 
 
+def _format_live_check_response(response: Btc15mLiveCheckResponse) -> str:
+    target = response.target_window.market_slug if response.target_window is not None else "-"
+    active = response.active_session.session_id if response.active_session is not None else "-"
+    canary_caps = (
+        "Canary max live / rung: "
+        f"{response.canary_limits.max_live_usdc} / "
+        f"{response.canary_limits.max_rung_usdc}"
+    )
+    return "\n".join(
+        [
+            f"Checked at: {response.checked_at}",
+            f"Ready: {'yes' if response.ready else 'no'}",
+            f"Target window: {target}",
+            f"Active conflict: {active}",
+            canary_caps,
+        ]
+    )
+
+
+def _render_live_check_response(response: Btc15mLiveCheckResponse) -> RenderableType:
+    signer = response.auth.signer_address if response.auth is not None else None
+    funder = response.auth.funder_address if response.auth is not None else None
+    checks = row_table(
+        title="Checks",
+        columns=("Section", "Status", "Message"),
+        rows=[(item.section, item.status, item.message) for item in response.checks],
+    )
+    summary = summary_table(
+        title="Live Readiness",
+        rows=[
+            ("Checked at", response.checked_at),
+            ("Ready", "yes" if response.ready else "no"),
+            ("Signer", signer or "-"),
+            ("Funder", funder or "-"),
+            (
+                "Target window",
+                response.target_window.market_slug if response.target_window is not None else "-",
+            ),
+            (
+                "Active session",
+                response.active_session.session_id if response.active_session is not None else "-",
+            ),
+            ("Max live USDC", response.canary_limits.max_live_usdc),
+            ("Max rung USDC", response.canary_limits.max_rung_usdc),
+        ],
+    )
+    return section_panel("BTC15m Live Check", render_group(summary, checks))
+
+
 def _render_session_report_response(response: Btc15mSessionReportResponse) -> RenderableType:
     report = response.report
     return section_panel(
@@ -2368,6 +2548,77 @@ def _render_session_report_response(response: Btc15mSessionReportResponse) -> Re
             else empty_message("No rung outcomes recorded."),
         ),
     )
+
+
+def _format_bundle_response(response: Btc15mSessionBundleResponse) -> str:
+    return "\n".join(
+        [
+            f"Session: {response.session.session_id}",
+            f"Report: {response.report.session_id}",
+            f"Order plans: {len(response.order_plans)}",
+            f"Execution events: {len(response.execution_events)}",
+            (
+                "Reconcile: "
+                f"{response.execution_reconciliation.reconciliation_id}"
+                if response.execution_reconciliation is not None
+                else "Reconcile: -"
+            ),
+        ]
+    )
+
+
+def _render_bundle_response(response: Btc15mSessionBundleResponse) -> RenderableType:
+    market_slug = response.report.window.market_slug if response.report.window is not None else "-"
+    summary = summary_table(
+        title="Bundle",
+        rows=[
+            ("Session", response.session.session_id),
+            ("Report", response.report.session_id),
+            ("Mode", response.report.mode),
+            ("Market", market_slug),
+            ("Order plans", str(len(response.order_plans))),
+            ("Order results", str(len(response.order_results))),
+            ("Execution events", str(len(response.execution_events))),
+            (
+                "Reconcile",
+                response.execution_reconciliation.reconciliation_id
+                if response.execution_reconciliation is not None
+                else "-",
+            ),
+            (
+                "Portfolio reconcile",
+                response.portfolio_reconciliation.reconciliation_id
+                if response.portfolio_reconciliation is not None
+                else "-",
+            ),
+            ("Notes", ", ".join(response.notes) or "-"),
+        ],
+    )
+    plans = (
+        row_table(
+            title="Order Plans",
+            columns=("Plan", "Action", "Order", "Mode", "Decision"),
+            rows=[
+                (item.plan_id, item.action, item.order_id or "-", item.mode, item.decision)
+                for item in response.order_plans
+            ],
+        )
+        if response.order_plans
+        else empty_message("No linked execution order plans.")
+    )
+    events = (
+        row_table(
+            title="Execution Events",
+            columns=("At", "Order", "Type", "Status"),
+            rows=[
+                (item.captured_at, item.order_id or "-", item.event_type, item.status or "-")
+                for item in response.execution_events
+            ],
+        )
+        if response.execution_events
+        else empty_message("No linked execution events.")
+    )
+    return section_panel("BTC15m Bundle", render_group(summary, plans, events))
 
 
 def _format_campaign_next_window_response(response: Btc15mCampaignNextWindowResponse) -> str:

@@ -10,9 +10,10 @@ from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
 from decimal import ROUND_DOWN, Decimal, InvalidOperation
 from time import sleep as time_sleep
-from typing import Any, cast
+from typing import TYPE_CHECKING, Any, cast
 from uuid import uuid4
 
+from pm.auth import AuthClientError, AuthService, AuthValidationError
 from pm.binance import BinanceClientError, BinanceService
 from pm.execution import (
     DryRunService,
@@ -20,6 +21,7 @@ from pm.execution import (
     ExecutionWatchService,
     OrderLifecycleService,
 )
+from pm.execution.state import ExecutionStateError, ExecutionStateService
 from pm.market.clob import ClobClient
 from pm.market.exceptions import ClobClientError, ClobNotFoundError
 from pm.market.gamma import GammaClient, GammaSearchCandidate
@@ -29,6 +31,7 @@ from pm.market.service import (
     MarketValidationError,
     validate_recurring_interval,
 )
+from pm.risk import RiskPolicyService, RiskStateError
 from pm.strategy.btc15m_models import (
     Btc15mAutoRollResponse,
     Btc15mAutoRollRunRecord,
@@ -39,6 +42,7 @@ from pm.strategy.btc15m_models import (
     Btc15mCampaignReportSummary,
     Btc15mCampaignRunRecord,
     Btc15mCampaignRunResponse,
+    Btc15mCanaryLiveProfile,
     Btc15mDashboardResponse,
     Btc15mDashboardRungState,
     Btc15mDashboardSideState,
@@ -46,6 +50,7 @@ from pm.strategy.btc15m_models import (
     Btc15mLadderRungResult,
     Btc15mLiquiditySampleRecord,
     Btc15mLiquiditySampleResponse,
+    Btc15mLiveCheckResponse,
     Btc15mLiveResponse,
     Btc15mMarketSample,
     Btc15mPaperEvaluation,
@@ -65,6 +70,8 @@ from pm.strategy.btc15m_models import (
     Btc15mRunMode,
     Btc15mSectionError,
     Btc15mSessionArmResponse,
+    Btc15mSessionBundleResponse,
+    Btc15mSessionLatestResponse,
     Btc15mSessionRecord,
     Btc15mSessionReportRecord,
     Btc15mSessionReportResponse,
@@ -99,6 +106,9 @@ from pm.stream.models import (
 )
 from pm.stream.rtds import RTDSClient
 from pm.stream.runner import BoundedRunResult, StreamValidationError
+
+if TYPE_CHECKING:
+    from pm.portfolio.state import PortfolioStateService
 
 DEFAULT_RECORD_SECONDS = 60
 DEFAULT_RECORD_QUERY = "btc"
@@ -151,6 +161,9 @@ RUNG_NOTIONALS = (
     Decimal("15"),
 )
 DEFAULT_TERMINAL_BUDGET_USDC = sum(RUNG_NOTIONALS, Decimal("0"))
+BTC15M_STRATEGY_NAME = "btc_15m_chainlink_directional_ladder_v1"
+BTC15M_CANARY_MAX_LIVE_USDC = Decimal("15")
+BTC15M_CANARY_MAX_RUNG_USDC = Decimal("5")
 
 
 class Btc15mValidationError(RuntimeError):
@@ -283,6 +296,10 @@ class Btc15mStrategyService:
         order_lifecycle: OrderLifecycleService | None = None,
         execution_watch_service: ExecutionWatchService | None = None,
         dry_run_service: DryRunService | None = None,
+        auth_service: AuthService | None = None,
+        risk_service: RiskPolicyService | None = None,
+        execution_state_service: ExecutionStateService | None = None,
+        portfolio_state_service: PortfolioStateService | None = None,
         gamma_client_cls: type[GammaClient] = GammaClient,
         clob_client_cls: type[ClobClient] = ClobClient,
         now: Any | None = None,
@@ -297,6 +314,14 @@ class Btc15mStrategyService:
         self._page_parity_service = page_parity_service or Btc15mPageParityService()
         self._order_lifecycle = order_lifecycle or OrderLifecycleService()
         self._dry_run_service = dry_run_service or DryRunService()
+        self._auth_service = auth_service or AuthService()
+        self._risk_service = risk_service or RiskPolicyService()
+        self._execution_state = execution_state_service or ExecutionStateService()
+        if portfolio_state_service is None:
+            from pm.portfolio.state import PortfolioStateService as _PortfolioStateService
+
+            portfolio_state_service = _PortfolioStateService()
+        self._portfolio_state = portfolio_state_service
         self._execution_watch_service = execution_watch_service or ExecutionWatchService(
             lifecycle_service=self._order_lifecycle
         )
@@ -761,6 +786,11 @@ class Btc15mStrategyService:
                 f"BTC15m session '{conflicting_armed.session_id}' is already armed."
             )
         if normalized_mode is Btc15mRunMode.LIVE:
+            self._enforce_live_canary_limits(
+                paper_budget_usdc=paper_budget_usdc,
+                rung_notionals_usdc=rung_notionals_usdc,
+                resolved=resolved,
+            )
             self._validate_live_session_arming(resolved)
         created_at = _isoformat(self._now())
         session = Btc15mSessionRecord(
@@ -796,22 +826,44 @@ class Btc15mStrategyService:
             latest_completed_report=latest_completed_report,
         )
 
+    def session_latest(self) -> Btc15mSessionLatestResponse:
+        """Return the latest persisted BTC15m controller session by updated time."""
+        session = self._latest_session_any()
+        if session is None:
+            raise Btc15mValidationError("No persisted BTC15m sessions were found.")
+        return Btc15mSessionLatestResponse(
+            checked_at=_isoformat(self._now()),
+            session=session,
+            report=session.final_report,
+            canary_limits=_btc15m_canary_live_profile(),
+        )
+
     def session_run(
         self,
         *,
-        session_id: str,
+        session_id: str | None = None,
+        latest: bool = False,
     ) -> Btc15mSessionRunResponse:
         """Run one armed BTC15m session through exactly one window and then stop."""
-        session = self._session_by_id(session_id)
+        session = (
+            self._session_by_id(session_id)
+            if session_id is not None
+            else self._latest_session_for_run()
+            if latest
+            else None
+        )
         if session is None:
+            if latest:
+                raise Btc15mValidationError("No armed BTC15m session is available for --latest.")
             raise Btc15mValidationError(f"BTC15m session '{session_id}' was not found.")
         if session.state is not Btc15mSessionState.ARMED:
             raise Btc15mValidationError(
-                f"BTC15m session '{session_id}' is not armable from state '{session.state.value}'."
+                f"BTC15m session '{session.session_id}' is not armable from state "
+                f"'{session.state.value}'."
             )
         if session.mode is Btc15mRunMode.LIVE and not session.live_confirmed:
             raise Btc15mValidationError(
-                f"BTC15m live session '{session_id}' was not confirmed at arm time."
+                f"BTC15m live session '{session.session_id}' was not confirmed at arm time."
             )
         active_session = self._active_controller_session()
         if active_session is not None and active_session.session_id != session.session_id:
@@ -952,9 +1004,228 @@ class Btc15mStrategyService:
     def session_report(
         self,
         *,
-        session_id: str,
+        session_id: str | None = None,
+        latest: bool = False,
     ) -> Btc15mSessionReportResponse:
         """Return one persisted BTC15m controller-session report."""
+        session = (
+            self._session_by_id(session_id)
+            if session_id is not None
+            else self._latest_session_for_report()
+            if latest
+            else None
+        )
+        if session is None:
+            if latest:
+                raise Btc15mValidationError(
+                    "No completed BTC15m session with a final report is available for --latest."
+                )
+            raise Btc15mValidationError(f"BTC15m session '{session_id}' was not found.")
+        if session.final_report is None:
+            raise Btc15mValidationError(
+                f"BTC15m session '{session.session_id}' has not produced a final report yet."
+            )
+        return Btc15mSessionReportResponse(report=session.final_report)
+
+    def live_check(self) -> Btc15mLiveCheckResponse:
+        """Run a read-only BTC15m canary live-readiness checklist."""
+        checked_at = _isoformat(self._now())
+        canary_limits = _btc15m_canary_live_profile()
+        checks: list[Btc15mReasonBlock] = []
+        errors: list[Btc15mSectionError] = []
+
+        auth = self._auth_service.show().auth
+        balance_view = None
+        allowance_view = None
+        geoblock = self._auth_service.check_geoblock()
+        risk_policy = None
+        target_window = None
+        active_session = self._active_controller_session()
+
+        if auth.signer_address is not None:
+            checks.append(
+                Btc15mReasonBlock(
+                    section="signer_profile",
+                    status="pass",
+                    message=(
+                        f"Signer {auth.signer_address} resolved with funder "
+                        f"{auth.funder_address or '-'}."
+                    ),
+                )
+            )
+        else:
+            checks.append(
+                Btc15mReasonBlock(
+                    section="signer_profile",
+                    status="fail",
+                    message="Signer and profile context could not be resolved.",
+                )
+            )
+            errors.append(
+                Btc15mSectionError(
+                    section="signer_profile",
+                    code="invalid_argument",
+                    message="Signer and profile context could not be resolved.",
+                )
+            )
+
+        try:
+            balance_view = self._auth_service.balances().balance_view
+            checks.append(
+                Btc15mReasonBlock(
+                    section="balances",
+                    status="pass",
+                    message=(
+                        "Authenticated balance read succeeded"
+                        f" ({balance_view.balance or '-'} available)."
+                    ),
+                )
+            )
+        except (AuthValidationError, AuthClientError) as exc:
+            checks.append(
+                Btc15mReasonBlock(section="balances", status="fail", message=str(exc))
+            )
+            errors.append(_section_error("balances", exc))
+
+        try:
+            allowance_view = self._auth_service.allowances().allowance_view
+            checks.append(
+                Btc15mReasonBlock(
+                    section="allowances",
+                    status="pass",
+                    message=(
+                        "Authenticated allowance read succeeded"
+                        f" ({allowance_view.allowance or '-'} ready)."
+                    ),
+                )
+            )
+        except (AuthValidationError, AuthClientError) as exc:
+            checks.append(
+                Btc15mReasonBlock(section="allowances", status="fail", message=str(exc))
+            )
+            errors.append(_section_error("allowances", exc))
+
+        if geoblock.checked and geoblock.blocked is False:
+            checks.append(
+                Btc15mReasonBlock(
+                    section="geoblock",
+                    status="pass",
+                    message=geoblock.message or "Official geoblock check reported allowed access.",
+                )
+            )
+        elif geoblock.checked and geoblock.blocked is True:
+            message = geoblock.message or "Official geoblock check reported blocked access."
+            checks.append(Btc15mReasonBlock(section="geoblock", status="fail", message=message))
+            errors.append(
+                Btc15mSectionError(section="geoblock", code="geoblocked", message=message)
+            )
+        else:
+            message = geoblock.message or "Official geoblock check could not be verified."
+            checks.append(Btc15mReasonBlock(section="geoblock", status="warn", message=message))
+            errors.append(
+                Btc15mSectionError(section="geoblock", code="request_failed", message=message)
+            )
+
+        if active_session is None:
+            checks.append(
+                Btc15mReasonBlock(
+                    section="session_conflict",
+                    status="pass",
+                    message="No active BTC15m controller session is blocking live arming.",
+                )
+            )
+        else:
+            conflict_message = (
+                f"Active BTC15m session '{active_session.session_id}' is already running."
+            )
+            checks.append(
+                Btc15mReasonBlock(
+                    section="session_conflict",
+                    status="fail",
+                    message=conflict_message,
+                )
+            )
+            errors.append(
+                Btc15mSectionError(
+                    section="session_conflict",
+                    code="conflict",
+                    message=conflict_message,
+                )
+            )
+
+        try:
+            risk_policy = self._risk_service.get_policy(BTC15M_STRATEGY_NAME)
+            checks.append(
+                Btc15mReasonBlock(
+                    section="risk_policy",
+                    status="pass",
+                    message=(
+                        "Effective BTC15m risk policy resolved"
+                        f" ({risk_policy.strategy_name})."
+                    ),
+                )
+            )
+        except (RiskStateError, Exception) as exc:
+            checks.append(Btc15mReasonBlock(section="risk_policy", status="fail", message=str(exc)))
+            errors.append(_section_error("risk_policy", exc))
+
+        try:
+            target_window = self._resolve_next_session_window().window
+            checks.append(
+                Btc15mReasonBlock(
+                    section="target_window",
+                    status="pass",
+                    message=f"Next eligible BTC15m window resolved as {target_window.market_slug}.",
+                )
+            )
+        except Exception as exc:
+            checks.append(
+                Btc15mReasonBlock(section="target_window", status="fail", message=str(exc))
+            )
+            errors.append(_section_error("target_window", exc))
+
+        checks.append(
+            Btc15mReasonBlock(
+                section="canary_limits",
+                status="pass" if canary_limits.default_sizing_fits else "warn",
+                message=(
+                    "Default sizing fits the BTC15m canary live profile."
+                    if canary_limits.default_sizing_fits
+                    else "Default BTC15m sizing exceeds the canary live profile; pass smaller "
+                    "--budget-usdc/--rungs for live arming."
+                ),
+            )
+        )
+
+        ready = (
+            auth.signer_address is not None
+            and balance_view is not None
+            and allowance_view is not None
+            and geoblock.checked
+            and geoblock.blocked is False
+            and active_session is None
+            and risk_policy is not None
+            and target_window is not None
+        )
+        return Btc15mLiveCheckResponse(
+            checked_at=checked_at,
+            ready=ready,
+            auth=auth,
+            balance_view=balance_view,
+            allowance_view=allowance_view,
+            geoblock=geoblock,
+            risk_policy=risk_policy,
+            checks=checks,
+            target_window=target_window,
+            canary_limits=canary_limits,
+            active_session=active_session,
+            errors=errors,
+        )
+
+    def bundle(self, *, session_id: str) -> Btc15mSessionBundleResponse:
+        """Assemble one local persisted post-session BTC15m controller bundle."""
+        from pm.portfolio.state import PortfolioStateError
+
         session = self._session_by_id(session_id)
         if session is None:
             raise Btc15mValidationError(f"BTC15m session '{session_id}' was not found.")
@@ -962,7 +1233,95 @@ class Btc15mStrategyService:
             raise Btc15mValidationError(
                 f"BTC15m session '{session_id}' has not produced a final report yet."
             )
-        return Btc15mSessionReportResponse(report=session.final_report)
+        report = session.final_report
+        notes: list[str] = []
+        errors: list[Btc15mSectionError] = []
+        try:
+            order_plans_all = self._execution_state.list_order_plans()
+            order_results_all = self._execution_state.list_order_results()
+            execution_events_all = self._execution_state.list_execution_events()
+            reconciliations = self._execution_state.list_reconciliations()
+        except ExecutionStateError as exc:
+            raise Btc15mStateError(str(exc)) from exc
+        try:
+            portfolio_reconciliations = self._portfolio_state.list_reconciliations()
+        except PortfolioStateError as exc:
+            raise Btc15mStateError(str(exc)) from exc
+
+        order_ids = {
+            item.order_id.strip()
+            for item in report.rung_outcomes
+            if item.order_id is not None and item.order_id.strip()
+        }
+        if not order_ids:
+            notes.append("No rung order ids were recorded for this session.")
+        target_market = report.window.condition_id if report.window is not None else None
+        target_token_id = report.target_token_id
+        order_plans = [
+            item
+            for item in order_plans_all
+            if (
+                (item.order_id is not None and item.order_id in order_ids)
+                or (
+                    item.action == "cancel_market"
+                    and target_market is not None
+                    and item.market == target_market
+                    and target_token_id is not None
+                    and item.token_id == target_token_id
+                )
+            )
+        ]
+        plan_ids = {item.plan_id for item in order_plans}
+        order_results = [item for item in order_results_all if item.plan_id in plan_ids]
+        execution_events = [
+            item
+            for item in execution_events_all
+            if item.order_id is not None and item.order_id in order_ids
+        ]
+        execution_reconciliation = (
+            next(
+                (
+                    item
+                    for item in reversed(reconciliations)
+                    if item.reconciliation_id == report.execution_reconciliation_id
+                ),
+                None,
+            )
+            if report.execution_reconciliation_id is not None
+            else None
+        )
+        if report.execution_reconciliation_id is not None and execution_reconciliation is None:
+            notes.append(
+                "Execution reconciliation "
+                f"'{report.execution_reconciliation_id}' was not found locally."
+            )
+        portfolio_reconciliation = (
+            next(
+                (
+                    item
+                    for item in reversed(portfolio_reconciliations)
+                    if item.execution_reconciliation_id == report.execution_reconciliation_id
+                ),
+                None,
+            )
+            if report.execution_reconciliation_id is not None
+            else None
+        )
+        if portfolio_reconciliation is None:
+            notes.append(
+                "No matching persisted portfolio reconciliation was found for this session."
+            )
+        return Btc15mSessionBundleResponse(
+            session=session,
+            report=report,
+            order_plans=order_plans,
+            order_results=order_results,
+            execution_events=execution_events,
+            execution_reconciliation=execution_reconciliation,
+            portfolio_reconciliation=portfolio_reconciliation,
+            notes=notes,
+            errors=errors,
+        )
 
     def _build_terminal_report_summary(
         self,
@@ -1209,6 +1568,64 @@ class Btc15mStrategyService:
                 "BTC15m live session preflight could not verify authenticated open-order "
                 f"reads: {exc}"
             ) from exc
+
+    def _enforce_live_canary_limits(
+        self,
+        *,
+        paper_budget_usdc: Decimal,
+        rung_notionals_usdc: tuple[Decimal, Decimal, Decimal],
+        resolved: _ResolvedWindow,
+    ) -> None:
+        """Apply the fixed low-risk live caps for BTC15m controller sessions."""
+        if paper_budget_usdc > BTC15M_CANARY_MAX_LIVE_USDC:
+            raise Btc15mValidationError(
+                "BTC15m live session budget exceeds the canary cap of "
+                f"{_decimal_text(BTC15M_CANARY_MAX_LIVE_USDC)} USDC."
+            )
+        for rung in rung_notionals_usdc:
+            if rung > BTC15M_CANARY_MAX_RUNG_USDC:
+                raise Btc15mValidationError(
+                    "BTC15m live rung notional exceeds the canary cap of "
+                    f"{_decimal_text(BTC15M_CANARY_MAX_RUNG_USDC)} USDC."
+                )
+        if resolved.window_start_dt is None or resolved.window_start_dt <= self._now():
+            raise Btc15mValidationError(
+                "BTC15m live canary sessions remain bounded to one pre-start window only."
+            )
+
+    def _latest_session_any(self) -> Btc15mSessionRecord | None:
+        sessions = self._state.list_sessions()
+        if not sessions:
+            return None
+        return max(
+            sessions,
+            key=lambda item: _parse_iso_timestamp(item.updated_at or item.created_at),
+        )
+
+    def _latest_session_for_run(self) -> Btc15mSessionRecord | None:
+        sessions = [
+            item for item in self._state.list_sessions() if item.state is Btc15mSessionState.ARMED
+        ]
+        if not sessions:
+            return None
+        return max(
+            sessions,
+            key=lambda item: _parse_iso_timestamp(item.updated_at or item.created_at),
+        )
+
+    def _latest_session_for_report(self) -> Btc15mSessionRecord | None:
+        sessions = [
+            item
+            for item in self._state.list_sessions()
+            if item.final_report is not None
+            and item.state in {Btc15mSessionState.COMPLETED, Btc15mSessionState.STOPPED}
+        ]
+        if not sessions:
+            return None
+        return max(
+            sessions,
+            key=lambda item: _parse_iso_timestamp(item.updated_at or item.created_at),
+        )
 
     def _build_controller_session_report(
         self,
@@ -6101,6 +6518,22 @@ def _resolve_terminal_paper_sizing(
         )
     resolved_budget = explicit_budget if explicit_budget is not None else rung_total
     return resolved_budget, (parsed_rungs[0], parsed_rungs[1], parsed_rungs[2])
+
+
+def _btc15m_canary_live_profile() -> Btc15mCanaryLiveProfile:
+    default_budget = DEFAULT_TERMINAL_BUDGET_USDC
+    default_rungs = [_decimal_text(item) for item in RUNG_NOTIONALS]
+    default_fits = default_budget <= BTC15M_CANARY_MAX_LIVE_USDC and all(
+        item <= BTC15M_CANARY_MAX_RUNG_USDC for item in RUNG_NOTIONALS
+    )
+    return Btc15mCanaryLiveProfile(
+        max_live_usdc=_decimal_text(BTC15M_CANARY_MAX_LIVE_USDC),
+        max_rung_usdc=_decimal_text(BTC15M_CANARY_MAX_RUNG_USDC),
+        one_window_only=True,
+        default_budget_usdc=_decimal_text(default_budget),
+        default_rung_notionals_usdc=default_rungs,
+        default_sizing_fits=default_fits,
+    )
 
 
 def _record_rung_notionals(record: Btc15mWindowRecord) -> tuple[Decimal, Decimal, Decimal]:

@@ -3,11 +3,20 @@
 from __future__ import annotations
 
 from enum import StrEnum
+from typing import Any
 
 from pydantic import BaseModel, Field
 
+from pm.auth.models import AuthContext, BalanceAllowanceView, GeoblockStatus
 from pm.binance.models import BinanceLiquiditySnapshot
+from pm.execution.models import (
+    CapturedExecutionEvent,
+    ExecutionOrderPlanRecord,
+    ExecutionOrderResultRecord,
+    ExecutionReconciliationRecord,
+)
 from pm.market.models import NormalizedBookLevel
+from pm.risk.models import RiskPolicy
 
 
 class Btc15mSectionError(BaseModel):
@@ -737,6 +746,17 @@ class Btc15mSessionRecord(BaseModel):
     errors: list[Btc15mSectionError] = Field(default_factory=list)
 
 
+class Btc15mCanaryLiveProfile(BaseModel):
+    """Fixed low-risk live caps for BTC15m controller sessions."""
+
+    max_live_usdc: str
+    max_rung_usdc: str
+    one_window_only: bool = True
+    default_budget_usdc: str
+    default_rung_notionals_usdc: list[str] = Field(default_factory=list)
+    default_sizing_fits: bool = False
+
+
 class Btc15mSessionsFile(BaseModel):
     """Versioned state document for persisted BTC15m controller sessions."""
 
@@ -937,6 +957,16 @@ class Btc15mSessionStatusResponse(BaseModel):
     errors: list[Btc15mSectionError] = Field(default_factory=list)
 
 
+class Btc15mSessionLatestResponse(BaseModel):
+    """Latest BTC15m controller-session lookup response."""
+
+    checked_at: str
+    session: Btc15mSessionRecord
+    report: Btc15mSessionReportRecord | None = None
+    canary_limits: Btc15mCanaryLiveProfile
+    errors: list[Btc15mSectionError] = Field(default_factory=list)
+
+
 class Btc15mSessionRunResponse(BaseModel):
     """Bounded controller run response."""
 
@@ -956,6 +986,37 @@ class Btc15mSessionReportResponse(BaseModel):
     """Persisted controller-session report response."""
 
     report: Btc15mSessionReportRecord
+    errors: list[Btc15mSectionError] = Field(default_factory=list)
+
+
+class Btc15mLiveCheckResponse(BaseModel):
+    """Read-only live readiness response for BTC15m canary sessions."""
+
+    checked_at: str
+    ready: bool = False
+    auth: AuthContext | None = None
+    balance_view: BalanceAllowanceView | None = None
+    allowance_view: BalanceAllowanceView | None = None
+    geoblock: GeoblockStatus | None = None
+    risk_policy: RiskPolicy | None = None
+    checks: list[Btc15mReasonBlock] = Field(default_factory=list)
+    target_window: Btc15mWindowIdentity | None = None
+    canary_limits: Btc15mCanaryLiveProfile
+    active_session: Btc15mSessionRecord | None = None
+    errors: list[Btc15mSectionError] = Field(default_factory=list)
+
+
+class Btc15mSessionBundleResponse(BaseModel):
+    """Local persisted post-session bundle for one BTC15m controller session."""
+
+    session: Btc15mSessionRecord
+    report: Btc15mSessionReportRecord
+    order_plans: list[ExecutionOrderPlanRecord] = Field(default_factory=list)
+    order_results: list[ExecutionOrderResultRecord] = Field(default_factory=list)
+    execution_events: list[CapturedExecutionEvent] = Field(default_factory=list)
+    execution_reconciliation: ExecutionReconciliationRecord | None = None
+    portfolio_reconciliation: Any | None = None
+    notes: list[str] = Field(default_factory=list)
     errors: list[Btc15mSectionError] = Field(default_factory=list)
 
 

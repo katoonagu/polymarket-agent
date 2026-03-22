@@ -16,11 +16,13 @@ from pm.strategy import (
     Btc15mCampaignReportSummary,
     Btc15mCampaignRunRecord,
     Btc15mCampaignRunResponse,
+    Btc15mCanaryLiveProfile,
     Btc15mDashboardResponse,
     Btc15mDashboardRungState,
     Btc15mDashboardSideState,
     Btc15mDashboardSnapshotRecord,
     Btc15mLiquiditySampleResponse,
+    Btc15mLiveCheckResponse,
     Btc15mLiveResponse,
     Btc15mPaperEvaluation,
     Btc15mPaperRunRecord,
@@ -34,6 +36,8 @@ from pm.strategy import (
     Btc15mResolveCurrentResponse,
     Btc15mRunMode,
     Btc15mSessionArmResponse,
+    Btc15mSessionBundleResponse,
+    Btc15mSessionLatestResponse,
     Btc15mSessionRecord,
     Btc15mSessionReportRecord,
     Btc15mSessionReportResponse,
@@ -622,11 +626,31 @@ class FakeBtc15mStrategyService:
             errors=[],
         )
 
-    def session_run(self, *, session_id: str) -> Btc15mSessionRunResponse:
-        report = _session_report_record(session_id=session_id)
+    def session_latest(self) -> Btc15mSessionLatestResponse:
+        session = _session_record(
+            session_id="btc15m-session-latest",
+            state=Btc15mSessionState.RUNNING,
+            report=_session_report_record(session_id="btc15m-session-latest"),
+        )
+        return Btc15mSessionLatestResponse(
+            checked_at="2026-03-20T10:40:00Z",
+            session=session,
+            report=session.final_report,
+            canary_limits=_canary_limits(),
+            errors=[],
+        )
+
+    def session_run(
+        self,
+        *,
+        session_id: str | None = None,
+        latest: bool = False,
+    ) -> Btc15mSessionRunResponse:
+        resolved_session_id = session_id or ("btc15m-session-latest-armed" if latest else "missing")
+        report = _session_report_record(session_id=resolved_session_id)
         return Btc15mSessionRunResponse(
             session=_session_record(
-                session_id=session_id,
+                session_id=resolved_session_id,
                 state=Btc15mSessionState.COMPLETED,
                 report=report,
             ),
@@ -645,8 +669,53 @@ class FakeBtc15mStrategyService:
             errors=[],
         )
 
-    def session_report(self, *, session_id: str) -> Btc15mSessionReportResponse:
-        return Btc15mSessionReportResponse(report=_session_report_record(session_id=session_id))
+    def session_report(
+        self,
+        *,
+        session_id: str | None = None,
+        latest: bool = False,
+    ) -> Btc15mSessionReportResponse:
+        resolved_session_id = session_id or (
+            "btc15m-session-latest-report" if latest else "missing"
+        )
+        return Btc15mSessionReportResponse(
+            report=_session_report_record(session_id=resolved_session_id)
+        )
+
+    def live_check(self) -> Btc15mLiveCheckResponse:
+        return Btc15mLiveCheckResponse(
+            checked_at="2026-03-20T10:36:00Z",
+            ready=True,
+            auth=None,
+            balance_view=None,
+            allowance_view=None,
+            geoblock=None,
+            risk_policy=None,
+            checks=[],
+            target_window=_window_record().window,
+            canary_limits=_canary_limits(),
+            active_session=None,
+            errors=[],
+        )
+
+    def bundle(self, *, session_id: str) -> Btc15mSessionBundleResponse:
+        report = _session_report_record(session_id=session_id, mode="live")
+        return Btc15mSessionBundleResponse(
+            session=_session_record(
+                session_id=session_id,
+                state=Btc15mSessionState.COMPLETED,
+                mode="live",
+                report=report,
+            ),
+            report=report,
+            order_plans=[],
+            order_results=[],
+            execution_events=[],
+            execution_reconciliation=None,
+            portfolio_reconciliation=None,
+            notes=["No matching persisted portfolio reconciliation was found for this session."],
+            errors=[],
+        )
 
     def paper_run(
         self,
@@ -1371,6 +1440,17 @@ def _session_report_record(
     )
 
 
+def _canary_limits() -> Btc15mCanaryLiveProfile:
+    return Btc15mCanaryLiveProfile(
+        max_live_usdc="15",
+        max_rung_usdc="5",
+        one_window_only=True,
+        default_budget_usdc="50",
+        default_rung_notionals_usdc=["20", "15", "15"],
+        default_sizing_fits=False,
+    )
+
+
 def _session_record(
     *,
     session_id: str = "btc15m-session-1",
@@ -1501,6 +1581,17 @@ def test_btc15m_session_status_json(monkeypatch) -> None:
     assert payload["latest_completed_report"]["session_id"] == "btc15m-session-1"
 
 
+def test_btc15m_session_latest_json(monkeypatch) -> None:
+    monkeypatch.setattr("pm.cli.strategy_btc15m.Btc15mStrategyService", FakeBtc15mStrategyService)
+
+    result = runner.invoke(app, ["strategy", "btc15m", "session", "latest", "--json"])
+
+    assert result.exit_code == 0
+    payload = json.loads(result.stdout)
+    assert payload["session"]["session_id"] == "btc15m-session-latest"
+    assert payload["canary_limits"]["max_live_usdc"] == "15"
+
+
 def test_btc15m_session_run_json(monkeypatch) -> None:
     monkeypatch.setattr("pm.cli.strategy_btc15m.Btc15mStrategyService", FakeBtc15mStrategyService)
 
@@ -1521,6 +1612,19 @@ def test_btc15m_session_run_json(monkeypatch) -> None:
     payload = json.loads(result.stdout)
     assert payload["session"]["session_id"] == "btc15m-session-9"
     assert payload["report"]["state"] == "completed"
+
+
+def test_btc15m_session_run_latest_json(monkeypatch) -> None:
+    monkeypatch.setattr("pm.cli.strategy_btc15m.Btc15mStrategyService", FakeBtc15mStrategyService)
+
+    result = runner.invoke(
+        app,
+        ["strategy", "btc15m", "session", "run", "--latest", "--json"],
+    )
+
+    assert result.exit_code == 0
+    payload = json.loads(result.stdout)
+    assert payload["session"]["session_id"] == "btc15m-session-latest-armed"
 
 
 def test_btc15m_session_stop_json(monkeypatch) -> None:
@@ -1567,6 +1671,44 @@ def test_btc15m_session_report_json(monkeypatch) -> None:
     assert payload["report"]["realized_pnl_usdc"] == "241.6666662"
 
 
+def test_btc15m_session_report_latest_json(monkeypatch) -> None:
+    monkeypatch.setattr("pm.cli.strategy_btc15m.Btc15mStrategyService", FakeBtc15mStrategyService)
+
+    result = runner.invoke(
+        app,
+        ["strategy", "btc15m", "session", "report", "--latest", "--json"],
+    )
+
+    assert result.exit_code == 0
+    payload = json.loads(result.stdout)
+    assert payload["report"]["session_id"] == "btc15m-session-latest-report"
+
+
+def test_btc15m_live_check_json(monkeypatch) -> None:
+    monkeypatch.setattr("pm.cli.strategy_btc15m.Btc15mStrategyService", FakeBtc15mStrategyService)
+
+    result = runner.invoke(app, ["strategy", "btc15m", "live-check", "--json"])
+
+    assert result.exit_code == 0
+    payload = json.loads(result.stdout)
+    assert payload["ready"] is True
+    assert payload["canary_limits"]["max_rung_usdc"] == "5"
+
+
+def test_btc15m_bundle_json(monkeypatch) -> None:
+    monkeypatch.setattr("pm.cli.strategy_btc15m.Btc15mStrategyService", FakeBtc15mStrategyService)
+
+    result = runner.invoke(
+        app,
+        ["strategy", "btc15m", "bundle", "--session-id", "btc15m-session-live", "--json"],
+    )
+
+    assert result.exit_code == 0
+    payload = json.loads(result.stdout)
+    assert payload["session"]["session_id"] == "btc15m-session-live"
+    assert "portfolio reconciliation" in payload["notes"][0].lower()
+
+
 def test_btc15m_session_live_arm_json(monkeypatch) -> None:
     monkeypatch.setattr("pm.cli.strategy_btc15m.Btc15mStrategyService", FakeBtc15mStrategyService)
 
@@ -1593,11 +1735,19 @@ def test_btc15m_session_live_arm_json(monkeypatch) -> None:
 
 def test_btc15m_session_live_run_json(monkeypatch) -> None:
     class LiveSessionService(FakeBtc15mStrategyService):
-        def session_run(self, *, session_id: str) -> Btc15mSessionRunResponse:
-            report = _session_report_record(session_id=session_id, mode="live")
+        def session_run(
+            self,
+            *,
+            session_id: str | None = None,
+            latest: bool = False,
+        ) -> Btc15mSessionRunResponse:
+            resolved_session_id = session_id or (
+                "btc15m-session-latest-live" if latest else "missing"
+            )
+            report = _session_report_record(session_id=resolved_session_id, mode="live")
             return Btc15mSessionRunResponse(
                 session=_session_record(
-                    session_id=session_id,
+                    session_id=resolved_session_id,
                     state=Btc15mSessionState.COMPLETED,
                     mode="live",
                     report=report,
@@ -1630,9 +1780,17 @@ def test_btc15m_session_live_run_json(monkeypatch) -> None:
 
 def test_btc15m_session_live_report_json(monkeypatch) -> None:
     class LiveSessionService(FakeBtc15mStrategyService):
-        def session_report(self, *, session_id: str) -> Btc15mSessionReportResponse:
+        def session_report(
+            self,
+            *,
+            session_id: str | None = None,
+            latest: bool = False,
+        ) -> Btc15mSessionReportResponse:
+            resolved_session_id = session_id or (
+                "btc15m-session-latest-live" if latest else "missing"
+            )
             return Btc15mSessionReportResponse(
-                report=_session_report_record(session_id=session_id, mode="live")
+                report=_session_report_record(session_id=resolved_session_id, mode="live")
             )
 
     monkeypatch.setattr("pm.cli.strategy_btc15m.Btc15mStrategyService", LiveSessionService)

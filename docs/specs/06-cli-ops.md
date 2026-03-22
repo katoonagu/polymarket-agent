@@ -595,10 +595,15 @@ One strategy-specific exception now exists on the current branch:
 - `pm strategy btc15m terminal replay --session-id <id>`
 - `pm strategy btc15m terminal report [--session-id <id>]`
 - `pm strategy btc15m session arm --next --mode paper|live --budget-usdc <n> --rungs <a,b,c> [--confirm]`
+- `pm strategy btc15m session latest`
 - `pm strategy btc15m session status`
 - `pm strategy btc15m session run --session-id <id>`
+- `pm strategy btc15m session run --latest`
 - `pm strategy btc15m session stop --session-id <id>`
 - `pm strategy btc15m session report --session-id <id>`
+- `pm strategy btc15m session report --latest`
+- `pm strategy btc15m live-check`
+- `pm strategy btc15m bundle --session-id <id>`
 
 This BTC15m surface is a current-window-first attached operator screen with
 page-parity-first live metrics, automatic rollover across BTC15m slugs while
@@ -662,12 +667,25 @@ Richer human-readable tables are now implemented for selected operator commands 
 - `session arm --next` persists one pre-start armed session under `.pm/state/`
   and `session run --session-id` executes exactly one window end-to-end, then
   exits
+- `session latest` returns the newest controller session by `updated_at`;
+  `session run --latest` resolves the newest armed session only; and
+  `session report --latest` resolves the newest session that already has a
+  final report
 - `session arm --next --mode live --confirm` is the single bounded live entry
   for the controller path; it performs authenticated live preflight at arm time
   and `session run` stays non-interactive after that one explicit confirm
 - `session stop --session-id` records `stop_requested` and exits on the next
   safe checkpoint; `session report --session-id` returns the persisted final
   report
+- fixed BTC15m canary live caps are enforced only in controller live mode:
+  `max_live_usdc=15`, `max_rung_usdc=5`, `one_window_only=true`
+- `live-check` is a read-only BTC15m runbook command that verifies auth
+  readiness, balances, allowances, geoblock status, active-session conflicts,
+  risk-policy presence, next-window targeting, and canary-limit fit without
+  arming anything
+- `bundle --session-id` is a local-only audit/export helper over persisted
+  session, execution, reconciliation, and portfolio state; it does not trigger
+  fresh network calls or reconciliation
 - live controller reports include rung order ids and execution reconciliation
   summaries so operators can trace one bounded window through the shared
   execution stack

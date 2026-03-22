@@ -61,10 +61,15 @@ Current research commands:
 - `pm strategy btc15m terminal replay --session-id <id>`
 - `pm strategy btc15m terminal report [--session-id <id>]`
 - `pm strategy btc15m session arm --next --mode paper|live --budget-usdc <n> --rungs <a,b,c> [--confirm]`
+- `pm strategy btc15m session latest`
 - `pm strategy btc15m session status`
 - `pm strategy btc15m session run --session-id <id>`
+- `pm strategy btc15m session run --latest`
 - `pm strategy btc15m session stop --session-id <id>`
 - `pm strategy btc15m session report --session-id <id>`
+- `pm strategy btc15m session report --latest`
+- `pm strategy btc15m live-check`
+- `pm strategy btc15m bundle --session-id <id>`
 - `pm strategy btc15m report`
 
 Current workflow notes:
@@ -129,6 +134,10 @@ Current workflow notes:
   `session report`
 - `session arm --next` is pre-start only, persists the controller state under
   `.pm/state/`, and keeps current-window late attach non-tradeable
+- `session latest` returns the newest persisted controller session by
+  `updated_at`; `session run --latest` resolves the newest armed session only;
+  `session report --latest` resolves the newest session that already has a
+  final report
 - `session run --session-id` is a bounded foreground workflow that reuses
   `market_truth`, Chainlink boundaries, direction lock, ladder entries,
   hold-to-expiry, and final tear-sheet logic without any dependence on
@@ -138,11 +147,20 @@ Current workflow notes:
   unattended auto-trading loop
 - live controller arming now runs a non-mutating authenticated preflight against
   the shared execution stack before the armed session is persisted
+- fixed BTC15m canary live caps are enforced at arm time:
+  `max_live_usdc=15`, `max_rung_usdc=5`, `one_window_only=true`
 - live controller execution is still bounded to one window only and posts,
   polls, cancels, watches, and reconciles rung orders entirely through the
   existing execution lifecycle plus watch stack
 - controller tear sheets now persist live rung `order_id` linkage and execution
   reconciliation metadata alongside the usual BTC15m ladder outcomes
+- `live-check` is a read-only operator runbook command for the next-window live
+  path: it verifies auth resolution, balances, allowances, geoblock readiness,
+  active-session conflicts, risk-policy presence, the target next window, and
+  the fixed canary caps without arming anything
+- `bundle --session-id` is a local-only post-session export helper over already
+  persisted session, execution, reconciliation, and portfolio state; it does
+  not trigger fresh network calls or fresh reconciliation
 - `terminal replay --session-id` replays persisted terminal snapshots only and
   does not call live market, oracle, or execution endpoints
 - `terminal report --session-id` returns one persisted tear sheet while bare

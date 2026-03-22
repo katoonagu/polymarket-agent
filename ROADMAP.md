@@ -243,6 +243,8 @@ Define and validate the first market-specific recurring strategy track for BTC
     reuse the shared execution safety model
   - bounded BTC15m one-window session controller with `session arm --next`,
     `session run`, `session stop`, `session status`, and `session report`
+  - latest-session controller convenience commands:
+    `session latest`, `session run --latest`, and `session report --latest`
   - dedicated controller-session persistence under `.pm/state/` with armed,
     running, stop-requested, stopped, and completed lifecycle state
   - paper-first next-window execution workflow that reuses `market_truth`,
@@ -252,6 +254,12 @@ Define and validate the first market-specific recurring strategy track for BTC
     `session arm --next --mode live --confirm` plus `session run --session-id`,
     including non-mutating live preflight, safe order posting/cancellation,
     session-to-order linkage, and final execution reconciliation in the report
+  - fixed BTC15m canary live caps enforced at arm time:
+    `max_live_usdc=15`, `max_rung_usdc=5`, `one_window_only=true`
+  - read-only BTC15m operator runbook command:
+    `pm strategy btc15m live-check`
+  - local-only post-session audit/export helper:
+    `pm strategy btc15m bundle --session-id <id>`
 - Still pending:
   - multi-day evidence collection over live recurring windows using the bounded
     campaign runner
