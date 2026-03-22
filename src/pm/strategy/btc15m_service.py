@@ -14,7 +14,12 @@ from typing import Any, cast
 from uuid import uuid4
 
 from pm.binance import BinanceClientError, BinanceService
-from pm.execution import ExecutionValidationError, ExecutionWatchService, OrderLifecycleService
+from pm.execution import (
+    DryRunService,
+    ExecutionValidationError,
+    ExecutionWatchService,
+    OrderLifecycleService,
+)
 from pm.market.clob import ClobClient
 from pm.market.exceptions import ClobClientError, ClobNotFoundError
 from pm.market.gamma import GammaClient, GammaSearchCandidate
@@ -277,6 +282,7 @@ class Btc15mStrategyService:
         page_parity_service: Btc15mPageParityService | None = None,
         order_lifecycle: OrderLifecycleService | None = None,
         execution_watch_service: ExecutionWatchService | None = None,
+        dry_run_service: DryRunService | None = None,
         gamma_client_cls: type[GammaClient] = GammaClient,
         clob_client_cls: type[ClobClient] = ClobClient,
         now: Any | None = None,
@@ -290,6 +296,7 @@ class Btc15mStrategyService:
         self._binance_service = binance_service or BinanceService()
         self._page_parity_service = page_parity_service or Btc15mPageParityService()
         self._order_lifecycle = order_lifecycle or OrderLifecycleService()
+        self._dry_run_service = dry_run_service or DryRunService()
         self._execution_watch_service = execution_watch_service or ExecutionWatchService(
             lifecycle_service=self._order_lifecycle
         )
@@ -753,6 +760,8 @@ class Btc15mStrategyService:
             raise Btc15mValidationError(
                 f"BTC15m session '{conflicting_armed.session_id}' is already armed."
             )
+        if normalized_mode is Btc15mRunMode.LIVE:
+            self._validate_live_session_arming(resolved)
         created_at = _isoformat(self._now())
         session = Btc15mSessionRecord(
             session_id=_make_id("btc15m_session"),
@@ -860,8 +869,9 @@ class Btc15mStrategyService:
             except Exception as exc:
                 report_errors.append(_section_error("session_reconcile", exc))
         terminal_session = result.session
+        latest_session = self._session_by_id(session.session_id) or session
         report = self._build_controller_session_report(
-            session=session,
+            session=latest_session,
             terminal_session=terminal_session,
             fallback_stop_reason=result.stop_reason,
             reconcile_id=reconcile_id,
@@ -1149,6 +1159,56 @@ class Btc15mStrategyService:
         if resolved.window_start_dt is None or resolved.window_start_dt <= now:
             raise Btc15mValidationError("BTC15m session arming is pre-start only.")
         return resolved
+
+    def _validate_live_session_arming(self, resolved: _ResolvedWindow) -> None:
+        """Run non-mutating live-execution readiness checks for one BTC15m session arm."""
+        market_ref = (resolved.window.condition_id or resolved.window.market_slug).strip()
+        if not market_ref:
+            raise Btc15mValidationError(
+                "BTC15m live session arming requires a resolved condition id or market slug."
+            )
+        for outcome in ("up", "down"):
+            try:
+                preview = self._dry_run_service.plan_order(
+                    market_ref=market_ref,
+                    outcome=outcome,
+                    side="buy",
+                    price="0.30",
+                    size="1",
+                )
+            except ExecutionValidationError as exc:
+                raise Btc15mValidationError(
+                    f"BTC15m live session preflight failed for {outcome}: {exc}"
+                ) from exc
+            except Exception as exc:
+                raise Btc15mValidationError(
+                    "BTC15m live session preflight could not validate the existing "
+                    f"execution stack for {outcome}: {exc}"
+                ) from exc
+            if preview.decision != "WOULD_POST":
+                failing_reason = next(
+                    (
+                        item.message
+                        for item in preview.reasons
+                        if getattr(item, "status", "") == "fail"
+                    ),
+                    "Live execution preflight did not approve order posting.",
+                )
+                raise Btc15mValidationError(
+                    f"BTC15m live session preflight failed for {outcome}: {failing_reason}"
+                )
+        try:
+            self._order_lifecycle.orders_open(market=resolved.window.condition_id)
+        except ExecutionValidationError as exc:
+            raise Btc15mValidationError(
+                f"BTC15m live session preflight could not verify authenticated open-order "
+                f"reads: {exc}"
+            ) from exc
+        except Exception as exc:
+            raise Btc15mValidationError(
+                "BTC15m live session preflight could not verify authenticated open-order "
+                f"reads: {exc}"
+            ) from exc
 
     def _build_controller_session_report(
         self,

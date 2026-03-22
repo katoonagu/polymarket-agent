@@ -136,6 +136,13 @@ Current workflow notes:
 - `session arm --next --mode live --confirm` is the only controller entry into
   live mode; `paper` remains the default and there is still no daemon or
   unattended auto-trading loop
+- live controller arming now runs a non-mutating authenticated preflight against
+  the shared execution stack before the armed session is persisted
+- live controller execution is still bounded to one window only and posts,
+  polls, cancels, watches, and reconciles rung orders entirely through the
+  existing execution lifecycle plus watch stack
+- controller tear sheets now persist live rung `order_id` linkage and execution
+  reconciliation metadata alongside the usual BTC15m ladder outcomes
 - `terminal replay --session-id` replays persisted terminal snapshots only and
   does not call live market, oracle, or execution endpoints
 - `terminal report --session-id` returns one persisted tear sheet while bare

@@ -2237,6 +2237,11 @@ def _format_session_run_response(response: Btc15mSessionRunResponse) -> str:
             f"Market: {market_slug}",
             f"Stop reason: {response.session.stop_reason or '-'}",
             f"Final state: {report.final_state if report is not None else '-'}",
+            (
+                f"Reconcile: {report.execution_reconciliation_id}"
+                if report is not None and report.execution_reconciliation_id is not None
+                else "Reconcile: -"
+            ),
             f"Realized PnL: {report.realized_pnl_usdc if report is not None else '-'}",
         ]
     )
@@ -2269,6 +2274,7 @@ def _render_session_run_response(response: Btc15mSessionRunResponse) -> Renderab
                 ("Observe only", "yes" if report.observe_only else "no"),
                 ("Side", report.selected_side or "-"),
                 ("Boundary", report.boundary_status),
+                ("Reconcile", report.execution_reconciliation_id or "-"),
                 ("PnL", report.realized_pnl_usdc or "-"),
                 ("MFE / MAE", f"{report.mfe_usdc or '-'} / {report.mae_usdc or '-'}"),
             ],
@@ -2314,6 +2320,7 @@ def _format_session_report_response(response: Btc15mSessionReportResponse) -> st
             f"State: {report.state}",
             f"Final state: {report.final_state or '-'}",
             f"Market: {report.window.market_slug if report.window is not None else '-'}",
+            f"Reconcile: {report.execution_reconciliation_id or '-'}",
             f"PnL: {report.realized_pnl_usdc or '-'}",
         ]
     )
@@ -2338,16 +2345,18 @@ def _render_session_report_response(response: Btc15mSessionReportResponse) -> Re
                     ("Side", report.selected_side or "-"),
                     ("Budget", report.paper_budget_usdc or "-"),
                     ("Rungs", ", ".join(report.rung_notionals_usdc) or "-"),
+                    ("Reconcile", report.execution_reconciliation_id or "-"),
                     ("Realized PnL", report.realized_pnl_usdc or "-"),
                 ],
             ),
             row_table(
                 title="Rung Outcomes",
-                columns=("Price", "State", "Notional", "Qty", "Fill"),
+                columns=("Price", "State", "Order", "Notional", "Qty", "Fill"),
                 rows=[
                     (
                         item.price,
                         item.state,
+                        item.order_id or "-",
                         item.notional_usdc or "-",
                         item.quantity or "-",
                         item.fill_price or "-",

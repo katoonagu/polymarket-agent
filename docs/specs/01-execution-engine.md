@@ -468,6 +468,16 @@ The current phase uses a fixed reconciliation window of the latest 100 persisted
 
 Each run persists a local reconciliation summary.
 
+The BTC15m one-window live session controller now reuses this same bounded
+execution stack directly:
+
+- `pm strategy btc15m session arm --next --mode live --confirm` performs
+  non-mutating authenticated preflight through the shared execution services
+- `pm strategy btc15m session run --session-id <id>` posts and cancels BTC15m
+  ladder rungs through the existing lifecycle service only
+- final BTC15m session reports persist order linkage plus the latest execution
+  reconciliation summary after the bounded live window completes
+
 ## Cancellation Surface
 
 ### `pm exec cancel`

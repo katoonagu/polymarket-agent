@@ -1324,11 +1324,15 @@ def _presenter() -> Btc15mTerminalPresenter:
     )
 
 
-def _session_report_record(session_id: str = "btc15m-session-1") -> Btc15mSessionReportRecord:
+def _session_report_record(
+    session_id: str = "btc15m-session-1",
+    *,
+    mode: str = "paper",
+) -> Btc15mSessionReportRecord:
     return Btc15mSessionReportRecord(
         session_id=session_id,
         created_at="2026-03-20T10:45:00Z",
-        mode=Btc15mRunMode.PAPER,
+        mode=Btc15mRunMode(mode),
         state=Btc15mSessionState.COMPLETED,
         final_state="RESOLVED",
         window=_window_record().window,
@@ -1356,11 +1360,13 @@ def _session_report_record(session_id: str = "btc15m-session-1") -> Btc15mSessio
                 state="filled",
                 notional_usdc="20",
                 quantity="66.666666",
+                order_id="order-1" if mode == "live" else None,
                 fill_price="0.30",
             )
         ],
         latest_evaluation=_evaluation(),
-        execution_reconciliation_summary={},
+        execution_reconciliation_id="reconcile-1" if mode == "live" else None,
+        execution_reconciliation_summary={"total_orders": 1} if mode == "live" else {},
         errors=[],
     )
 
@@ -1559,6 +1565,95 @@ def test_btc15m_session_report_json(monkeypatch) -> None:
     payload = json.loads(result.stdout)
     assert payload["report"]["session_id"] == "btc15m-session-9"
     assert payload["report"]["realized_pnl_usdc"] == "241.6666662"
+
+
+def test_btc15m_session_live_arm_json(monkeypatch) -> None:
+    monkeypatch.setattr("pm.cli.strategy_btc15m.Btc15mStrategyService", FakeBtc15mStrategyService)
+
+    result = runner.invoke(
+        app,
+        [
+            "strategy",
+            "btc15m",
+            "session",
+            "arm",
+            "--next",
+            "--mode",
+            "live",
+            "--confirm",
+            "--json",
+        ],
+    )
+
+    assert result.exit_code == 0
+    payload = json.loads(result.stdout)
+    assert payload["session"]["mode"] == "live"
+    assert payload["session"]["live_confirmed"] is True
+
+
+def test_btc15m_session_live_run_json(monkeypatch) -> None:
+    class LiveSessionService(FakeBtc15mStrategyService):
+        def session_run(self, *, session_id: str) -> Btc15mSessionRunResponse:
+            report = _session_report_record(session_id=session_id, mode="live")
+            return Btc15mSessionRunResponse(
+                session=_session_record(
+                    session_id=session_id,
+                    state=Btc15mSessionState.COMPLETED,
+                    mode="live",
+                    report=report,
+                ),
+                report=report,
+                errors=[],
+            )
+
+    monkeypatch.setattr("pm.cli.strategy_btc15m.Btc15mStrategyService", LiveSessionService)
+
+    result = runner.invoke(
+        app,
+        [
+            "strategy",
+            "btc15m",
+            "session",
+            "run",
+            "--session-id",
+            "btc15m-session-live",
+            "--json",
+        ],
+    )
+
+    assert result.exit_code == 0
+    payload = json.loads(result.stdout)
+    assert payload["report"]["mode"] == "live"
+    assert payload["report"]["execution_reconciliation_id"] == "reconcile-1"
+    assert payload["report"]["rung_outcomes"][0]["order_id"] == "order-1"
+
+
+def test_btc15m_session_live_report_json(monkeypatch) -> None:
+    class LiveSessionService(FakeBtc15mStrategyService):
+        def session_report(self, *, session_id: str) -> Btc15mSessionReportResponse:
+            return Btc15mSessionReportResponse(
+                report=_session_report_record(session_id=session_id, mode="live")
+            )
+
+    monkeypatch.setattr("pm.cli.strategy_btc15m.Btc15mStrategyService", LiveSessionService)
+
+    result = runner.invoke(
+        app,
+        [
+            "strategy",
+            "btc15m",
+            "session",
+            "report",
+            "--session-id",
+            "btc15m-session-live",
+            "--json",
+        ],
+    )
+
+    assert result.exit_code == 0
+    payload = json.loads(result.stdout)
+    assert payload["report"]["mode"] == "live"
+    assert payload["report"]["execution_reconciliation_summary"]["total_orders"] == 1
 
 
 def test_btc15m_session_live_arm_requires_confirm(monkeypatch) -> None:

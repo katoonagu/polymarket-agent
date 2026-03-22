@@ -248,6 +248,10 @@ Define and validate the first market-specific recurring strategy track for BTC
   - paper-first next-window execution workflow that reuses `market_truth`,
     boundary capture, ladder, and final tear-sheet logic without any
     `page_mirror` dependency
+  - bounded one-window live controller execution through
+    `session arm --next --mode live --confirm` plus `session run --session-id`,
+    including non-mutating live preflight, safe order posting/cancellation,
+    session-to-order linkage, and final execution reconciliation in the report
 - Still pending:
   - multi-day evidence collection over live recurring windows using the bounded
     campaign runner

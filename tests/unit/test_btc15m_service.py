@@ -14,6 +14,7 @@ from pm.binance import (
     BinanceKline,
     BinanceLiquiditySnapshot,
 )
+from pm.execution.models import ExecutionReasonBlock
 from pm.market.gamma import GammaSearchCandidate
 from pm.market.models import (
     NormalizedBook,
@@ -301,6 +302,7 @@ class FakeOrderLifecycle:
     def __init__(self) -> None:
         self.posts: list[dict[str, str]] = []
         self.cancels: list[dict[str, str | None]] = []
+        self.orders_open_calls: list[dict[str, str | None]] = []
         self.order_statuses: dict[str, dict[str, str | None]] = {}
         self.next_order_id = 1
 
@@ -372,6 +374,15 @@ class FakeOrderLifecycle:
             payload["status"] = "CANCELLED"
             payload["remaining_size"] = "0"
         return type("FakeCancelResponse", (), {"decision": "CANCELLED"})()
+
+    def orders_open(
+        self,
+        *,
+        market: str | None = None,
+        token_id: str | None = None,
+    ):
+        self.orders_open_calls.append({"market": market, "token_id": token_id})
+        return type("FakeOpenOrdersResponse", (), {"items": [], "total": 0})()
 
 
 class FakePageParityService:
@@ -447,6 +458,43 @@ class FakeExecutionWatchService:
         )()
 
 
+class FakeDryRunService:
+    def __init__(
+        self,
+        responses: list[tuple[str, list[ExecutionReasonBlock]]] | None = None,
+    ) -> None:
+        self._responses = list(responses or [])
+        self.calls: list[dict[str, str]] = []
+
+    def plan_order(
+        self,
+        *,
+        market_ref: str,
+        outcome: str,
+        side: str,
+        price: str,
+        size: str,
+        **_: object,
+    ):
+        self.calls.append(
+            {
+                "market_ref": market_ref,
+                "outcome": outcome,
+                "side": side,
+                "price": price,
+                "size": size,
+            }
+        )
+        decision, reasons = (
+            self._responses.pop(0) if self._responses else ("WOULD_POST", [])
+        )
+        return type(
+            "FakeDryRunResponse",
+            (),
+            {"decision": decision, "reasons": reasons},
+        )()
+
+
 async def _noop_async_sleep(seconds: float) -> None:
     _ = seconds
 
@@ -480,6 +528,7 @@ def _service(
     page_parity_data: Btc15mPageParityData | None = None,
     page_parity_service: FakePageParityService | None = None,
     execution_watch_service: FakeExecutionWatchService | None = None,
+    dry_run_service: FakeDryRunService | None = None,
     crypto_client: FakeCryptoClient | None = None,
 ) -> Btc15mStrategyService:
     candidate = candidate or _candidate(COND_1, "btc-15m-up-down-1")
@@ -515,6 +564,7 @@ def _service(
         page_parity_service=page_parity_service or FakePageParityService(page_parity_data),
         order_lifecycle=order_lifecycle or FakeOrderLifecycle(),
         execution_watch_service=execution_watch_service or FakeExecutionWatchService(),
+        dry_run_service=dry_run_service or FakeDryRunService(),
         gamma_client_cls=FakeGammaClient,
         clob_client_cls=FakeClobClient,
         now=resolved_clock.now if resolved_clock is not None else None,
@@ -2076,6 +2126,53 @@ def test_session_arm_live_requires_confirm(tmp_path) -> None:
         service.session_arm(next_window=True, mode="live")
 
 
+def test_session_arm_live_with_confirm_runs_execution_preflight(tmp_path) -> None:
+    candidate = _candidate(COND_1, "btc-updown-15m-1774002600")
+    order_lifecycle = FakeOrderLifecycle()
+    dry_run_service = FakeDryRunService()
+    service = _service(
+        tmp_path,
+        now=_dt("2026-03-20T10:20:00Z"),
+        candidate=candidate,
+        order_lifecycle=order_lifecycle,
+        dry_run_service=dry_run_service,
+    )
+
+    result = service.session_arm(next_window=True, mode="live", confirm=True)
+
+    assert result.session.mode is Btc15mRunMode.LIVE
+    assert result.session.live_confirmed is True
+    assert [item["outcome"] for item in dry_run_service.calls] == ["up", "down"]
+    assert order_lifecycle.orders_open_calls == [{"market": COND_1, "token_id": None}]
+
+
+def test_session_arm_live_rejects_failed_execution_preflight(tmp_path) -> None:
+    candidate = _candidate(COND_1, "btc-updown-15m-1774002600")
+    dry_run_service = FakeDryRunService(
+        responses=[
+            (
+                "SKIP",
+                [
+                    ExecutionReasonBlock(
+                        section="geoblock",
+                        status="fail",
+                        message="Blocked by official geoblock check.",
+                    )
+                ],
+            )
+        ]
+    )
+    service = _service(
+        tmp_path,
+        now=_dt("2026-03-20T10:20:00Z"),
+        candidate=candidate,
+        dry_run_service=dry_run_service,
+    )
+
+    with pytest.raises(Btc15mValidationError, match="Blocked by official geoblock check"):
+        service.session_arm(next_window=True, mode="live", confirm=True)
+
+
 def test_session_run_paper_executes_one_window(tmp_path) -> None:
     candidate = _candidate(COND_1, "btc-updown-15m-1774002600")
     clock = _Clock(_dt("2026-03-20T10:29:55Z"))
@@ -2111,6 +2208,81 @@ def test_session_run_paper_executes_one_window(tmp_path) -> None:
     persisted = service._state.list_sessions()[-1]  # type: ignore[attr-defined]
     assert persisted.final_report is not None
     assert persisted.final_report.realized_pnl_usdc is not None
+
+
+def test_session_run_live_executes_one_window_and_persists_order_linkage(tmp_path) -> None:
+    candidate = _candidate(COND_1, "btc-updown-15m-1774002600")
+    clock = _Clock(_dt("2026-03-20T10:29:55Z"))
+    order_lifecycle = FakeOrderLifecycle()
+    service = _service(
+        tmp_path,
+        clock=clock,
+        candidate=candidate,
+        order_lifecycle=order_lifecycle,
+        crypto_client=RollingCryptoClient(
+            clock,
+            chainlink_events=[
+                _crypto_event("chainlink", "2026-03-20T10:29:59Z", 100),
+                _crypto_event("chainlink", "2026-03-20T10:30:01Z", 100),
+                _crypto_event("chainlink", "2026-03-20T10:35:00Z", 101),
+                _crypto_event("chainlink", "2026-03-20T10:44:59Z", 102),
+                _crypto_event("chainlink", "2026-03-20T10:45:01Z", 102),
+            ],
+            binance_events=[
+                _crypto_event("binance", "2026-03-20T10:34:59Z", 101),
+                _crypto_event("binance", "2026-03-20T10:35:00Z", 101),
+            ],
+        ),
+    )
+    armed = service.session_arm(next_window=True, mode="live", confirm=True)
+    original_sleep = service._sleep  # type: ignore[attr-defined]
+    service._sleep = lambda seconds: original_sleep(max(seconds, 60))  # type: ignore[attr-defined]
+
+    result = service.session_run(session_id=armed.session.session_id)
+
+    assert result.session.state is Btc15mSessionState.COMPLETED
+    assert result.report is not None
+    assert result.report.mode is Btc15mRunMode.LIVE
+    assert result.report.execution_reconciliation_id == "reconcile-1"
+    assert result.report.execution_reconciliation_summary["total_orders"] == 0
+    assert order_lifecycle.posts
+    assert order_lifecycle.cancels
+    assert any(item.order_id is not None for item in result.report.rung_outcomes)
+
+
+def test_session_stop_live_running_exits_at_safe_checkpoint(tmp_path) -> None:
+    candidate = _candidate(COND_1, "btc-updown-15m-1774002600")
+    clock = _Clock(_dt("2026-03-20T10:29:55Z"))
+    service = _service(
+        tmp_path,
+        clock=clock,
+        candidate=candidate,
+        crypto_client=RollingCryptoClient(
+            clock,
+            chainlink_events=[_crypto_event("chainlink", "2026-03-20T10:29:59Z", 100)],
+            binance_events=[_crypto_event("binance", "2026-03-20T10:29:59Z", 100)],
+        ),
+    )
+    armed = service.session_arm(next_window=True, mode="live", confirm=True)
+    original_advance = service._advance_terminal_runtime  # type: ignore[attr-defined]
+    stop_requested = False
+
+    def _advance_and_request_stop(runtime, *, confirm_action=None):
+        nonlocal stop_requested
+        snapshot = original_advance(runtime, confirm_action=confirm_action)
+        if not stop_requested:
+            service.session_stop(session_id=armed.session.session_id)
+            stop_requested = True
+        return snapshot
+
+    service._advance_terminal_runtime = _advance_and_request_stop  # type: ignore[attr-defined]
+
+    result = service.session_run(session_id=armed.session.session_id)
+
+    assert result.session.state is Btc15mSessionState.STOPPED
+    assert result.report is not None
+    assert result.report.state is Btc15mSessionState.STOPPED
+    assert result.report.stop_reason == "operator_stop_requested"
 
 
 def test_session_run_after_missed_start_boundary_is_skipped(tmp_path) -> None:

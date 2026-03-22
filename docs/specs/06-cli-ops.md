@@ -662,9 +662,15 @@ Richer human-readable tables are now implemented for selected operator commands 
 - `session arm --next` persists one pre-start armed session under `.pm/state/`
   and `session run --session-id` executes exactly one window end-to-end, then
   exits
+- `session arm --next --mode live --confirm` is the single bounded live entry
+  for the controller path; it performs authenticated live preflight at arm time
+  and `session run` stays non-interactive after that one explicit confirm
 - `session stop --session-id` records `stop_requested` and exits on the next
   safe checkpoint; `session report --session-id` returns the persisted final
   report
+- live controller reports include rung order ids and execution reconciliation
+  summaries so operators can trace one bounded window through the shared
+  execution stack
 - `page_mirror` stays terminal-only operator context and must not affect any
   controller or strategy decision path
 - terminal paper sizing is explicit via `--budget-usdc` and `--rungs`; when

@@ -177,11 +177,13 @@ Rules:
 - `terminal --follow-current --arm-next` keeps the current market on screen, then arms and runs the next eligible paper window without requiring reattach
 - terminal paper sizing is operator-configurable with `--budget-usdc <n>` and `--rungs <a,b,c>`; when only budget is provided the default `20:15:15` ladder scales proportionally
 - `terminal --json` is snapshot-only and exits immediately; it never tries to animate JSON
-- `terminal --mode live --confirm` is the only BTC15m live execution surface on this branch and still requires inline per-action confirmation before posting or cancelling any rung
+- `terminal --mode live --confirm` remains an attached operator-only live surface and still requires inline per-action confirmation before posting or cancelling any rung
 - `terminal replay --session-id` replays persisted terminal snapshots only and does not call live market or oracle endpoints
 - `terminal report --session-id` returns one persisted tear sheet, while bare `terminal report` remains the aggregate history view
 - `session arm --next` is the bounded tradeable BTC15m path outside the attached terminal; it resolves one pre-start next window, persists a controller session, and keeps current-window late attach non-tradeable
 - `session run --session-id` is a bounded foreground one-window controller workflow that reuses BTC15m `market_truth`, boundary capture, direction lock, ladder, and final tear-sheet logic without depending on `page_mirror`
+- `session arm --next --mode live --confirm` now performs a non-mutating authenticated live preflight before persisting the armed session and `session run --session-id` executes exactly one real live window without asking for a second global confirm
+- live controller sessions post and cancel BTC15m rungs only through the existing execution lifecycle, then persist order ids plus execution reconciliation in the final session report
 - `session stop --session-id` records `stop_requested` and exits on the next safe checkpoint; `session report --session-id` returns the persisted final session report
 - `session arm --next --mode live --confirm` is the only controller entry into live mode; `paper` remains the default and no daemonized session loop exists
 - ladder labels in human terminal output are shown as `30¢ / 20¢ / 10¢`; JSON stays numeric as `0.30 / 0.20 / 0.10`
